@@ -1,0 +1,27 @@
+{
+  "name": "@neal/launch-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync": "node ../../scripts/sync-launcher.mjs",
+    "predev": "npm run sync",
+    "dev": "vite --host 127.0.0.1 --port 4290",
+    "typecheck": "tsc --noEmit",
+    "prebuild": "npm run sync",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@pump-fun/pump-sdk": "1.36.0",
+    "@solana/wallet-standard-features": "1.4.0",
+    "@solana/web3.js": "1.98.4",
+    "@wallet-standard/app": "1.1.1",
+    "@wallet-standard/base": "1.1.1",
+    "@wallet-standard/features": "1.1.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  }
+}
+

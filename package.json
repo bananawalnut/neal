@@ -1,0 +1,19 @@
+{
+  "name": "neal-launch-program",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "launcher:wasm": "wasm-pack build crates/launch-wasm --target web --out-dir ../../apps/launcher/src/wasm-pkg",
+    "launcher:sync": "npm run sync -w @neal/launch-console",
+    "launcher:dev": "npm run launcher:wasm && npm run dev -w @neal/launch-console",
+    "launcher:typecheck": "npm run typecheck -w @neal/launch-console",
+    "launcher:build": "npm run launcher:wasm && npm run build -w @neal/launch-console",
+    "site:sync": "npm run sync -w @neal/public-site",
+    "site:dev": "npm run dev -w @neal/public-site",
+    "site:typecheck": "npm run typecheck -w @neal/public-site",
+    "site:build": "npm run build -w @neal/public-site"
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "schema": "neal.launch-control/v1",
+  "status": "blocked_on_assets_and_wallet_choices",
+  "canonicalRoute": "pumpfun",
+  "network": "solana",
+  "token": {
+    "name": "Neal the Seal",
+    "symbol": "NEAL",
+    "imagePath": "assets/final/neal-token.png",
+    "bannerPath": null,
+    "description": null,
+    "website": "https://bananawalnut.github.io",
+    "socialLinks": []
+  },
+  "pumpfun": {
+    "quoteAsset": "SOL",
+    "mayhemMode": false,
+    "cashBack": false,
+    "creatorWallet": "GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv",
+    "creatorFeeRecipient": null,
+    "initialCreatorPurchaseLamports": null,
+    "initialCreatorPurchaseSol": null,
+    "launchAt": null
+  },
+  "programs": {
+    "genesisAllocationAvailable": false,
+    "economics": {
+      "devPurchase": {
+        "method": "pumpfun_market_buy",
+        "wallet": "GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv",
+        "transactions": []
+      },
+      "questTreasury": {
+        "creatorFeeShareBasisPoints": 4200,
+        "purchaseMethod": "creator_fee_funded_market_buybacks",
+        "wallet": null,
+        "transactions": []
+      }
+    },
+    "communitySuggestions": {
+      "entryFeeTokens": "1",
+      "acceptedEntryAssets": [
+        {
+          "symbol": "NEAL",
+          "amountTokens": "1",
+          "canonicalMintSource": "execution.mintAddress"
+        },
+        {
+          "symbol": "DREGG",
+          "amountTokens": "1",
+          "canonicalMintSource": "secondaryLiquidity.quoteMint"
+        }
+      ],
+      "destination": "quest_treasury",
+      "registryUri": null,
+      "status": "pre_launch"
+    },
+    "yahoos": {
+      "localMode": {
+        "enabled": true,
+        "storage": "browser_local_storage",
+        "price": "free",
+        "rankingScope": "this_browser"
+      },
+      "futureOnChainPolicyStatus": "undecided",
+      "dailyFreePerWallet": 3,
+      "dailyWindow": "solana_clock_utc_day",
+      "paidPriceNumerator": "1",
+      "paidPriceDenominator": "10",
+      "acceptedPaymentAssets": [
+        {
+          "symbol": "NEAL",
+          "amountTokens": "0.1",
+          "canonicalMintSource": "execution.mintAddress"
+        },
+        {
+          "symbol": "DREGG",
+          "amountTokens": "0.1",
+          "canonicalMintSource": "secondaryLiquidity.quoteMint"
+        }
+      ],
+      "fastestConsecutiveCount": 3,
+      "peakRateWindowSeconds": 60,
+      "programId": null,
+      "leaderboardRegistryUri": "/yahoo-leaderboard.json",
+      "status": "pre_launch"
+    },
+    "fundingMethod": "market_purchases_only",
+    "fundedInventory": null
+  },
+  "secondaryLiquidity": {
+    "enabledAtLaunch": false,
+    "plannedQuoteSymbol": "DREGG",
+    "quoteMint": null,
+    "status": "deferred_until_canonical_mint_and_price_are_verified"
+  },
+  "execution": {
+    "mintAddress": null,
+    "creationTransaction": null,
+    "finalHumanWalletReviewRequired": true
+  }
+}

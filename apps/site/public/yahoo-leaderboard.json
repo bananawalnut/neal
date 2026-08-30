@@ -1,0 +1,14 @@
+{
+  "schema": "neal.yahoo-leaderboard/v1",
+  "mode": "local_free",
+  "scope": "this_browser",
+  "futureOnChainPolicyStatus": "undecided",
+  "status": "active",
+  "programId": null,
+  "asOfSlot": null,
+  "fastestConsecutiveCount": 3,
+  "peakRateWindowSeconds": 60,
+  "totalYahoos": [],
+  "fastestConsecutiveYahoos": [],
+  "peakYahooRate": []
+}

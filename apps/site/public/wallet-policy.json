@@ -1,0 +1,26 @@
+{
+  "schema": "neal.wallet-policy/v1",
+  "chain": "solana:mainnet",
+  "preferredWallets": ["Castalia"],
+  "walletStandard": {
+    "requiredFeatures": ["standard:connect", "standard:events"],
+    "preferredAuthentication": "solana:signIn",
+    "authenticationFallback": "solana:signMessage",
+    "capabilityGatedTransactions": ["solana:signTransaction", "solana:signAndSendTransaction"],
+    "mobileTransport": "mobile-wallet-adapter-2.x"
+  },
+  "identity": {
+    "subjectFormat": "solana:mainnet/{address}",
+    "sessionStorage": "memory-only",
+    "nonceTtlSeconds": 300,
+    "statement": "Sign in to prove you control this wallet. No transaction. No fee.",
+    "challengeEndpoint": null,
+    "verifyEndpoint": null
+  },
+  "holderProof": {
+    "rpcEndpoint": "https://api.mainnet-beta.solana.com",
+    "commitment": "finalized",
+    "mintSource": "/launch-record.json",
+    "minimumAtomicBalance": "1"
+  }
+}

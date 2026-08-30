@@ -1,0 +1,19 @@
+node_modules/
+target/
+apps/site/dist/
+apps/site/pages-public/
+apps/*-upload.zip
+assets/drafts/
+.DS_Store
+*.log
+
+# Keep local credentials and signing material out of the project.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keystore
+*keypair*.json
+secrets/
+.wallet/

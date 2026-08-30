@@ -1,0 +1,57 @@
+# NEAL system architecture
+
+## Components
+
+| Component | Technology | Responsibility | Can sign? |
+| --- | --- | --- | --- |
+| Launch contract | Versioned JSON | Single source of launch decisions and immutable records | No |
+| Launch guard | Pure Rust CLI, later WASM | Validate readiness and produce blocker reports | No |
+| Public site | Vanilla HTML/CSS/TypeScript | Publish canonical mint and receipts; discover standard wallets; request identity signatures; read holder proofs | Requests wallet only |
+| Operations console | Vanilla TypeScript + Rust/WASM | Build previews, simulate, reconcile, and request wallet signatures | Requests wallet only |
+| Pump adapter | Official `@pump-fun/pump-sdk` | Build protocol instructions and read protocol state | No |
+| Solana adapter | `@solana/kit` and wallet-standard interfaces | RPC reads, simulation, transaction assembly, wallet handoff | No private keys |
+| Inventory indexer | Rust service or local CLI | Read public token accounts and reconcile program budgets | No |
+| Suggestion registry | Append-only public records | Record paid proposals, support signals, moderation, and dispositions | Service signing key only |
+| Local YAHOO toy | Vanilla TypeScript + browser local storage | Record free local clicks and calculate this browser's personal records | No |
+| Future YAHOO program/indexer | Undecided | Only exists if a later product decision approves wallet-linked, global, or on-chain YAHOOS | Undecided |
+| Quest ledger | Append-only signed records | Record eligibility inputs and decisions | Service signing key only |
+| Claim builder | Reviewed Solana program + deterministic tooling | Verify claims against a published root | Wallet signs claims |
+
+## Key boundaries
+
+- Pump.fun creates NEAL. No application component has authority to create a second NEAL mint.
+- Rust/WASM validates and computes; browser TypeScript interfaces with RPC and wallets.
+- Signing occurs only inside the user’s connected wallet.
+- The public site is transaction-read-only until a separately reviewed quest or claim transaction builder is added. It may request an off-chain identity signature and read public holder state.
+- Wallet identity uses Wallet Standard feature discovery. `solana:signIn` is preferred; `connect + solana:signMessage` is the compatibility fallback.
+- Connected, signed, authenticated, and holder-verified are separate states. The UI must never collapse them into one label.
+- A browser-verified signature is not a durable authenticated session. Durable auth requires a server-issued, single-use SIWS nonce and server-side verification.
+- Holder proof combines a verified wallet-control proof with a finalized RPC read for the canonical mint at a recorded slot. Connection alone is not holder proof.
+- The site stores wallet identity state in memory only. It never writes addresses, signatures, or holder balances to `localStorage` or `sessionStorage`.
+- The dev buys NEAL through the Pump.fun market with no fixed supply-percentage target; the site publishes the actual wallet, spend, fill, and transaction.
+- The quest treasury uses 42% of creator fees for disclosed NEAL market buybacks. Quest systems consume only settled, funded-inventory records.
+- A community suggestion costs one whole NEAL or one whole DREGG and routes the selected token to the published quest treasury. The browser must resolve the selected canonical mint, derive atomic units from that mint's decimals, and cannot enable payment until a reviewed transaction builder and durable public registry are live. DREGG remains disabled while its canonical mint is null.
+- Current YAHOOS are deliberately browser-local counters: free, device-scoped, and labelled as neither verified nor on-chain. Any future global or on-chain form is a separate undecided contract and must not silently reinterpret local records.
+- Private admin services never receive wallet seed phrases.
+
+## Environments
+
+- `local`: mock protocol records and deterministic fixtures
+- `devnet`: wallet, simulation, monitoring, and claim rehearsals; not a Pump.fun mainnet-equivalent guarantee
+- `mainnet-readonly`: inspect current program state without signing
+- `mainnet-signing`: disabled by default and enabled only for an exact reviewed transaction
+
+## Dependency policy
+
+- Pin exact package versions and record integrity hashes.
+- Prefer Pump.fun’s official SDK and public IDLs over community reverse-engineered clients.
+- Do not include trading bots, volume tools, multi-wallet generators, or private-key loaders.
+- Treat every SDK upgrade as a protocol-contract change requiring simulation and fixture updates.
+
+Current planning pins checked on 2026-08-29: `@pump-fun/pump-sdk` 1.36.0, `@solana/kit` 8.2.0, `@wallet-standard/app` 1.1.1, `@solana/wallet-standard-features` 1.4.0, `@solana/wallet-standard-util` 1.1.3, and `@solana-mobile/wallet-standard-mobile` 0.6.0. Versions must be rechecked before mainnet rehearsal.
+
+## Public-record projection
+
+`scripts/sync-public-record.mjs` is the producer for `neal.public-record/v1`. It reads the private launch-control record and emits only fields approved for the public site. The projection fails if exactly one of the mint address and creation transaction is present. It intentionally excludes creator-wallet decisions and internal scheduling data.
+
+`apps/site/public/wallet-policy.json` is the reviewed producer for `neal.wallet-policy/v1`. The public site is its first consumer. Castalia must consume the same feature names and chain identifiers rather than introducing a NEAL-only provider API. See [wallet identity and Castalia conformance](WALLET_IDENTITY.md).
