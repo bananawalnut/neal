@@ -29,18 +29,17 @@
 - Public suggestion registry, ranking/moderation rules, and reviewed dual-asset entry transaction builder
 - Community/product decision on whether YAHOOS should ever move on-chain, followed by a reviewed program, indexer, and wallet transaction builder only if approved
 - Castalia Wallet Standard and Mobile Wallet Adapter conformance testing when its implementation repository is available
+- CoinDesk Tauri transaction-visualization implementation after its repository is attached; the portable initiative is recorded in `docs/initiatives/002-coindesk-neal-transaction-visualization.md`
 
 ## Current launch blockers
 
-The Rust guard currently reports five blockers:
+The Rust guard currently reports three blockers:
 
-1. Final description
-2. Creator wallet address
-3. Creator-fee recipient address
-4. Exact integer-lamport budget and slippage cap for the dev's launch purchase
-5. Launch date and time
+1. Creator-fee recipient address
+2. Exact integer-lamport budget and slippage cap for the dev's launch purchase
+3. Launch date and time
 
-Warnings remain for missing public links, the not-yet-published dev and quest-treasury wallets, and unconfirmed quest inventory.
+Warnings remain for the not-yet-published quest-treasury wallet and suggestion registry, the deliberately deferred on-chain YAHOO program, and unconfirmed quest inventory.
 
 Separate web-app blocker: wallet signatures are cryptographically verified in the current tab, but durable authentication is intentionally not claimed until the single-use nonce challenge and server verification endpoints are deployed.
 

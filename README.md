@@ -34,9 +34,10 @@ The site also includes the [YAHOO Yard](apps/site/yahoos/index.html) and [local 
 
 ## Required before opening the final wallet prompt
 
-- [ ] Final square token image, at least 1000 × 1000 px and no more than 15 MB
-- [ ] Final description
-- [ ] Final website and social links, or an explicit decision to launch without them
+- [x] Final square token image, at least 1000 × 1000 px and no more than 15 MB
+- [x] Final description
+- [x] Final website recorded (`https://nealtheseal.org`)
+- [ ] Final social links, or an explicit decision to omit them
 - [ ] Optional banner, or an explicit decision to omit it
 - [ ] Creator wallet selected and backed up
 - [ ] Creator-fee recipient confirmed

@@ -128,7 +128,10 @@ fn quote_exact_tokens_inner(input: ExactTokenQuoteInput) -> Result<ExactTokenQuo
         .checked_mul(virtual_quote)
         .ok_or_else(|| "integer overflow while calculating net quote".to_string())?;
     let denominator = virtual_tokens - desired_tokens;
-    let net_quote = ceil_div(numerator, denominator)?
+    // Pump's exact-token buy quote uses integer division (floor) and then adds
+    // one quote base unit. Using ceil_div here would add two units whenever
+    // the division has a remainder.
+    let net_quote = (numerator / denominator)
         .checked_add(1)
         .ok_or_else(|| "integer overflow while applying Pump rounding".to_string())?;
     let fee_multiplier = BPS_DENOMINATOR
@@ -220,4 +223,3 @@ mod tests {
         assert_eq!(quote.max_quote_base_units, "2447129911");
     }
 }
-
