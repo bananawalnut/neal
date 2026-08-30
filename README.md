@@ -40,7 +40,7 @@ The site also includes the [YAHOO Yard](apps/site/yahoos/index.html) and [local 
 - [ ] Final social links, or an explicit decision to omit them
 - [ ] Optional banner, or an explicit decision to omit it
 - [ ] Creator wallet selected and backed up
-- [ ] Creator-fee recipient confirmed
+- [x] Initial creator-fee recipient confirmed
 - [x] Cash-back mode confirmed off
 - [ ] Initial creator purchase confirmed as zero or a disclosed amount
 - [ ] Launch date and coordinated announcement time

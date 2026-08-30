@@ -17,7 +17,7 @@
     "mayhemMode": false,
     "cashBack": false,
     "creatorWallet": "GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv",
-    "creatorFeeRecipient": null,
+    "creatorFeeRecipient": "GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv",
     "initialCreatorPurchaseLamports": null,
     "initialCreatorPurchaseSol": null,
     "launchAt": null

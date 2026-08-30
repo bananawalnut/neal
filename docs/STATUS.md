@@ -33,11 +33,10 @@
 
 ## Current launch blockers
 
-The Rust guard currently reports three blockers:
+The Rust guard currently reports two blockers:
 
-1. Creator-fee recipient address
-2. Exact integer-lamport budget and slippage cap for the dev's launch purchase
-3. Launch date and time
+1. Exact integer-lamport budget and slippage cap for the dev's launch purchase
+2. Launch date and time
 
 Warnings remain for the not-yet-published quest-treasury wallet and suggestion registry, the deliberately deferred on-chain YAHOO program, and unconfirmed quest inventory.
 

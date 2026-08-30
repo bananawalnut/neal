@@ -16,13 +16,13 @@
 - `D-012`: A community suggestion costs exactly 1 NEAL or 1 DREGG and routes the selected token to the quest treasury. DREGG is not selectable until its canonical mint is verified. The community can rally around published suggestions; Lord NEAL may turn one into a quest. No paid entry opens before the destination wallet, registry, and reviewed transaction builder are public.
 - `D-013` (superseded draft): Three free on-chain YAHOOS per wallet per Solana-Clock UTC day followed by a 0.1-token price was explored but is not approved tokenomics.
 - `D-014`: YAHOOS are active now as an all-free browser-local toy with local-only records. No wallet or transaction is required. Any future on-chain, paid, or global form remains explicitly undecided.
+- `D-015`: The final Pump.fun description is recorded in the launch contract and the public site is `https://nealtheseal.org`.
+- `D-016`: The Ledger-controlled address `GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv` is both the creator wallet and the initial creator-fee recipient. The separate quest-treasury address remains unset until it is created; 42% of received creator fees remains allocated to disclosed NEAL quest-reward buybacks.
 
 ## Open
 
-- `O-001`: Final image and banner
-- `O-002`: Final immutable description
-- `O-003`: Website and social URLs, or approved linkless launch
-- `O-005`: Creator and creator-fee-recipient addresses
+- `O-001`: Optional banner, or an explicit decision to omit it
+- `O-003`: Final social URLs, or an explicit decision to omit them
 - `O-006`: Exact integer-lamport budget and slippage cap for the dev's launch purchase
 - `O-007`: Launch date and time
 - `O-008`: Treasury/multisig membership and approval threshold
