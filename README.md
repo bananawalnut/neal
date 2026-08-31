@@ -56,7 +56,8 @@ NEAL does not use percentage-based genesis buckets. Pump.fun creates the canonic
 For the Pump.fun route:
 
 - The dev purchase is a market buy, not a free allocation or fixed supply percentage.
-- The quest treasury receives 42% of creator fees and uses them for disclosed NEAL market buybacks.
+- Pump's final V2 sharing configuration uses two recipients: 58% to the disclosed dev recipient and 42% to the disclosed quest treasury.
+- The quest treasury uses its 42% share for disclosed NEAL market buybacks. Any fees collected before the on-chain split activates follow the same 42% obligation through public manual sweeps.
 - Holders can spend 1 NEAL—or 1 DREGG after its canonical mint is verified—to publish a suggestion once the quest-treasury wallet, public registry, and reviewed transaction builder are live.
 - Community support can surface an idea; Lord NEAL can turn it into a funded quest. Paying the entry fee does not promise adoption, a reward, or a vote outcome.
 - Dev and treasury purchases can move the curve. Quote and simulate each material purchase before asking a wallet to sign.
@@ -72,9 +73,11 @@ For the Pump.fun route:
 6. Stop at the final wallet confirmation for human review.
 7. Sign once, record the mint address and transaction signature, and publish them through the official channels.
 8. Do not create another NEAL mint.
-9. Publish the dev fill, SOL paid, and wallet alongside the creation receipt. Publish the quest-treasury wallet and each buyback after the transactions exist.
-10. Publish the 1-NEAL-or-1-DREGG suggestion policy and registry, then enable the reviewed wallet transaction only after its quest-treasury destination and selected token mint are independently verified.
-11. Consider NEAL/DREGG liquidity only after DREGG’s canonical mint and the pool’s initial price are confirmed.
+9. Publish the dev fill, SOL paid, and wallet alongside the creation receipt. Publish the quest-treasury wallet after it exists.
+10. Create Pump's fee-sharing config, review the exact 58/42 recipients, perform the one-time final update, and publish the sharing-config address plus both receipts. Manually sweep 42% of any earlier creator fees.
+11. Publish each quest buyback after it settles.
+12. Publish the 1-NEAL-or-1-DREGG suggestion policy and registry, then enable the reviewed wallet transaction only after its quest-treasury destination and selected token mint are independently verified.
+13. Consider NEAL/DREGG liquidity only after DREGG’s canonical mint and the pool’s initial price are confirmed.
 
 ## Current official platform facts
 

@@ -83,6 +83,8 @@ pub struct CurrentProgramTargets {
 pub struct EconomicsPlan {
     pub dev_purchase: DevPurchasePlan,
     pub quest_treasury: QuestTreasuryPlan,
+    #[serde(default)]
+    pub creator_fee_routing: Option<CreatorFeeRoutingPlan>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +104,28 @@ pub struct QuestTreasuryPlan {
     pub wallet: Option<String>,
     #[serde(default)]
     pub transactions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatorFeeRoutingPlan {
+    pub method: String,
+    pub status: String,
+    pub configuration_address: Option<String>,
+    pub create_transaction: Option<String>,
+    pub finalize_transaction: Option<String>,
+    pub final_update_is_immutable: bool,
+    pub pre_activation_policy: String,
+    #[serde(default)]
+    pub shares: Vec<CreatorFeeRoutingShare>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatorFeeRoutingShare {
+    pub role: String,
+    pub share_basis_points: u16,
+    pub wallet: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,6 +349,7 @@ impl LaunchControl {
             "The dev buys NEAL from the Pump.fun market; 42% of creator fees fund quest-treasury market buybacks.",
             "Record the market-purchase economics: dev buys NEAL and 42% of creator fees fund quest-treasury buybacks.",
         );
+        creator_fee_routing_check(&mut checks, &self.pumpfun, self.programs.economics.as_ref());
         let suggestions_valid =
             self.programs
                 .community_suggestions
@@ -672,6 +697,95 @@ fn optional_address_check(
     });
 }
 
+fn creator_fee_routing_check(
+    checks: &mut Vec<ReadinessCheck>,
+    pumpfun: &PumpFunConfig,
+    economics: Option<&EconomicsPlan>,
+) {
+    let Some(routing) = economics.and_then(|plan| plan.creator_fee_routing.as_ref()) else {
+        checks.push(ReadinessCheck {
+            severity: Severity::Warning,
+            code: "programs.creator_fee_routing".into(),
+            message:
+                "Older launch contract loaded without an explicit Pump creator-fee routing plan."
+                    .into(),
+        });
+        return;
+    };
+
+    let dev_share = routing.shares.iter().find(|share| share.role == "dev");
+    let quest_share = routing
+        .shares
+        .iter()
+        .find(|share| share.role == "quest_treasury");
+    let share_sum = routing
+        .shares
+        .iter()
+        .map(|share| u32::from(share.share_basis_points))
+        .sum::<u32>();
+    let dev_valid = dev_share.is_some_and(|share| {
+        share.share_basis_points == 5_800
+            && share.wallet.as_deref() == pumpfun.creator_fee_recipient.as_deref()
+            && share
+                .wallet
+                .as_deref()
+                .is_some_and(valid_solana_address_syntax)
+    });
+    let quest_wallet = quest_share.and_then(|share| share.wallet.as_deref());
+    let quest_economics_wallet = economics.and_then(|plan| plan.quest_treasury.wallet.as_deref());
+    let quest_valid = quest_share.is_some_and(|share| {
+        share.share_basis_points == 4_200
+            && match share.wallet.as_deref() {
+                Some(wallet) => {
+                    valid_solana_address_syntax(wallet) && Some(wallet) == quest_economics_wallet
+                }
+                None => quest_economics_wallet.is_none() && routing.status == "planned",
+            }
+    });
+    let shape_valid = routing.method == "pump_fee_sharing_v2"
+        && routing.final_update_is_immutable
+        && routing.pre_activation_policy == "manual_pro_rata_sweep"
+        && routing.shares.len() == 2
+        && share_sum == 10_000
+        && dev_valid
+        && quest_valid;
+    let active_record_valid = routing.status != "active"
+        || (routing
+            .configuration_address
+            .as_deref()
+            .is_some_and(valid_solana_address_syntax)
+            && routing.create_transaction.as_deref().is_some_and(nonempty)
+            && routing
+                .finalize_transaction
+                .as_deref()
+                .is_some_and(nonempty)
+            && quest_wallet.is_some());
+    let status_valid = matches!(
+        routing.status.as_str(),
+        "planned" | "ready_for_signature" | "active"
+    );
+
+    checks.push(ReadinessCheck {
+        severity: if !shape_valid || !active_record_valid || !status_valid {
+            Severity::Blocker
+        } else if quest_wallet.is_none() {
+            Severity::Warning
+        } else {
+            Severity::Pass
+        },
+        code: "programs.creator_fee_routing".into(),
+        message: if !shape_valid || !active_record_valid || !status_valid {
+            "Pump creator-fee routing must use one immutable V2 split: 58% to the disclosed dev recipient and 42% to the disclosed quest treasury.".into()
+        } else if quest_wallet.is_none() {
+            "Pump's immutable 58/42 fee-sharing split is planned and remains unfinalized until the quest-treasury wallet exists.".into()
+        } else if routing.status == "active" {
+            "Pump's immutable 58/42 creator-fee sharing record and activation receipts are recorded.".into()
+        } else {
+            "Pump's immutable 58/42 creator-fee sharing plan has two valid recipient wallets and is ready for post-mint setup.".into()
+        },
+    });
+}
+
 fn purchase_check(checks: &mut Vec<ReadinessCheck>, config: &PumpFunConfig) {
     let lamports_valid = config
         .initial_creator_purchase_lamports
@@ -755,6 +869,27 @@ mod tests {
                         "purchaseMethod": "creator_fee_funded_market_buybacks",
                         "wallet": null,
                         "transactions": []
+                    },
+                    "creatorFeeRouting": {
+                        "method": "pump_fee_sharing_v2",
+                        "status": "planned",
+                        "configurationAddress": null,
+                        "createTransaction": null,
+                        "finalizeTransaction": null,
+                        "finalUpdateIsImmutable": true,
+                        "preActivationPolicy": "manual_pro_rata_sweep",
+                        "shares": [
+                            {
+                                "role": "dev",
+                                "shareBasisPoints": 5800,
+                                "wallet": "11111111111111111111111111111111"
+                            },
+                            {
+                                "role": "quest_treasury",
+                                "shareBasisPoints": 4200,
+                                "wallet": null
+                            }
+                        ]
                     }
                 },
                 "communitySuggestions": {
@@ -858,6 +993,41 @@ mod tests {
         let report = control.readiness_report();
         assert!(report.checks.iter().any(|check| {
             check.code == "programs.economics" && check.severity == Severity::Blocker
+        }));
+    }
+
+    #[test]
+    fn planned_creator_fee_split_waits_for_quest_wallet_without_blocking_launch() {
+        let control: LaunchControl = serde_json::from_value(config_json()).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "programs.creator_fee_routing" && check.severity == Severity::Warning
+        }));
+    }
+
+    #[test]
+    fn invalid_creator_fee_split_is_a_blocker() {
+        let mut json = config_json();
+        json["programs"]["economics"]["creatorFeeRouting"]["shares"][0]["shareBasisPoints"] =
+            serde_json::json!(5_900);
+        let control: LaunchControl = serde_json::from_value(json).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "programs.creator_fee_routing" && check.severity == Severity::Blocker
+        }));
+    }
+
+    #[test]
+    fn older_contract_without_creator_fee_routing_still_parses_and_warns() {
+        let mut json = config_json();
+        json["programs"]["economics"]
+            .as_object_mut()
+            .unwrap()
+            .remove("creatorFeeRouting");
+        let control: LaunchControl = serde_json::from_value(json).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "programs.creator_fee_routing" && check.severity == Severity::Warning
         }));
     }
 

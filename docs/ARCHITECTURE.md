@@ -29,7 +29,8 @@
 - Holder proof combines a verified wallet-control proof with a finalized RPC read for the canonical mint at a recorded slot. Connection alone is not holder proof.
 - The site stores wallet identity state in memory only. It never writes addresses, signatures, or holder balances to `localStorage` or `sessionStorage`.
 - The dev buys NEAL through the Pump.fun market with no fixed supply-percentage target; the site publishes the actual wallet, spend, fill, and transaction.
-- The quest treasury uses 42% of creator fees for disclosed NEAL market buybacks. Quest systems consume only settled, funded-inventory records.
+- Pump's V2 fee-sharing configuration is planned with two final recipients: 58% to the Ledger-controlled dev recipient and 42% to the quest treasury. The final split is not represented as active until the sharing-config address and both setup receipts are public.
+- Before that split activates, the Ledger recipient owes a manual, disclosed 42% sweep. After activation, distribution is permissionless through Pump's program. The quest treasury uses its share for disclosed NEAL market buybacks, and quest systems consume only settled, funded-inventory records.
 - A community suggestion costs one whole NEAL or one whole DREGG and routes the selected token to the published quest treasury. The browser must resolve the selected canonical mint, derive atomic units from that mint's decimals, and cannot enable payment until a reviewed transaction builder and durable public registry are live. DREGG remains disabled while its canonical mint is null.
 - Current YAHOOS are deliberately browser-local counters: free, device-scoped, and labelled as neither verified nor on-chain. Any future global or on-chain form is a separate undecided contract and must not silently reinterpret local records.
 - Private admin services never receive wallet seed phrases.

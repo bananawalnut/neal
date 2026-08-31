@@ -27,6 +27,7 @@
 - Operations-console design and official Pump SDK adapter
 - Single-use challenge/verification service for durable wallet-authenticated sessions
 - Public suggestion registry, ranking/moderation rules, and reviewed dual-asset entry transaction builder
+- Pump V2 creator-fee sharing is contractually planned at 58% dev / 42% quest treasury; the one-time final update waits for the quest wallet and canonical mint
 - Community/product decision on whether YAHOOS should ever move on-chain, followed by a reviewed program, indexer, and wallet transaction builder only if approved
 - Castalia Wallet Standard and Mobile Wallet Adapter conformance testing when its implementation repository is available
 - CoinDesk Tauri transaction-visualization implementation after its repository is attached; the portable initiative is recorded in `docs/initiatives/002-coindesk-neal-transaction-visualization.md`

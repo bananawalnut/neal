@@ -35,6 +35,27 @@
         "purchaseMethod": "creator_fee_funded_market_buybacks",
         "wallet": null,
         "transactions": []
+      },
+      "creatorFeeRouting": {
+        "method": "pump_fee_sharing_v2",
+        "status": "planned",
+        "configurationAddress": null,
+        "createTransaction": null,
+        "finalizeTransaction": null,
+        "finalUpdateIsImmutable": true,
+        "preActivationPolicy": "manual_pro_rata_sweep",
+        "shares": [
+          {
+            "role": "dev",
+            "shareBasisPoints": 5800,
+            "wallet": "GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv"
+          },
+          {
+            "role": "quest_treasury",
+            "shareBasisPoints": 4200,
+            "wallet": null
+          }
+        ]
       }
     },
     "communitySuggestions": {

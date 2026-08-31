@@ -36,6 +36,20 @@ type PublicRecord = {
         wallet: string | null;
         transactions: string[];
       };
+      creatorFeeRouting?: {
+        method: 'pump_fee_sharing_v2';
+        status: 'planned' | 'ready_for_signature' | 'active';
+        configurationAddress: string | null;
+        createTransaction: string | null;
+        finalizeTransaction: string | null;
+        finalUpdateIsImmutable: boolean;
+        preActivationPolicy: 'manual_pro_rata_sweep';
+        shares: Array<{
+          role: 'dev' | 'quest_treasury';
+          shareBasisPoints: number;
+          wallet: string | null;
+        }>;
+      };
     };
     communitySuggestions: {
       entryFeeTokens: string;
@@ -238,7 +252,7 @@ app.innerHTML = `
         <div class="program-state" id="program-state">
           <span class="record-label">NEAL's quest treasury / buybacks</span>
           <strong id="program-status">42% OF CREATOR FEES → QUEST BUYBACKS</strong>
-          <p>NEAL's quest treasury uses its share of creator fees to buy NEAL for quest rewards. The wallet and every buy go up here once they exist.</p>
+          <p id="fee-routing-state">NEAL's quest treasury uses its share of creator fees to buy NEAL for quest rewards. The wallet and every buy go up here once they exist.</p>
         </div>
       </div>
 
@@ -477,6 +491,13 @@ function renderRecord(record: PublicRecord) {
   byId<HTMLElement>('program-status').textContent = `${questShare}% of creator fees → quest buybacks`;
   byId<HTMLElement>('dev-wallet-state').textContent = record.programs.economics.devPurchase.wallet ?? 'POSTS HERE ONCE LIVE';
   byId<HTMLElement>('quest-wallet-state').textContent = record.programs.economics.questTreasury.wallet ?? 'POSTS HERE ONCE LIVE';
+  const feeRouting = record.programs.economics.creatorFeeRouting;
+  const routingCopy = byId<HTMLElement>('fee-routing-state');
+  if (feeRouting?.status === 'active') {
+    routingCopy.textContent = "Pump's on-chain split sends 42% to the published quest treasury and 58% to the dev recipient. Distribution receipts and every quest buyback go up here.";
+  } else if (feeRouting) {
+    routingCopy.textContent = "Pump's 58/42 on-chain split is planned but not active yet. It gets one final setup after the quest wallet exists; any earlier fees owe the same disclosed 42% sweep.";
+  }
 
   const yahoos = record.programs.yahoos;
   localYahooMode = Boolean(yahoos?.localMode?.enabled && yahoos.localMode.price === 'free');

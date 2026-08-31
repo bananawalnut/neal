@@ -18,6 +18,7 @@
 - `D-014`: YAHOOS are active now as an all-free browser-local toy with local-only records. No wallet or transaction is required. Any future on-chain, paid, or global form remains explicitly undecided.
 - `D-015`: The final Pump.fun description is recorded in the launch contract and the public site is `https://nealtheseal.org`.
 - `D-016`: The Ledger-controlled address `GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv` is both the creator wallet and the initial creator-fee recipient. The separate quest-treasury address remains unset until it is created; 42% of received creator fees remains allocated to disclosed NEAL quest-reward buybacks.
+- `D-017`: NEAL will opt into Pump's V2 creator-fee sharing after mint creation, using one final two-recipient split: 58% to the Ledger-controlled dev recipient and 42% to the quest treasury. The one-time final share update waits for the quest wallet. Fees received before activation follow the same 42% obligation through disclosed manual sweeps.
 
 ## Open
 
