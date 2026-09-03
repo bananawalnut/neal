@@ -1,0 +1,75 @@
+name: neal-matrix
+
+services:
+  postgres:
+    image: postgres:16.15-bookworm@sha256:1938c16e9d2f10a6a3623b344b64ae8d45f407f2c5f34f0979468bb689b9227a
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: synapse_neal
+      POSTGRES_USER: synapse_neal
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    secrets:
+      - postgres_password
+    volumes:
+      - ./runtime/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse_neal -d synapse_neal"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - matrix-internal
+
+  synapse:
+    image: matrixdotorg/synapse:v1.157.2@sha256:3827b727cb40c52d7d4806db2eb96058eb4514e94a79ca1d7b805de7a8fc44d9
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./runtime/synapse:/data
+    ports:
+      - "127.0.0.1:8008:8008"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - matrix-internal
+
+  caddy:
+    image: caddy:2.10.2-alpine@sha256:d8c17a862962def15cde69863a3a463f25a2664942eafd7bdbf050e9c3116b83
+    restart: unless-stopped
+    depends_on:
+      - synapse
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - matrix-internal
+
+secrets:
+  postgres_password:
+    file: ./runtime/postgres-password
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+networks:
+  matrix-internal:
+    driver: bridge

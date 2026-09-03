@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Turn a confirmed Solana transaction signature into a clear, verifiable visual story inside the CoinDesk Tauri app. The first public demonstration is the opt-in NEAL transfer to `@redemptionarcc` after launch. The same component must also explain the canonical mint, the dev's market buy, Pump's 58/42 creator-fee distributions, creator-fee-funded quest buybacks, community-suggestion payments, and quest payouts.
+Turn a confirmed Solana transaction signature into a clear, verifiable visual story inside the CoinDesk Tauri app. The first public demonstration is the opt-in NEAL transfer to `@redemptionarcc` after launch. The same component must also explain the canonical mint, the dev's market buy, Pump's 58/42 creator-fee distributions, treasury market buys, open-source-developer airdrops, community-suggestion payments, and quest payouts.
 
 This initiative does not build, sign, or broadcast transactions. It reads public chain data after a transaction exists.
 
@@ -105,6 +105,7 @@ Include deterministic fixtures for:
 - associated-token-account creation plus transfer;
 - a versioned transaction with inner instructions;
 - Pump creator-fee distribution branching 58% to the dev recipient and 42% to the quest treasury;
+- purpose-labelled treasury buys and the live 18%-of-supply airdrop-holdings cap, including any unanimous-holder override proof;
 - multiple token recipients;
 - a failed transaction;
 - a signature that is confirmed but not finalized;

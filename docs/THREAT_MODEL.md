@@ -29,6 +29,8 @@
 | Suggestion form charges without a durable record | Keep entry disabled until the public registry is writable; require an atomic payment-and-record flow or automatic refund |
 | Suggestion fee uses an impostor treasury or DREGG mint | Build only from the public quest-treasury and canonical-mint records, show both mint and destination before signing, and assert both in the reviewed transaction builder |
 | Suggestion spam, abuse, or paid-vote confusion | One-token entry policy, published moderation and appeals, clear separation between community support and NEAL's quest decision |
+| Airdrop inventory exceeds 18% or is relabelled to evade the cap | Sum every treasury token account and purpose-labelled subaccount at finalized commitment; block new airdrop buys when earmarked holdings reach 18% of finalized supply; require a public proof of unanimous approval from all NEAL holders before accepting a higher cap |
+| Fake or privacy-invasive open-source-developer eligibility | Publish objective eligibility, review, disclosure-minimization, sybil-resistance, and appeals rules before collecting submissions or distributing NEAL |
 | Local YAHOOS mistaken for global or on-chain proof | Label every current table as local to this browser, never use local records for rewards or governance, and keep future policy explicitly undecided |
 | Local storage is cleared, edited, or copied | Treat local records as disposable entertainment rather than trusted data; promise no durability, portability, uniqueness, or anti-cheat property |
 | Future wallet or token rules inherit an obsolete draft | Require an explicit decision and contract review before enabling any charge, wallet gate, global rank, or on-chain claim |

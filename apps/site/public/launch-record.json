@@ -1,13 +1,24 @@
 {
   "schema": "neal.public-record/v1",
   "sourceSchema": "neal.launch-control/v1",
-  "status": "pre_launch",
+  "status": "launched",
   "token": {
     "name": "Neal the Seal",
     "symbol": "NEAL",
-    "description": "One tonne of coastal beef. NEAL turns group-chat chaos into community-cooked quests, streamed submissions, and rewards funded by disclosed buybacks. Lord NEAL seals the deal.",
+    "metadataUri": "https://nealtheseal.org/token-metadata.json",
+    "bannerUrl": "https://nealtheseal.org/og-neal-v3.jpg",
+    "description": "Do the quest. Claim the bounty.",
     "website": "https://nealtheseal.org",
-    "socialLinks": []
+    "socialLinks": [
+      {
+        "platform": "website",
+        "url": "https://nealtheseal.org"
+      },
+      {
+        "platform": "github",
+        "url": "https://github.com/bananawalnut/bananawalnut.github.io"
+      }
+    ]
   },
   "launch": {
     "network": "solana",
@@ -16,21 +27,33 @@
     "mayhemMode": false
   },
   "execution": {
-    "mintAddress": null,
-    "creationTransaction": null
+    "mintAddress": "8JBYSxrFRMf1Y4NcbjyEsxGPFe4AXzHXELmXh4WYDCBE",
+    "creationTransaction": "3iP9Gza1xtgAiNAdEwJz7TdV3n3VsLuNkYvFmRhWnditqN2R95r7FaU83TMSEhpjGbgNrf1YF1FKPSJ23a7onDBh"
   },
   "programs": {
     "genesisAllocationAvailable": false,
     "economics": {
       "devPurchase": {
         "method": "pumpfun_market_buy",
-        "wallet": "GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv",
+        "wallet": "5p7H68DeSmg7LhRg5PvTph8H8HPsaNHKWboBzsLV39eu",
         "transactions": []
       },
       "questTreasury": {
         "creatorFeeShareBasisPoints": 4200,
         "purchaseMethod": "creator_fee_funded_market_buybacks",
-        "wallet": null,
+        "wallet": "7voXHusYTMQoZgrEJBgheRPYCrG1mhwSpn1voX6r4x3q",
+        "purposes": [
+          "quest_rewards",
+          "open_source_developer_airdrops"
+        ],
+        "openSourceDeveloperAirdrops": {
+          "acquisitionMethod": "market_buy",
+          "maxHoldingsSupplyBasisPoints": 1800,
+          "capMeasurement": "airdrop_earmarked_balance_at_finalized_supply",
+          "capOverrideApproval": "unanimous_neal_holder_approval",
+          "eligibilityPolicyUri": null,
+          "distributions": []
+        },
         "transactions": []
       },
       "creatorFeeRouting": {
@@ -45,12 +68,12 @@
           {
             "role": "dev",
             "shareBasisPoints": 5800,
-            "wallet": "GEscvQdeHg1BSBo5XiKK4UskMmU738AhJvtFF4x5uGzv"
+            "wallet": "5p7H68DeSmg7LhRg5PvTph8H8HPsaNHKWboBzsLV39eu"
           },
           {
             "role": "quest_treasury",
             "shareBasisPoints": 4200,
-            "wallet": null
+            "wallet": "7voXHusYTMQoZgrEJBgheRPYCrG1mhwSpn1voX6r4x3q"
           }
         ]
       }

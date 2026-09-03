@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/launch-guard", "crates/launch-wasm"]
+members = ["crates/launch-guard", "crates/launch-wasm", "programs/bounty-factory"]
 resolver = "2"
 
 [workspace.package]
@@ -13,3 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 wasm-bindgen = "0.2"
+borsh = { version = "1.5", features = ["derive"] }
+solana-program = "2.3.0"
+solana-sdk-ids = "2.2.1"
+solana-system-interface = { version = "1.0.0", features = ["bincode"] }

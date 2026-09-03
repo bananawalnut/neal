@@ -1,11 +1,19 @@
 node_modules/
+.pnpm-store/
+.work/
+outputs/
 target/
+__pycache__/
+*.py[cod]
 apps/site/dist/
 apps/site/pages-public/
+apps/launcher/dist/
+apps/launcher/public/
 apps/*-upload.zip
 assets/drafts/
 .DS_Store
 *.log
+.vercel/
 
 # Keep local credentials and signing material out of the project.
 .env
@@ -17,3 +25,11 @@ assets/drafts/
 *keypair*.json
 secrets/
 .wallet/
+
+# Local relay state and smoke-test receipts never belong in Git.
+infra/nostr-relay/runtime/
+infra/nostr-relay/*.receipt.json
+infra/neal-matrix-vps/runtime/
+infra/neal-matrix-vps/*.age
+infra/neal-matrix-vps/*.dump
+.vercel

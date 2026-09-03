@@ -1,0 +1,104 @@
+# NEAL Matrix GC
+
+## Active identity
+
+- First-party client: `https://nealtheseal.org/#gc`
+- Homeserver name: `matrix.nealtheseal.org`
+- Client/federation backend: `https://matrix.nealtheseal.org/`
+- NEAL account: `@neal:matrix.nealtheseal.org`
+- Room alias: `#neal-gc:matrix.nealtheseal.org`
+- Room ID: `!kBjRkJEIsGBWCyrBQO:matrix.nealtheseal.org`
+- Room policy: federated, encrypted, private, knock-to-join, no guests, invited-history only
+
+The room was created and verified on 2026-09-02 through the Matrix Client API.
+Its one-use owner token was logged out and the temporary bootstrap administrator
+was erased immediately afterward.
+
+## First-party client contract
+
+The NEAL site uses the official `matrix-js-sdk`; visitors are not redirected to
+Element. A user supplies a full Matrix ID, the browser discovers that identity's
+homeserver through `/.well-known/matrix/client`, and credentials go directly
+from the browser to the discovered homeserver. NEAL and Vercel expose no login
+backend.
+
+The current beta client supports:
+
+- password login from a federated homeserver;
+- email-free NEAL and Salix account creation through one-use
+  registration-token flows, completed directly inside NEAL;
+- Matrix.org and other compatible providers through their advertised SSO
+  registration flows when selected;
+- SSO login through any homeserver advertising `m.login.sso` or `m.login.cas`;
+- a state-bound, single-use `m.login.token` callback which returns the user to
+  the NEAL client without an Element redirect;
+- session access-token storage scoped to the current browser tab;
+- Rust/WASM end-to-end encryption with a persistent IndexedDB crypto store;
+- knocking, accepting an invitation, encrypted text messages, and signing out;
+- admitting waiting knocks when the signed-in account has invite power.
+
+`matrix.nealtheseal.org` is the default account provider. It requires no email
+or phone number and accepts only short-lived, one-use registration tokens.
+Tokens are issued by a NEAL moderator during the initial invite-only phase; the
+user supplies that token, username, and password directly to the NEAL
+homeserver from the browser client. Salix remains the self-service, no-email
+federated fallback. NEAL and Vercel receive and store none of those values.
+Other providers remain selectable when they expose a standard browser
+registration flow. Existing accounts from any discoverable homeserver remain
+supported. As verified on 2026-09-02, Matrix.org's current registration page
+and Unredacted.org's Client API registration flow require email verification;
+NEAL must not describe either as email-optional.
+
+Room entry uses the immutable room ID instead of depending on the origin alias.
+The client supplies `matrix.nealtheseal.org` and `salix.host` as federation
+routes. A route only becomes a real outage
+fallback after a joined user on that homeserver has caused it to replicate the
+room; listing a server as `via` does not itself copy room state there.
+
+Passwords are cleared from the form immediately after the login request. The
+client never asks for a Matrix recovery key, wallet seed phrase, or wallet
+signature. Device verification, cross-signing recovery, attachments, and push
+notifications are explicitly not part of this beta.
+
+## Current host layout
+
+| Surface | Value |
+| --- | --- |
+| Host | Hetzner CX23, Nuremberg, Ubuntu 24.04 |
+| Synapse client/federation listener | `127.0.0.1:8008` on the VPS |
+| Reverse proxy | Caddy on public ports 80/443 |
+| NEAL Postgres | PostgreSQL 16 on the private Docker network |
+| Public endpoint and discovery | `https://matrix.nealtheseal.org/` |
+| Deployment | `/srv/neal-matrix/compose.yaml` |
+
+The Caddy gateway forwards Matrix client/federation paths while returning `404`
+for `/_synapse/admin/*`. Synapse itself is bound only to loopback and local
+administration remains private. The prior Mac services are frozen intact as a
+short-term rollback source and are not part of the public path.
+
+The existing Zenith Synapse remains `matrix.zenith-research.ca` and is not
+renamed or presented as NEAL. Zenith and unrelated homeservers participate in
+the GC through normal Matrix federation.
+
+## Verified checks
+
+As of 2026-09-02:
+
+1. Matrix client versions return `200` through the public gateway.
+2. Matrix federation version returns `200` through the public gateway.
+3. The canonical room alias resolves to the recorded room ID.
+4. The public Synapse admin path returns `404`.
+5. External federation discovery, TLS, server name, and signing-key checks pass.
+
+## Remaining durability gates
+
+The room is live as a beta, but the Mac is not represented as durable production
+hosting until these are complete:
+
+1. Join and promote an email-free Salix backup moderator.
+2. Verify knock/admit/message exchange through Salix.
+3. Configure and restore-test an encrypted off-device backup.
+4. Complete a 24-hour VPS soak, then retire the frozen Mac services.
+
+The Matrix room identity survives a later host move as long as the server name,
+database, signing key, and media state are migrated together.

@@ -1,0 +1,30 @@
+matrix.nealtheseal.org {
+    encode zstd gzip
+
+    @matrix_server_discovery path /.well-known/matrix/server
+    handle @matrix_server_discovery {
+        header Content-Type "application/json; charset=utf-8"
+        header Access-Control-Allow-Origin "*"
+        header Cache-Control "public, max-age=300, must-revalidate"
+        respond `{"m.server":"matrix.nealtheseal.org:443"}` 200
+    }
+
+    @matrix_client_discovery path /.well-known/matrix/client
+    handle @matrix_client_discovery {
+        header Content-Type "application/json; charset=utf-8"
+        header Access-Control-Allow-Origin "*"
+        header Cache-Control "public, max-age=300, must-revalidate"
+        respond `{"m.homeserver":{"base_url":"https://matrix.nealtheseal.org/"}}` 200
+    }
+
+    @synapse_admin path /_synapse/admin /_synapse/admin/*
+    handle @synapse_admin {
+        header Content-Type "application/json; charset=utf-8"
+        header Cache-Control "no-store"
+        respond `{"errcode":"M_NOT_FOUND","error":"Not found"}` 404
+    }
+
+    handle {
+        reverse_proxy synapse:8008
+    }
+}

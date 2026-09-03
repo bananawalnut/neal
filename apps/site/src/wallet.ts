@@ -72,6 +72,13 @@ type HolderProof = {
   walletProofDigest: string;
 };
 
+export type WalletTransactionSession = {
+  wallet: Wallet;
+  account: WalletAccount;
+  rpcEndpoint: string;
+  chain: 'solana:mainnet';
+};
+
 type SignOutput = SolanaSignInOutput | (SolanaSignMessageOutput & { account: WalletAccount });
 
 type RpcEnvelope<T> = {
@@ -146,7 +153,7 @@ const featureVersion = (wallet: Wallet, feature: `${string}:${string}`): string 
   return typeof candidate?.version === 'string' ? candidate.version : null;
 };
 
-class WalletIdentityController {
+export class WalletIdentityController {
   readonly #policy: WalletPolicy;
   readonly #getCanonicalMint: () => string | null;
   readonly #registry = getWallets();
@@ -176,6 +183,20 @@ class WalletIdentityController {
   constructor(policy: WalletPolicy, getCanonicalMint: () => string | null) {
     this.#policy = policy;
     this.#getCanonicalMint = getCanonicalMint;
+  }
+
+  openWalletPicker(): void {
+    this.#openDialog();
+  }
+
+  getTransactionSession(): WalletTransactionSession | null {
+    if (!this.#wallet || !this.#account) return null;
+    return {
+      wallet: this.#wallet,
+      account: this.#account,
+      rpcEndpoint: this.#policy.holderProof.rpcEndpoint,
+      chain: this.#policy.chain,
+    };
   }
 
   async start(): Promise<void> {
@@ -554,6 +575,7 @@ class WalletIdentityController {
     this.#copyProofButton.hidden = !verified;
     this.#copyProofButton.disabled = !verified;
     this.#renderCapabilities();
+    document.dispatchEvent(new CustomEvent('neal:wallet-session-change'));
   }
 
   #renderCapabilities(): void {
@@ -587,7 +609,7 @@ class WalletIdentityController {
         appIdentity: {
           name: 'NEAL',
           uri: location.origin,
-          icon: '/neal-token.png',
+          icon: '/neal-favicon.png',
         },
         authorizationCache: {
           clear: async () => { authorization = undefined; },
@@ -606,7 +628,7 @@ class WalletIdentityController {
   }
 }
 
-export async function mountWalletIdentity(getCanonicalMint: () => string | null): Promise<void> {
+export async function mountWalletIdentity(getCanonicalMint: () => string | null): Promise<WalletIdentityController | null> {
   try {
     const response = await fetch('/wallet-policy.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`Wallet policy returned ${response.status}`);
@@ -614,11 +636,13 @@ export async function mountWalletIdentity(getCanonicalMint: () => string | null)
     if (policy.schema !== 'neal.wallet-policy/v1') throw new Error('Unsupported wallet policy');
     const controller = new WalletIdentityController(policy, getCanonicalMint);
     await controller.start();
+    return controller;
   } catch (error) {
     const status = document.querySelector<HTMLElement>('#wallet-status');
     if (status) {
       status.className = 'wallet-status error';
       status.textContent = error instanceof Error ? error.message : 'Wallet identity layer failed to start';
     }
+    return null;
   }
 }

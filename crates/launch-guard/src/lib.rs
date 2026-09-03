@@ -20,8 +20,12 @@ pub struct LaunchControl {
 pub struct TokenConfig {
     pub name: String,
     pub symbol: String,
+    #[serde(default)]
+    pub metadata_uri: Option<String>,
     pub image_path: Option<String>,
     pub banner_path: Option<String>,
+    #[serde(default)]
+    pub banner_url: Option<String>,
     pub description: Option<String>,
     pub website: Option<String>,
     #[serde(default)]
@@ -103,7 +107,23 @@ pub struct QuestTreasuryPlan {
     pub purchase_method: String,
     pub wallet: Option<String>,
     #[serde(default)]
+    pub purposes: Vec<String>,
+    #[serde(default)]
+    pub open_source_developer_airdrops: Option<OpenSourceDeveloperAirdropsPlan>,
+    #[serde(default)]
     pub transactions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenSourceDeveloperAirdropsPlan {
+    pub acquisition_method: String,
+    pub max_holdings_supply_basis_points: u16,
+    pub cap_measurement: String,
+    pub cap_override_approval: String,
+    pub eligibility_policy_uri: Option<String>,
+    #[serde(default)]
+    pub distributions: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,6 +286,30 @@ impl LaunchControl {
             "Final token description is recorded.",
             "A final description of at least 20 characters is required.",
         );
+        metadata_uri_check(&mut checks, self.token.metadata_uri.as_deref());
+
+        let banner_ready = match (
+            self.token.banner_path.as_deref(),
+            self.token.banner_url.as_deref(),
+        ) {
+            (None, None) => true,
+            (Some(path), Some(url)) => nonempty(path) && url.starts_with("https://"),
+            _ => false,
+        };
+        checks.push(ReadinessCheck {
+            severity: if banner_ready {
+                Severity::Pass
+            } else {
+                Severity::Blocker
+            },
+            code: "metadata.banner".into(),
+            message: if banner_ready {
+                "Banner omission or hosted banner pair is explicit.".into()
+            } else {
+                "Banner path and HTTPS banner URL must either both be recorded or both be omitted."
+                    .into()
+            },
+        });
 
         let public_links = self.token.website.as_deref().is_some_and(nonempty)
             || !self.token.social_links.is_empty();
@@ -346,9 +390,10 @@ impl LaunchControl {
             &mut checks,
             "programs.economics",
             economics_valid,
-            "The dev buys NEAL from the Pump.fun market; 42% of creator fees fund quest-treasury market buybacks.",
-            "Record the market-purchase economics: dev buys NEAL and 42% of creator fees fund quest-treasury buybacks.",
+            "The dev buys NEAL from the Pump.fun market; 42% of creator fees fund treasury market buybacks.",
+            "Record the market-purchase economics: dev buys NEAL and 42% of creator fees fund treasury buybacks.",
         );
+        treasury_airdrop_check(&mut checks, self.programs.economics.as_ref());
         creator_fee_routing_check(&mut checks, &self.pumpfun, self.programs.economics.as_ref());
         let suggestions_valid =
             self.programs
@@ -786,6 +831,70 @@ fn creator_fee_routing_check(
     });
 }
 
+fn treasury_airdrop_check(checks: &mut Vec<ReadinessCheck>, economics: Option<&EconomicsPlan>) {
+    let Some(treasury) = economics.map(|plan| &plan.quest_treasury) else {
+        return;
+    };
+    let airdrops = treasury.open_source_developer_airdrops.as_ref();
+    let purpose_valid = treasury.purposes.len() == 2
+        && treasury
+            .purposes
+            .iter()
+            .any(|purpose| purpose == "quest_rewards")
+        && treasury
+            .purposes
+            .iter()
+            .any(|purpose| purpose == "open_source_developer_airdrops");
+    let policy_valid = airdrops.is_some_and(|policy| {
+        policy.acquisition_method == "market_buy"
+            && policy.max_holdings_supply_basis_points == 1_800
+            && policy.cap_measurement == "airdrop_earmarked_balance_at_finalized_supply"
+            && policy.cap_override_approval == "unanimous_neal_holder_approval"
+    });
+
+    checks.push(ReadinessCheck {
+        severity: if airdrops.is_none() && treasury.purposes.is_empty() {
+            Severity::Warning
+        } else if purpose_valid && policy_valid {
+            Severity::Pass
+        } else {
+            Severity::Blocker
+        },
+        code: "programs.open_source_developer_airdrops".into(),
+        message: if airdrops.is_none() && treasury.purposes.is_empty() {
+            "Older treasury contract loaded without the open-source-developer airdrop mandate."
+                .into()
+        } else if purpose_valid && policy_valid {
+            "The treasury funds quests and open-source-developer airdrops through market buys; airdrop-earmarked holdings are capped at 18% of supply unless every NEAL holder approves more."
+                .into()
+        } else {
+            "Treasury purposes must be quests plus open-source-developer airdrops, acquired by market buy with an 18% live holdings cap and unanimous-holder override rule."
+                .into()
+        },
+    });
+
+    checks.push(ReadinessCheck {
+        severity: if airdrops
+            .and_then(|policy| policy.eligibility_policy_uri.as_deref())
+            .is_some_and(nonempty)
+        {
+            Severity::Pass
+        } else {
+            Severity::Warning
+        },
+        code: "programs.airdrop_eligibility_policy".into(),
+        message: if airdrops
+            .and_then(|policy| policy.eligibility_policy_uri.as_deref())
+            .is_some_and(nonempty)
+        {
+            "The open-source-developer airdrop eligibility policy is published.".into()
+        } else {
+            "Airdrops remain locked until an open-source-developer eligibility policy is published."
+                .into()
+        },
+    });
+}
+
 fn purchase_check(checks: &mut Vec<ReadinessCheck>, config: &PumpFunConfig) {
     let lamports_valid = config
         .initial_creator_purchase_lamports
@@ -815,6 +924,24 @@ fn purchase_check(checks: &mut Vec<ReadinessCheck>, config: &PumpFunConfig) {
     }
 }
 
+fn metadata_uri_check(checks: &mut Vec<ReadinessCheck>, value: Option<&str>) {
+    let valid = value.is_some_and(|uri| {
+        !uri.trim().is_empty()
+            && uri.chars().count() <= 200
+            && (uri.starts_with("https://") || uri.starts_with("ipfs://"))
+    });
+    checks.push(ReadinessCheck {
+        severity: if valid { Severity::Pass } else { Severity::Blocker },
+        code: "metadata.uri".into(),
+        message: if valid {
+            "Canonical metadata URI is persisted in the launch record.".into()
+        } else {
+            "Persist an HTTPS or IPFS metadata URI of at most 200 characters before rehearsal."
+                .into()
+        },
+    });
+}
+
 fn valid_solana_address_syntax(value: &str) -> bool {
     let mut decoded = [0_u8; 32];
     (32..=44).contains(&value.len())
@@ -840,8 +967,10 @@ mod tests {
             "token": {
                 "name": "Neal the Seal",
                 "symbol": "NEAL",
+                "metadataUri": "https://example.invalid/token-metadata.json",
                 "imagePath": "assets/token.png",
                 "bannerPath": null,
+                "bannerUrl": null,
                 "description": "A community meme token with transparent launch records.",
                 "website": "https://example.invalid",
                 "socialLinks": []
@@ -868,6 +997,18 @@ mod tests {
                         "creatorFeeShareBasisPoints": 4200,
                         "purchaseMethod": "creator_fee_funded_market_buybacks",
                         "wallet": null,
+                        "purposes": [
+                            "quest_rewards",
+                            "open_source_developer_airdrops"
+                        ],
+                        "openSourceDeveloperAirdrops": {
+                            "acquisitionMethod": "market_buy",
+                            "maxHoldingsSupplyBasisPoints": 1800,
+                            "capMeasurement": "airdrop_earmarked_balance_at_finalized_supply",
+                            "capOverrideApproval": "unanimous_neal_holder_approval",
+                            "eligibilityPolicyUri": null,
+                            "distributions": []
+                        },
                         "transactions": []
                     },
                     "creatorFeeRouting": {
@@ -971,6 +1112,28 @@ mod tests {
     }
 
     #[test]
+    fn older_contract_without_metadata_uri_still_parses_but_blocks() {
+        let mut json = config_json();
+        json["token"].as_object_mut().unwrap().remove("metadataUri");
+        let control: LaunchControl = serde_json::from_value(json).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "metadata.uri" && check.severity == Severity::Blocker
+        }));
+    }
+
+    #[test]
+    fn banner_path_without_hosted_url_is_a_blocker() {
+        let mut json = config_json();
+        json["token"]["bannerPath"] = serde_json::json!("assets/banner.jpg");
+        let control: LaunchControl = serde_json::from_value(json).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "metadata.banner" && check.severity == Severity::Blocker
+        }));
+    }
+
+    #[test]
     fn legacy_sol_amount_requires_integer_migration() {
         let mut json = config_json();
         json["pumpfun"]["initialCreatorPurchaseLamports"] = Value::Null;
@@ -1014,6 +1177,48 @@ mod tests {
         let report = control.readiness_report();
         assert!(report.checks.iter().any(|check| {
             check.code == "programs.creator_fee_routing" && check.severity == Severity::Blocker
+        }));
+    }
+
+    #[test]
+    fn invalid_open_source_airdrop_holdings_cap_is_a_blocker() {
+        let mut json = config_json();
+        json["programs"]["economics"]["questTreasury"]["openSourceDeveloperAirdrops"]["maxHoldingsSupplyBasisPoints"] =
+            serde_json::json!(1_900);
+        let control: LaunchControl = serde_json::from_value(json).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "programs.open_source_developer_airdrops"
+                && check.severity == Severity::Blocker
+        }));
+    }
+
+    #[test]
+    fn non_unanimous_airdrop_cap_override_is_a_blocker() {
+        let mut json = config_json();
+        json["programs"]["economics"]["questTreasury"]["openSourceDeveloperAirdrops"]["capOverrideApproval"] =
+            serde_json::json!("simple_majority");
+        let control: LaunchControl = serde_json::from_value(json).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "programs.open_source_developer_airdrops"
+                && check.severity == Severity::Blocker
+        }));
+    }
+
+    #[test]
+    fn older_contract_without_airdrop_fields_still_parses_and_warns() {
+        let mut json = config_json();
+        let treasury = json["programs"]["economics"]["questTreasury"]
+            .as_object_mut()
+            .unwrap();
+        treasury.remove("purposes");
+        treasury.remove("openSourceDeveloperAirdrops");
+        let control: LaunchControl = serde_json::from_value(json).unwrap();
+        let report = control.readiness_report();
+        assert!(report.checks.iter().any(|check| {
+            check.code == "programs.open_source_developer_airdrops"
+                && check.severity == Severity::Warning
         }));
     }
 

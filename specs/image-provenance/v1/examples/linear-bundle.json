@@ -1,0 +1,525 @@
+{
+  "schema": "loom.image-provenance.bundle/v1",
+  "records": [
+    {
+      "schema": "loom.image-provenance.record-envelope/v1",
+      "recordId": "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4",
+      "body": {
+        "schema": "loom.image-provenance.capture/v1",
+        "kind": "capture",
+        "occurredAt": "2026-09-02T19:30:00Z",
+        "actor": {
+          "id": "urn:example:diagnostic-mobile-recorder",
+          "software": {
+            "name": "Diagnostic Mobile Recorder",
+            "version": "1.0.0",
+            "buildDigest": "sha256:k9yZPVhhXlmgu90nTQlQPHMFVNzKlc52LQZHJkev_2U"
+          }
+        },
+        "inputs": [],
+        "outputs": [
+          {
+            "outputName": "camera-output",
+            "role": "primary",
+            "artifact": {
+              "blob": {
+                "digest": "sha256:dxP3Sa4Oz4c-veQy7IhLWq4Dukj4UMqhfjCjn-pgXeA",
+                "byteLength": "26",
+                "mediaType": "image/heic"
+              },
+              "representation": "encoded-image"
+            }
+          }
+        ],
+        "evidenceRefs": [],
+        "extensions": {
+          "https://example.invalid/loom/image-provenance/diagnostic/v1": {
+            "fixture": "linear-bundle",
+            "testOnly": true,
+            "cryptographicIntegrity": "valid",
+            "trustMeaning": "The deterministic test key is public and is not a production trust root."
+          }
+        },
+        "subject": {
+          "sessionId": "diagnostic-session-01",
+          "shotSequence": "1",
+          "challenge": {
+            "issuer": "https://verifier.example.invalid",
+            "audience": "loom-diagnostic-fixture",
+            "nonce": "AAECAwQFBgcICQ",
+            "issuedAt": "2026-09-02T19:29:59Z",
+            "expiresAt": "2026-09-02T19:30:29Z"
+          },
+          "acquisition": {
+            "boundary": "os-encoded-asset",
+            "providerUri": "urn:example:mobile-os-camera-provider",
+            "providerVersion": "1.0.0",
+            "serializationProfileUri": "urn:loom:image-provenance:encoded-file-bytes:v1",
+            "digitalSourceTypeUri": "http://cv.iptc.org/newscodes/digitalsourcetype/computationalCapture",
+            "upstreamProcessing": "opaque",
+            "requestedSettings": {
+              "captureMode": "photo",
+              "flash": "off"
+            },
+            "reportedSettings": {
+              "imageWidth": "4032",
+              "imageHeight": "3024",
+              "orientationDegrees": "90"
+            }
+          },
+          "deviceTimeClaim": "2026-09-02T19:30:00Z",
+          "monotonicTimeClaim": "8675309"
+        }
+      },
+      "signatures": [
+        {
+          "statement": {
+            "domain": "loom.image-provenance.signature/v1",
+            "recordId": "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4",
+            "purpose": "capture-origin",
+            "suite": "Ed25519",
+            "signerKeyFingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU"
+          },
+          "signature": "KrhQXrm0tMmQ3KmhVxBRObXY-8hIpkhKjomG-9lSi-RXrgoXgV2NmwBA6QQTAKicoTW8BgXo5MO-VLoQTrORCA",
+          "inlinePublicKey": {
+            "format": "spki-der",
+            "value": "MCowBQYDK2VwAyEAA6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+          },
+          "attestationRefs": [
+            {
+              "profileUri": "https://example.invalid/profiles/mobile-capture-attestation/v1",
+              "blob": {
+                "digest": "sha256:GItzg_xhSwfwdhBngkjqLcrUUpgRiK0E81eVlh5s3iU",
+                "byteLength": "33",
+                "mediaType": "application/cbor"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "schema": "loom.image-provenance.record-envelope/v1",
+      "recordId": "sha256:jRclA7Slkao8o5lvH8zf1poFEGfgN7ZDLZd_9uJBOt4",
+      "body": {
+        "schema": "loom.image-provenance.transform/v1",
+        "kind": "transform",
+        "occurredAt": "2026-09-02T19:30:01Z",
+        "actor": {
+          "id": "urn:example:diagnostic-enhancement-engine",
+          "software": {
+            "name": "Diagnostic Enhancement Engine",
+            "version": "1.0.0",
+            "buildDigest": "sha256:k9yZPVhhXlmgu90nTQlQPHMFVNzKlc52LQZHJkev_2U"
+          }
+        },
+        "inputs": [
+          {
+            "role": "primary",
+            "relation": "consumes",
+            "producerRecordId": "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4",
+            "producerOutputName": "camera-output",
+            "expectedArtifact": {
+              "blob": {
+                "digest": "sha256:dxP3Sa4Oz4c-veQy7IhLWq4Dukj4UMqhfjCjn-pgXeA",
+                "byteLength": "26",
+                "mediaType": "image/heic"
+              },
+              "representation": "encoded-image"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "outputName": "linear-pixels",
+            "role": "primary",
+            "artifact": {
+              "blob": {
+                "digest": "sha256:qNTX3MylfsToD3WUQAF7FXio_YSfl75GLhBc1rFmPT8",
+                "byteLength": "27",
+                "mediaType": "application/octet-stream"
+              },
+              "representation": "pixel-plane",
+              "layout": {
+                "width": "4032",
+                "height": "3024",
+                "channels": "4",
+                "sampleType": "uint16-le",
+                "rowBytes": "32256",
+                "colourSpace": "linear-display-p3"
+              }
+            }
+          }
+        ],
+        "evidenceRefs": [],
+        "subject": {
+          "operation": {
+            "uri": "urn:example:operation:raw-decode",
+            "version": "1.0.0",
+            "descriptorDigest": "sha256:HYuBFKCS06jOw3A-1y4btiRK7-eGDrBsl8L1UiXKZQk"
+          },
+          "parameters": {
+            "disclosure": "inline",
+            "value": {
+              "decodeMode": "diagnostic",
+              "demosaicStrength": {
+                "$type": "decimal",
+                "coefficient": "1",
+                "scale": "0"
+              }
+            }
+          },
+          "implementation": {
+            "kind": "native",
+            "name": "Diagnostic Raw Decoder",
+            "version": "1.0.0",
+            "digest": "sha256:k9yZPVhhXlmgu90nTQlQPHMFVNzKlc52LQZHJkev_2U"
+          },
+          "environment": {
+            "descriptorDigest": "sha256:tEapjig8kzd3V9qODk5UsFXjD-DT0nupFdWtgi_CSqk"
+          },
+          "isolation": "hermetic",
+          "replay": {
+            "claim": "bit-exact"
+          },
+          "executionEvidenceRefs": []
+        }
+      },
+      "signatures": [
+        {
+          "statement": {
+            "domain": "loom.image-provenance.signature/v1",
+            "recordId": "sha256:jRclA7Slkao8o5lvH8zf1poFEGfgN7ZDLZd_9uJBOt4",
+            "purpose": "transform-executor",
+            "suite": "Ed25519",
+            "signerKeyFingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU"
+          },
+          "signature": "Z-WiQgXls7AmMUT_ncDoglNurmod6zHFa1u_Efl2VEM0FyRLv61eFy3xQJ9BgGjbp5O52b5oR8UQxPD8tJ0HAQ",
+          "inlinePublicKey": {
+            "format": "spki-der",
+            "value": "MCowBQYDK2VwAyEAA6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "loom.image-provenance.record-envelope/v1",
+      "recordId": "sha256:i974mCP9GuRWreoWAIfG_Rc-_T2R4cY-MMenskAP254",
+      "body": {
+        "schema": "loom.image-provenance.transform/v1",
+        "kind": "transform",
+        "occurredAt": "2026-09-02T19:30:02Z",
+        "actor": {
+          "id": "urn:example:diagnostic-enhancement-engine",
+          "software": {
+            "name": "Diagnostic Enhancement Engine",
+            "version": "1.0.0",
+            "buildDigest": "sha256:k9yZPVhhXlmgu90nTQlQPHMFVNzKlc52LQZHJkev_2U"
+          }
+        },
+        "inputs": [
+          {
+            "role": "primary",
+            "relation": "consumes",
+            "producerRecordId": "sha256:jRclA7Slkao8o5lvH8zf1poFEGfgN7ZDLZd_9uJBOt4",
+            "producerOutputName": "linear-pixels",
+            "expectedArtifact": {
+              "blob": {
+                "digest": "sha256:qNTX3MylfsToD3WUQAF7FXio_YSfl75GLhBc1rFmPT8",
+                "byteLength": "27",
+                "mediaType": "application/octet-stream"
+              },
+              "representation": "pixel-plane",
+              "layout": {
+                "width": "4032",
+                "height": "3024",
+                "channels": "4",
+                "sampleType": "uint16-le",
+                "rowBytes": "32256",
+                "colourSpace": "linear-display-p3"
+              }
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "outputName": "enhanced-image",
+            "role": "primary",
+            "artifact": {
+              "blob": {
+                "digest": "sha256:DXpZDDyTqD4WbZo4KcvVmtk2gJctwWnJ-R55wiYMt10",
+                "byteLength": "28",
+                "mediaType": "image/png"
+              },
+              "representation": "encoded-image"
+            }
+          }
+        ],
+        "evidenceRefs": [],
+        "subject": {
+          "operation": {
+            "uri": "urn:example:operation:tone-enhancement",
+            "version": "1.0.0",
+            "descriptorDigest": "sha256:p4zmcmrI5p58z0Hlkv3jo7qDr9EipubuHxDmL04TQ7w"
+          },
+          "parameters": {
+            "disclosure": "inline",
+            "value": {
+              "curve": "diagnostic-film",
+              "exposureCompensationEv": {
+                "$type": "decimal",
+                "coefficient": "5",
+                "scale": "-1"
+              }
+            }
+          },
+          "implementation": {
+            "kind": "wasm",
+            "name": "Diagnostic Tone Enhancer",
+            "version": "1.0.0",
+            "digest": "sha256:k9yZPVhhXlmgu90nTQlQPHMFVNzKlc52LQZHJkev_2U"
+          },
+          "environment": {
+            "descriptorDigest": "sha256:tEapjig8kzd3V9qODk5UsFXjD-DT0nupFdWtgi_CSqk"
+          },
+          "isolation": "declared-input-sandbox",
+          "replay": {
+            "claim": "tolerance-defined",
+            "toleranceProfileDigest": "sha256:i43Y1skisv_yqTJ3ZljPP4-M2MVXtl5p7PYd2mGCbF8"
+          },
+          "executionEvidenceRefs": []
+        }
+      },
+      "signatures": [
+        {
+          "statement": {
+            "domain": "loom.image-provenance.signature/v1",
+            "recordId": "sha256:i974mCP9GuRWreoWAIfG_Rc-_T2R4cY-MMenskAP254",
+            "purpose": "transform-executor",
+            "suite": "Ed25519",
+            "signerKeyFingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU"
+          },
+          "signature": "aom28sp-0johxoUs77tjCij37RLZCZuMJHQ63tQM4pe3367zgZTaiYCtFTIpITTWtSydd0iZxXaZ93oIAimIDw",
+          "inlinePublicKey": {
+            "format": "spki-der",
+            "value": "MCowBQYDK2VwAyEAA6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+          }
+        }
+      ]
+    }
+  ],
+  "journalEntries": [
+    {
+      "schema": "loom.image-provenance.journal-envelope/v1",
+      "entryId": "sha256:Gk2IMUeqQl1HIqIXxTlK5MYF6TfWgm86frvNgBPnjtY",
+      "body": {
+        "schema": "loom.image-provenance.journal-entry/v1",
+        "journalId": "urn:example:journal:diagnostic-device-01",
+        "sequence": "0",
+        "previousEntryId": null,
+        "event": {
+          "kind": "record-committed",
+          "recordId": "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4"
+        },
+        "priorHeads": [],
+        "resultingHeads": [
+          "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4"
+        ]
+      },
+      "signatures": [
+        {
+          "statement": {
+            "domain": "loom.image-provenance.journal-signature/v1",
+            "entryId": "sha256:Gk2IMUeqQl1HIqIXxTlK5MYF6TfWgm86frvNgBPnjtY",
+            "purpose": "journal-append",
+            "suite": "Ed25519",
+            "signerKeyFingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU"
+          },
+          "signature": "bLyMZIEBG4dkDu0pEMUqgmtNVSOlZ0I-gn2WQPkkVFK3HrVAK-PcmajONlPahiifvLmzaqLUQ1eHTDjdSRfYCg",
+          "inlinePublicKey": {
+            "format": "spki-der",
+            "value": "MCowBQYDK2VwAyEAA6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "loom.image-provenance.journal-envelope/v1",
+      "entryId": "sha256:6rhHHt9Awyw8bZc7Pk0SUSyfiCcWRfHti5HnTKMLKvo",
+      "body": {
+        "schema": "loom.image-provenance.journal-entry/v1",
+        "journalId": "urn:example:journal:diagnostic-device-01",
+        "sequence": "1",
+        "previousEntryId": "sha256:Gk2IMUeqQl1HIqIXxTlK5MYF6TfWgm86frvNgBPnjtY",
+        "event": {
+          "kind": "record-committed",
+          "recordId": "sha256:jRclA7Slkao8o5lvH8zf1poFEGfgN7ZDLZd_9uJBOt4"
+        },
+        "priorHeads": [
+          "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4"
+        ],
+        "resultingHeads": [
+          "sha256:jRclA7Slkao8o5lvH8zf1poFEGfgN7ZDLZd_9uJBOt4"
+        ]
+      },
+      "signatures": [
+        {
+          "statement": {
+            "domain": "loom.image-provenance.journal-signature/v1",
+            "entryId": "sha256:6rhHHt9Awyw8bZc7Pk0SUSyfiCcWRfHti5HnTKMLKvo",
+            "purpose": "journal-append",
+            "suite": "Ed25519",
+            "signerKeyFingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU"
+          },
+          "signature": "YCgNg2hvElbbp7CPtezpOransAi8WxeuzfSrZSARvrzDQv5JVmej5nsDGs2sUiD3AxZDGHoFLzqK0VSubr2ABA",
+          "inlinePublicKey": {
+            "format": "spki-der",
+            "value": "MCowBQYDK2VwAyEAA6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+          }
+        }
+      ]
+    },
+    {
+      "schema": "loom.image-provenance.journal-envelope/v1",
+      "entryId": "sha256:4OtcIlG1YGHBsku_n6RRuuh8CpvafQAfdtCAh2h7LRU",
+      "body": {
+        "schema": "loom.image-provenance.journal-entry/v1",
+        "journalId": "urn:example:journal:diagnostic-device-01",
+        "sequence": "2",
+        "previousEntryId": "sha256:6rhHHt9Awyw8bZc7Pk0SUSyfiCcWRfHti5HnTKMLKvo",
+        "event": {
+          "kind": "record-committed",
+          "recordId": "sha256:i974mCP9GuRWreoWAIfG_Rc-_T2R4cY-MMenskAP254"
+        },
+        "priorHeads": [
+          "sha256:jRclA7Slkao8o5lvH8zf1poFEGfgN7ZDLZd_9uJBOt4"
+        ],
+        "resultingHeads": [
+          "sha256:i974mCP9GuRWreoWAIfG_Rc-_T2R4cY-MMenskAP254"
+        ]
+      },
+      "signatures": [
+        {
+          "statement": {
+            "domain": "loom.image-provenance.journal-signature/v1",
+            "entryId": "sha256:4OtcIlG1YGHBsku_n6RRuuh8CpvafQAfdtCAh2h7LRU",
+            "purpose": "journal-append",
+            "suite": "Ed25519",
+            "signerKeyFingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU"
+          },
+          "signature": "b5V3h6yOKukKOh7qcplHuF3zwxgHoa17rHYCqiqtMwZQ2U1h7YTEunwy_CK9nCZBuhW5t21p8lCCZx5vgufiBA",
+          "inlinePublicKey": {
+            "format": "spki-der",
+            "value": "MCowBQYDK2VwAyEAA6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+          }
+        }
+      ]
+    }
+  ],
+  "endorsements": [
+    {
+      "schema": "loom.image-provenance.endorsement/v1",
+      "profileUri": "https://example.invalid/profiles/mobile-capture-attestation/v1",
+      "targetRecordId": "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4",
+      "expectedBindings": [
+        {
+          "target": "record",
+          "recordId": "sha256:i8JpAuAiuXt5IiWOk2Qrz0IN2T7ZQO6VgjXQWLzKpl4"
+        },
+        {
+          "target": "artifact",
+          "digest": "sha256:dxP3Sa4Oz4c-veQy7IhLWq4Dukj4UMqhfjCjn-pgXeA"
+        },
+        {
+          "target": "key",
+          "keyFingerprint": "sha256:oFCDfYUHBYLM9zlLCYiEfMMSy4glm4lImfbyOc8XkaU"
+        },
+        {
+          "target": "challenge",
+          "issuer": "https://verifier.example.invalid",
+          "nonce": "AAECAwQFBgcICQ"
+        }
+      ],
+      "evidence": {
+        "digest": "sha256:GItzg_xhSwfwdhBngkjqLcrUUpgRiK0E81eVlh5s3iU",
+        "byteLength": "33",
+        "mediaType": "application/cbor"
+      }
+    }
+  ],
+  "anchors": [
+    {
+      "schema": "loom.image-provenance.anchor-receipt/v1",
+      "profileUri": "https://example.invalid/profiles/append-only-witness/v1",
+      "witnessId": "diagnostic-witness-01",
+      "subjectEntryId": "sha256:4OtcIlG1YGHBsku_n6RRuuh8CpvafQAfdtCAh2h7LRU",
+      "receipt": {
+        "digest": "sha256:Y6ryME2qrq6k1T5hzv4MihPu9kpGjOnD3D2as1jbkJY",
+        "byteLength": "29",
+        "mediaType": "application/cbor"
+      },
+      "checkpoint": {
+        "digest": "sha256:lzz8eNilmyNh6SA5lPTvnlh47qsp57HzTcZxu06wyws",
+        "byteLength": "32",
+        "mediaType": "application/cbor"
+      },
+      "witnessedAtClaim": "2026-09-02T19:30:03Z"
+    }
+  ],
+  "blobs": [
+    {
+      "blob": {
+        "digest": "sha256:dxP3Sa4Oz4c-veQy7IhLWq4Dukj4UMqhfjCjn-pgXeA",
+        "byteLength": "26",
+        "mediaType": "image/heic"
+      },
+      "inlineBase64Url": "ZGlhZ25vc3RpYyBjYW1lcmEgYnl0ZXMgdjE"
+    },
+    {
+      "blob": {
+        "digest": "sha256:qNTX3MylfsToD3WUQAF7FXio_YSfl75GLhBc1rFmPT8",
+        "byteLength": "27",
+        "mediaType": "application/octet-stream"
+      },
+      "inlineBase64Url": "ZGlhZ25vc3RpYyBsaW5lYXIgcGl4ZWxzIHYx"
+    },
+    {
+      "blob": {
+        "digest": "sha256:DXpZDDyTqD4WbZo4KcvVmtk2gJctwWnJ-R55wiYMt10",
+        "byteLength": "28",
+        "mediaType": "image/png"
+      },
+      "inlineBase64Url": "ZGlhZ25vc3RpYyBlbmhhbmNlZCBpbWFnZSB2MQ"
+    },
+    {
+      "blob": {
+        "digest": "sha256:GItzg_xhSwfwdhBngkjqLcrUUpgRiK0E81eVlh5s3iU",
+        "byteLength": "33",
+        "mediaType": "application/cbor"
+      },
+      "inlineBase64Url": "ZGlhZ25vc3RpYyBjYXB0dXJlIGF0dGVzdGF0aW9uIHYx"
+    },
+    {
+      "blob": {
+        "digest": "sha256:Y6ryME2qrq6k1T5hzv4MihPu9kpGjOnD3D2as1jbkJY",
+        "byteLength": "29",
+        "mediaType": "application/cbor"
+      },
+      "inlineBase64Url": "ZGlhZ25vc3RpYyB3aXRuZXNzIHJlY2VpcHQgdjE"
+    },
+    {
+      "blob": {
+        "digest": "sha256:lzz8eNilmyNh6SA5lPTvnlh47qsp57HzTcZxu06wyws",
+        "byteLength": "32",
+        "mediaType": "application/cbor"
+      },
+      "inlineBase64Url": "ZGlhZ25vc3RpYyB3aXRuZXNzIGNoZWNrcG9pbnQgdjE"
+    }
+  ],
+  "suggestedRoots": [
+    {
+      "recordId": "sha256:i974mCP9GuRWreoWAIfG_Rc-_T2R4cY-MMenskAP254",
+      "outputName": "enhanced-image"
+    }
+  ]
+}

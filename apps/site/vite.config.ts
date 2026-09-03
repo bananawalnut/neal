@@ -18,8 +18,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(siteRoot, 'index.html'),
-        yahoos: resolve(siteRoot, 'yahoos/index.html'),
-        leaderboards: resolve(siteRoot, 'leaderboards/index.html'),
       },
     },
   },

@@ -1,0 +1,20 @@
+[package]
+name = "neal-bounty-factory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+borsh.workspace = true
+solana-program.workspace = true
+solana-sdk-ids.workspace = true
+solana-system-interface.workspace = true
+
+[dev-dependencies]
+bs58.workspace = true

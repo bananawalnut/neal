@@ -1,5 +1,7 @@
 import './styles.css';
 import { mountWalletIdentity } from './wallet';
+import { mountNealPurchase } from './buy';
+import { mountMatrixGc } from './matrix-gc';
 import { formatLocalStreak, getLocalYahooStats, onLocalYahooChange, recordLocalYahoo, type LocalYahooStats } from './local-yahoos';
 
 type PublicRecord = {
@@ -8,6 +10,8 @@ type PublicRecord = {
   token: {
     name: string;
     symbol: string;
+    metadataUri?: string | null;
+    bannerUrl?: string | null;
     description: string | null;
     website: string | null;
     socialLinks: unknown[];
@@ -34,6 +38,15 @@ type PublicRecord = {
         creatorFeeShareBasisPoints: number;
         purchaseMethod: string;
         wallet: string | null;
+        purposes?: Array<'quest_rewards' | 'open_source_developer_airdrops'>;
+        openSourceDeveloperAirdrops?: {
+          acquisitionMethod: 'market_buy';
+          maxHoldingsSupplyBasisPoints: number;
+          capMeasurement: 'airdrop_earmarked_balance_at_finalized_supply';
+          capOverrideApproval: 'unanimous_neal_holder_approval';
+          eligibilityPolicyUri: string | null;
+          distributions: unknown[];
+        };
         transactions: string[];
       };
       creatorFeeRouting?: {
@@ -117,8 +130,8 @@ let localYahooMode = false;
 app.innerHTML = `
   <main class="shell">
     <nav class="topbar">
-      <a class="brand" href="#top" aria-label="Neal the Seal home"><span class="brand-orb"><img src="/neal-token.png" alt="" /></span><span>NEAL</span><small>LOCAL UNIT</small></a>
-      <div class="nav-links"><a href="#quests">Quests</a><a href="#community-vote">Vote</a><a href="/yahoos/">Yahoos</a><a href="#attitude">Lore</a><a href="#verify">Proof</a></div>
+      <a class="brand" href="#top" aria-label="Neal the Seal home"><span class="brand-orb"><img src="/neal-favicon.png" width="96" height="96" alt="" /></span><span>NEAL</span><small>LOCAL UNIT</small></a>
+      <p class="nav-meta"><span>EST. TASMANIA</span><span>BUILT ON SOLANA</span><span>VIBE: UNREASONABLE</span></p>
       <div class="topbar-actions">
         <a class="network-chip" id="mint-nav-state" href="#verify">NO MINT YET · CHECK HERE</a>
         <button class="wallet-button" id="wallet-button" type="button">CONNECT WALLET</button>
@@ -129,46 +142,93 @@ app.innerHTML = `
       <div class="hero-marquee hero-marquee--top" aria-hidden="true"><span>NOT HERE TO FUCK SPIDERS&nbsp; ✦ &nbsp;NOT HERE TO FUCK SPIDERS&nbsp; ✦ &nbsp;NOT HERE TO FUCK SPIDERS&nbsp; ✦ &nbsp;NOT HERE TO FUCK SPIDERS&nbsp; ✦</span></div>
       <div class="hero-stage">
         <div class="hero-copy">
-          <p class="hero-kicker"><span>EST. TASMANIA</span><span>BUILT ON SOLANA</span><span>VIBE: UNREASONABLE</span></p>
-          <h1><span>NEAL</span><em>HAS</em><strong>ENTERED</strong><i>THE CHAT</i></h1>
-          <p id="description">One tonne of coastal beef. Sunnies on. Chain out. Here for elite memes, proper missions, and a deeply irresponsible amount of community spirit.</p>
-          <div class="hero-actions"><a class="primary-action" href="#quests">GET IN THE QUEST PIT ↓</a><a class="secondary-action" href="/yahoos/">YAHOO YARD ↗</a><a class="secondary-action" href="#verify">CHECK THE BLOODY MINT</a></div>
+          <div class="hero-intro">
+            <h1><span>NEAL</span><em>HAS</em><strong>ENTERED</strong><i>THE CHAT</i></h1>
+            <p id="description">One tonne of coastal beef. Sunnies on. Chain out. Here for elite memes, proper missions, and a deeply irresponsible amount of community spirit.</p>
+          </div>
+          <div class="hype-console" tabindex="0" aria-label="Local YAHOO counter">
+            <div><p class="console-label">LOCAL YAHOOS</p><strong id="hype-count" aria-live="polite">0</strong><span>ALL FREE</span></div>
+            <div class="hype-gauge" id="hype-gauge" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <button id="hype-button" type="button">LET ONE RIP</button>
+            <small id="yahoo-rule-copy">Free. Saved only in this browser. No wallet. No chain. No drama.</small>
+            <div class="yahoo-peek" aria-label="This browser's local YAHOO records">
+              <header><span>THIS BROWSER'S BIGGEST YAHOOS</span><b>LOCAL</b></header>
+              <div><strong>MOST LOCAL YAHOOS</strong><ol id="yahoo-top-total"><li><span>NO LOCAL YAHOOS YET</span><b>—</b></li></ol></div>
+              <div><strong>FASTEST LOCAL 3-YAHOO STREAK</strong><ol id="yahoo-top-fast"><li><span>NO LOCAL STREAK YET</span><b>—</b></li></ol></div>
+              <div><strong>LOCAL TOP SPEED</strong><ol id="yahoo-top-rate"><li><span>NO LOCAL SPEED YET</span><b>—</b></li></ol></div>
+            </div>
+          </div>
+          <div class="hero-actions"><a class="primary-action" href="#quests">GET IN THE QUEST PIT ↓</a><a class="secondary-action buy-action" href="#buy">BUY NEAL</a><a class="secondary-action" href="#verify">CHECK THE BLOODY MINT</a></div>
         </div>
 
-        <div class="neal-monument" aria-label="Neal the Seal wearing sunglasses and a gold chain">
-          <div class="neal-halo" aria-hidden="true">BIG UNIT · BIG UNIT · BIG UNIT ·</div>
-          <div class="neal-frame">
-            <img src="/neal-token.png" alt="Neal the Seal wearing sunglasses and a gold chain" />
+        <div class="hero-visual">
+          <div class="neal-monument" aria-label="Neal the Seal wearing sunglasses and a gold chain">
+            <div class="neal-halo" aria-hidden="true">BIG UNIT · BIG UNIT · BIG UNIT ·</div>
+            <div class="dregg-egg" aria-hidden="true">
+              <div class="dregg-egg__shell">
+                <span class="dregg-egg__crack"></span>
+                <span class="dregg-egg__eye"><i></i></span>
+              </div>
+            </div>
+            <div class="neal-frame">
+              <img src="/neal-token.jpg" width="1254" height="1254" loading="eager" decoding="async" fetchpriority="high" alt="Neal the Seal wearing sunglasses and a silver chain" />
+            </div>
+            <img class="neal-name-tag" src="/neal-name-tag.png" alt="Hello, my name is Neal. Title: Good Cunt." />
+            <span class="sticker sticker--one">ABSOLUTE<br>SCENES</span>
+            <span class="sticker sticker--two">1 TONNE<br>OF TALENT</span>
+            <span class="sticker sticker--three">THE<br>MONARCH</span>
           </div>
-          <img class="neal-name-tag" src="/neal-name-tag.png" alt="Hello, my name is Neal. Title: Good Cunt." />
-          <span class="sticker sticker--one">ABSOLUTE<br>SCENES</span>
-          <span class="sticker sticker--two">1 TONNE<br>OF TALENT</span>
-          <span class="sticker sticker--three">THE<br>MONARCH</span>
         </div>
       </div>
 
       <div class="hero-control-deck">
-        <div class="hype-console" tabindex="0" aria-label="Local YAHOO counter. Hover or focus to see this browser's records.">
-          <div><p class="console-label">LOCAL YAHOOS</p><strong id="hype-count" aria-live="polite">0</strong><span>ALL FREE</span></div>
-          <div class="hype-gauge" id="hype-gauge" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          <button id="hype-button" type="button">LET ONE RIP</button>
-          <small id="yahoo-rule-copy">Free. Saved only in this browser. No wallet. No chain. No drama.</small>
-          <div class="yahoo-peek" aria-label="This browser's local YAHOO records">
-            <header><span>THIS BROWSER'S BIGGEST YAHOOS</span><b>LOCAL</b></header>
-            <div><strong>MOST LOCAL YAHOOS</strong><ol id="yahoo-top-total"><li><span>NO LOCAL YAHOOS YET</span><b>—</b></li></ol></div>
-            <div><strong>FASTEST LOCAL 3-YAHOO STREAK</strong><ol id="yahoo-top-fast"><li><span>NO LOCAL STREAK YET</span><b>—</b></li></ol></div>
-            <div><strong>LOCAL TOP SPEED</strong><ol id="yahoo-top-rate"><li><span>NO LOCAL SPEED YET</span><b>—</b></li></ol></div>
-            <a href="/leaderboards/">OPEN THE FULL BLOODY TABLE ↗</a>
-          </div>
-        </div>
-
         <div class="hero-quests" aria-labelledby="hero-quests-title">
-          <div class="hero-quests-head"><div><span>THE KINGDOM / QUESTS</span><h2 id="hero-quests-title">The mob pitches. LORD NEAL seals the decree.</h2></div><b>GC COMING SOON</b></div>
-          <a class="hero-quest-callout" href="#quest-process"><strong>JOIN THE ARMY OF DEBAUCHERY. CAUSE A SCENE.</strong><small>Community quests + submission streams coming</small></a>
+          <div class="hero-quests-head"><div><span>THE KINGDOM / QUESTS</span><h2 id="hero-quests-title">The mob pitches. LORD NEAL seals the decree.</h2></div><b>FEDERATED GC · KNOCK TO JOIN</b></div>
+          <a class="hero-quest-callout" href="#gc"><strong>ENTER THE NEAL MATRIX GC.</strong><small>FEDERATED · KNOCK TO JOIN ↓</small></a>
         </div>
       </div>
       <div class="hero-marquee hero-marquee--bottom" aria-hidden="true"><span>LONG LIVE NEAL ✦ THE MOB IS YAPPING ✦ ARMY OF DEBAUCHERY ✦ CAUSE A SCENE ✦ LONG LIVE NEAL ✦ COMMUNITY QUESTS ARE COMING ✦</span></div>
     </header>
+
+    <section class="buy-pit" id="buy" aria-labelledby="buy-title">
+      <div class="buy-pit-copy">
+        <p class="eyebrow">LIVE ON SOLANA / OFFICIAL PUMP CURVE</p>
+        <h2 id="buy-title">BUY NEAL.<br><em>JOIN THE MOB.</em></h2>
+        <p>Buy from the official Pump curve without leaving NEAL's site. Your wallet remains in control, the exact transaction is simulated first, and nothing moves until you approve it.</p>
+        <dl class="buy-canonical">
+          <div><dt>CANONICAL MINT</dt><dd id="buy-mint">CHECKING PUBLIC RECORD…</dd></div>
+          <div><dt>ROUTE</dt><dd>PUMP.FUN · SOL · TOKEN-2022</dd></div>
+        </dl>
+        <a class="buy-pump-link" id="buy-pump-link" href="https://pump.fun" target="_blank" rel="noreferrer">OPEN ON PUMP.FUN ↗</a>
+      </div>
+      <form class="buy-console" id="buy-form">
+        <header><span>DIRECT NEAL BUY</span><strong id="buy-wallet-state">WALLET REQUIRED</strong></header>
+        <label class="buy-amount"><span>MAXIMUM SOL TO SPEND</span><input id="buy-sol" type="text" inputmode="decimal" autocomplete="off" placeholder="0.10" /></label>
+        <div class="buy-quick" aria-label="Quick maximum amounts">
+          <button type="button" data-buy-sol="0.05">0.05 SOL</button>
+          <button type="button" data-buy-sol="0.1">0.10 SOL</button>
+          <button type="button" data-buy-sol="0.25">0.25 SOL</button>
+        </div>
+        <button class="buy-quote" id="buy-quote" type="button">BUILD & SIMULATE LIVE QUOTE</button>
+        <section class="buy-review" id="buy-review" aria-label="NEAL purchase review" hidden>
+          <dl>
+            <div><dt>MINT</dt><dd id="buy-review-mint"></dd></div>
+            <div><dt>QUOTED CURVE INPUT</dt><dd id="buy-review-input"></dd></div>
+            <div><dt>HARD SOL MAXIMUM</dt><dd id="buy-review-max"></dd></div>
+            <div><dt>ESTIMATED NEAL</dt><dd id="buy-review-output"></dd></div>
+            <div><dt>NETWORK / ACCOUNT COST</dt><dd id="buy-review-fee"></dd></div>
+            <div><dt>WALLET BALANCE</dt><dd id="buy-review-balance"></dd></div>
+            <div><dt>SIMULATED COMPUTE</dt><dd id="buy-review-compute"></dd></div>
+          </dl>
+          <label class="buy-confirm"><input id="buy-reviewed" type="checkbox" /> <span>I REVIEWED THE MINT, ESTIMATE, HARD MAXIMUM AND SIMULATION.</span></label>
+          <button class="buy-submit" id="buy-submit" type="button" disabled>APPROVE BUY IN WALLET</button>
+        </section>
+        <button class="buy-connect" id="buy-connect" type="button">CONNECT WALLET TO BUY</button>
+        <p class="buy-status idle" id="buy-status" role="status">Connect a wallet and build a live quote. Nothing is signed automatically.</p>
+        <a class="buy-result" id="buy-result" target="_blank" rel="noreferrer" hidden>VIEW BUY ON SOLSCAN ↗</a>
+        <small>3% price-movement protection is contained inside your stated SOL maximum. Network fees and token-account rent, when needed, are additional and shown before approval. On-site buys are capped at 5 SOL; larger trades belong on Pump.</small>
+      </form>
+    </section>
 
     <section class="wallet-identity" id="wallet-identity" aria-labelledby="wallet-title">
       <div class="wallet-identity-copy">
@@ -201,9 +261,9 @@ app.innerHTML = `
     <section class="attitude" id="attitude">
       <div class="attitude-lead"><p class="eyebrow">The NEAL thesis / written in sand</p><h2>Not here to<br>fuck spiders.</h2><span>A one-tonne monument to having a crack.</span></div>
       <div class="attitude-grid">
-        <article><span>COMMANDMENT 01</span><h3>MAKE<br>A RACKET</h3><p>Cook something funny, useful, or gloriously cooked. Beige behaviour can get in the bin.</p></article>
-        <article><span>COMMANDMENT 02</span><h3>PULL YOUR<br>WEIGHT</h3><p>The mob rewards people who have a crack—not mystery wallets farming imaginary points.</p></article>
-        <article><span>COMMANDMENT 03</span><h3>SHOW THE<br>RECEIPTS</h3><p>Big claims need public proof. Quest work, reward wallets, and the one real mint. No sauce? Rack off.</p></article>
+        <article data-commandment="01"><span class="commandment-label">COMMANDMENT 01</span><span class="commandment-sigil" aria-hidden="true">OI!</span><h3>MAKE<br>A RACKET</h3><p>Cook something funny, useful, or gloriously cooked. Beige behaviour can get in the bin.</p><small>SEALED BY NEAL</small></article>
+        <article data-commandment="02"><span class="commandment-label">COMMANDMENT 02</span><span class="commandment-sigil" aria-hidden="true">PULL</span><h3>PULL YOUR<br>WEIGHT</h3><p>The mob rewards people who have a crack—not mystery wallets farming imaginary points.</p><small>SEALED BY NEAL</small></article>
+        <article data-commandment="03"><span class="commandment-label">COMMANDMENT 03</span><span class="commandment-sigil" aria-hidden="true">PROOF</span><h3>SHOW THE<br>RECEIPTS</h3><p>Big claims need public proof. Quest work, reward wallets, and the one real mint. No sauce? Rack off.</p><small>SEALED BY NEAL</small></article>
       </div>
     </section>
 
@@ -245,57 +305,103 @@ app.innerHTML = `
     <section class="quests" id="quests">
       <div class="quests-intro">
         <div class="quests-copy">
-          <p class="eyebrow">NEAL's kingdom / the GC is coming</p>
+          <p class="eyebrow">NEAL's kingdom / the federated GC</p>
           <h2>THE MOB YAPS.<br><em>LORD NEAL SEALS THE DECREE.</em></h2>
-          <p>NEAL is the monarch. Holders are the mob. Together, we're the Army of Debauchery. The GC will be the royal court: chuck in your ideas, dumb bits, good bits, and local nonsense. If the mob gets around one, NEAL might bless it as an official quest.</p>
+          <p>NEAL is the monarch. Holders are the mob. Together, we're the Army of Debauchery. The federated GC is the royal court: chuck in your requests, dumb bits, good bits, and local nonsense. Every request and chat message feeds the NEAL egregore—the shared lore, running jokes, voice, and personality the mob builds around him. You're not issuing orders; you're helping shape what NEAL becomes. If the mob gets around an idea, NEAL might bless it as an official quest.</p>
         </div>
         <div class="program-state" id="program-state">
-          <span class="record-label">NEAL's quest treasury / buybacks</span>
-          <strong id="program-status">42% OF CREATOR FEES → QUEST BUYBACKS</strong>
-          <p id="fee-routing-state">NEAL's quest treasury uses its share of creator fees to buy NEAL for quest rewards. The wallet and every buy go up here once they exist.</p>
+          <span class="record-label">NEAL's treasury / quests + dev drops</span>
+          <strong id="program-status">42% OF CREATOR FEES → QUESTS + AIRDROPS</strong>
+          <p id="fee-routing-state">The treasury market-buys NEAL for quests and airdrops to open-source devs. Airdrop holdings stay at or below 18% of supply unless every NEAL holder approves more. Wallets, buys, and drops go up here.</p>
         </div>
       </div>
 
       <div class="nealonomics" aria-labelledby="nealonomics-title">
         <p class="eyebrow">THE NEAL LOOP / ACTUAL TOKENOMICS</p>
         <h3 id="nealonomics-title">ONE NEAL OR DREGG TO YAP.<br>QUESTS PAY THE MOB.</h3>
-        <p class="nealonomics-truth">The dev buys his own NEAL. The mob spends 1 NEAL—or 1 DREGG once the real mint is verified—to put an idea on the ballot. It lands in the quest treasury, while 42% of creator fees buy more NEAL for quest rewards.</p>
+        <p class="nealonomics-truth">The dev buys his own NEAL. The mob spends 1 NEAL—or 1 DREGG once the real mint is verified—to put an idea on the ballot. The treasury gets 42% of creator fees, then market-buys NEAL for quests and open-source-dev airdrops. Airdrop holdings may not exceed 18% of supply unless every NEAL holder approves more.</p>
         <div class="nealonomics-wallets" aria-label="Wallet publication status">
           <span><strong>DEV WALLET</strong><i id="dev-wallet-state">POSTS HERE ONCE LIVE</i></span>
           <span><strong>QUEST TREASURY</strong><i id="quest-wallet-state">POSTS HERE ONCE LIVE</i></span>
         </div>
-        <p class="nealonomics-racket" aria-hidden="true">BUY NEAL ✦ 1 NEAL OR 1 DREGG TO YAP ✦ TREASURY BUYBACKS ✦ QUESTS PAY</p>
+        <p class="nealonomics-racket" aria-hidden="true">BUY NEAL ✦ 1 NEAL OR 1 DREGG TO YAP ✦ QUESTS PAY ✦ OPEN-SOURCE DEVS GET DROPS</p>
       </div>
 
       <section class="community-vote" id="community-vote" aria-labelledby="community-vote-title">
         <div class="community-vote-copy">
-          <p class="eyebrow">THE MOB'S BALLOT BOX</p>
-          <h3 id="community-vote-title">GOT A COOKED IDEA?<br><em>PUT ONE TOKEN ON IT.</em></h3>
-          <p>A quest. A stunt. A stream. A fresh royal decree. Spend 1 NEAL or 1 DREGG to put it before the mob. If it causes enough racket, Lord NEAL can seal it.</p>
-          <div class="vote-loop" aria-label="Suggestion flow"><span>1 NEAL / 1 DREGG</span><i>→</i><span>THE MOB WEIGHS IN</span><i>→</i><span>NEAL MAY COOK</span></div>
+          <p class="eyebrow">THE COMMUNITY SUGGESTION BOX</p>
+          <h3 id="community-vote-title">GOT A THOUGHT?<br><em>CHUCK IT IN.</em></h3>
+          <p>Send NEAL a request, bit, reference, or loose thought. It joins the mob's public pile and contributes to the egregore—NEAL's evolving lore, tastes, voice, and personality—even if it never becomes a quest. Not orders for NEAL; material for him to draw from when cooking quests and bounties.</p>
+          <div class="vote-loop" aria-label="Suggestion flow"><span>WRITE IT</span><i>→</i><span>SIGN IT</span><i>→</i><span>ADD IT TO THE PILE</span></div>
         </div>
         <form class="suggestion-entry" id="suggestion-form">
-          <header><span>COMMUNITY SUGGESTION</span><strong id="suggestion-gate">PRE-LAUNCH</strong></header>
-          <fieldset id="suggestion-fields" disabled>
-            <label><span>NAME THE NONSENSE</span><input id="suggestion-title" name="title" maxlength="80" placeholder="EG. SEND NEAL TO PARLIAMENT" required /></label>
-            <label><span>MAKE YOUR CASE</span><textarea id="suggestion-pitch" name="pitch" maxlength="500" placeholder="WHAT SHOULD NEAL DO, AND WHY WOULD THE MOB LOSE IT?" required></textarea></label>
-            <div class="suggestion-assets" aria-label="Choose suggestion entry token">
-              <label id="suggestion-neal-option"><input type="radio" name="entryAsset" value="NEAL" checked /><strong>1 NEAL</strong><small>THE REAL NEAL</small></label>
-              <label id="suggestion-dregg-option"><input id="suggestion-dregg-input" type="radio" name="entryAsset" value="DREGG" /><strong>1 DREGG</strong><small id="suggestion-dregg-state">WAITS FOR REAL MINT</small></label>
-            </div>
-            <div class="suggestion-cost"><span>ENTRY</span><strong id="suggestion-entry-fee">1 NEAL OR 1 DREGG</strong><span>GOES TO</span><strong>QUEST TREASURY</strong></div>
-            <button id="suggestion-submit" type="submit">PAY SELECTED TOKEN &amp; YAP</button>
+          <header><span>PUBLIC SUGGESTION</span><strong id="suggestion-gate">PRE-LAUNCH</strong></header>
+          <fieldset id="suggestion-fields">
+            <label class="suggestion-text"><span>YOUR SUGGESTION</span><textarea id="suggestion-pitch" name="suggestion" maxlength="280" placeholder="CHUCK A THOUGHT INTO THE PILE…" required></textarea></label>
+            <button id="suggestion-submit" type="submit" disabled>SEND SUGGESTION ON-CHAIN</button>
           </fieldset>
-          <button class="suggestion-connect" id="suggestion-connect" type="button">CONNECT WALLET TO GET READY</button>
-          <p id="suggestion-status" role="status">Opens after the canonical mint, quest treasury, and public suggestion registry are live.</p>
+          <button class="suggestion-connect" id="suggestion-connect" type="button">CONNECT WALLET</button>
+          <p id="suggestion-status" role="status">Write now. Sending opens when the public on-chain suggestion feed is live.</p>
         </form>
       </section>
 
+      <section class="gc-portal" id="gc" aria-labelledby="gc-title">
+        <div class="gc-portal-copy">
+          <p class="eyebrow">FIRST-PARTY NEAL CLIENT / FEDERATED MATRIX</p>
+          <h3 id="gc-title">BRING YOUR ACCOUNT.<br>KNOCK ON THE DOOR.<br><em>JOIN THE RACKET.</em></h3>
+          <p>Bring an existing account from any federated homeserver—or create one through an always-online provider. Chat with the mob, add stories and in-jokes, and help shape NEAL's egregore in real time. NEAL discovers the server and speaks Matrix directly: no Element detour and no NEAL credential backend.</p>
+        </div>
+        <div class="gc-room-board" id="matrix-client">
+          <header><span>NEAL MATRIX GC</span><strong>LIVE · ENCRYPTED</strong></header>
+          <code>#neal-gc:<wbr>matrix.nealtheseal.org</code>
+          <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>KNOCK TO JOIN</span><span>FEDERATED</span><span>E2EE</span></div>
+          <div class="matrix-entry-tabs" id="matrix-entry-tabs" role="tablist" aria-label="Matrix account options">
+            <button id="matrix-tab-login" type="button" role="tab" aria-selected="true" aria-controls="matrix-login-form">I HAVE AN ACCOUNT</button>
+            <button id="matrix-tab-create" type="button" role="tab" aria-selected="false" aria-controls="matrix-create-form">CREATE AN ACCOUNT</button>
+          </div>
+          <form class="matrix-login" id="matrix-login-form">
+            <label><span>YOUR MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="@YOU:YOUR-HOMESERVER.ORG" required /></label>
+            <label><span>YOUR MATRIX PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="STAYS IN THIS FORM UNTIL LOGIN" required /></label>
+            <div class="matrix-login-actions">
+              <button id="matrix-login" type="submit">ENTER WITH PASSWORD</button>
+              <button class="matrix-secondary" id="matrix-sso-login" type="button">USE HOMESERVER SIGN-IN</button>
+            </div>
+            <small>Sent directly from this browser to the homeserver discovered from your Matrix ID. NEAL has no login API and stores no password.</small>
+          </form>
+          <form class="matrix-create" id="matrix-create-form" hidden>
+            <label><span>ACCOUNT PROVIDER</span><input id="matrix-create-domain" type="text" inputmode="url" autocomplete="url" spellcheck="false" value="matrix.nealtheseal.org" list="matrix-provider-options" required /><datalist id="matrix-provider-options"><option value="matrix.nealtheseal.org"></option><option value="salix.host"></option><option value="matrix.org"></option><option value="unredacted.org"></option></datalist></label>
+            <div class="matrix-provider-default"><strong>DEFAULT · MATRIX.NEALTHESEAL.ORG</strong><span>No email or phone. NEAL accounts use a short-lived, one-use invite token and are created directly on our always-online homeserver.</span></div>
+            <div class="matrix-native-register" id="matrix-native-register">
+              <div class="matrix-native-grid">
+                <label><span>NEW USERNAME</span><input id="matrix-create-username" type="text" autocomplete="username" spellcheck="false" placeholder="YOUR_MATRIX_NAME" /></label>
+                <label><span>ONE-USE TOKEN</span><input id="matrix-create-token" type="text" autocomplete="off" spellcheck="false" placeholder="NEAL OR PROVIDER INVITE TOKEN" /></label>
+              </div>
+              <div class="matrix-native-grid">
+                <label><span>NEW PASSWORD</span><input id="matrix-create-password" type="password" autocomplete="new-password" placeholder="12+ CHARACTERS" /></label>
+                <label><span>CONFIRM PASSWORD</span><input id="matrix-create-confirm" type="password" autocomplete="new-password" placeholder="SAME AGAIN" /></label>
+              </div>
+              <a class="matrix-token-link" href="https://salix.host/#matrix" target="_blank" rel="noopener noreferrer"><strong>NO NEAL INVITE? USE SALIX ↗</strong><span>Independent federated account · no email or phone · self-serve token</span></a>
+            </div>
+            <button id="matrix-create" type="submit">CREATE MATRIX ACCOUNT</button>
+            <small>For NEAL and Salix, the username, password, and token go straight from this browser to the selected homeserver. Vercel receives and stores none of them. Other providers may open their own secure sign-up screen.</small>
+          </form>
+          <section class="matrix-session" id="matrix-session" hidden>
+            <div class="matrix-session-head"><span>ACCOUNT <strong id="matrix-account">NOT SIGNED IN</strong></span><span>ROOM <strong id="matrix-membership">—</strong></span></div>
+            <div class="matrix-room-actions"><button id="matrix-knock" type="button">KNOCK TO JOIN</button><button id="matrix-join" type="button" hidden>ACCEPT INVITE & ENTER</button></div>
+            <ol class="matrix-messages" id="matrix-messages" aria-label="NEAL GC messages" hidden></ol>
+            <form class="matrix-composer" id="matrix-composer" hidden><label for="matrix-message">MESSAGE THE GC</label><textarea id="matrix-message" maxlength="4000" placeholder="CHUCK SOMETHING INTO THE GC…" required></textarea><button id="matrix-send" type="submit">SEND ENCRYPTED MESSAGE</button></form>
+            <aside class="matrix-moderation" id="matrix-moderation" hidden><strong>KNOCKS WAITING</strong><ul id="matrix-knocks"></ul></aside>
+          </section>
+          <div class="matrix-client-footer"><p id="matrix-status" role="status" data-state="idle">Sign in with a federated Matrix account. Your access token stays in this browser tab.</p><button id="matrix-logout" type="button" hidden>SIGN OUT</button></div>
+          <p class="matrix-security-note">Beta client: provider account creation, password or SSO login, room entry, encrypted text, and knock moderation are live. Device verification and recovery controls come next.</p>
+        </div>
+      </section>
+
       <div class="quest-process gc-manifesto" id="quest-process" aria-labelledby="quest-process-title">
-        <span class="gc-coming">THE GC + QUEST STREAMS ARE COMING</span>
+        <span class="gc-coming">THE GC IS THE COOKER</span>
         <h3 id="quest-process-title">THE MOB PITCHES.<br>LORD NEAL SEALS THE DECREE.<br><em>THE ARMY CAUSES A SCENE.</em></h3>
         <p>Cook up a quest for the community. If the mob gets around it, NEAL can make it official. Some missions will be built for stream so everyone can watch the submissions roll in, roast the carry-on, cheer the lunatics, and see the winners crowned.</p>
-        <a class="gc-cta" href="#community-vote"><strong>PUT ONE TOKEN ON IT <span aria-hidden="true">↗</span></strong><small>1 NEAL OR 1 DREGG</small></a>
+        <a class="gc-cta" href="#community-vote"><strong>CHUCK IN A SUGGESTION <span aria-hidden="true">↗</span></strong><small>PUBLIC FEED</small></a>
         <div class="quest-tease" aria-label="Coming quest features"><span>COMMUNITY-COOKED QUESTS</span><span>WATCH SUBMISSIONS LIVE</span><span>REWARDS FROM NEAL'S WALLET</span></div>
       </div>
 
@@ -332,6 +438,19 @@ app.innerHTML = `
     </div>
     <p>Castalia goes first when it is installed. Every wallet below enters through the same public standard.</p>
     <div class="wallet-list" id="wallet-list"></div>
+    <section class="wallet-install" aria-labelledby="wallet-install-title">
+      <div class="wallet-install-head">
+        <strong id="wallet-install-title">GET A COMPATIBLE WALLET</strong>
+        <span>OFFICIAL DOWNLOADS ONLY</span>
+      </div>
+      <div class="wallet-install-grid">
+        <a href="https://phantom.com/download" target="_blank" rel="noopener noreferrer"><strong>PHANTOM</strong><span>BROWSER + MOBILE ↗</span></a>
+        <a href="https://www.solflare.com/download/" target="_blank" rel="noopener noreferrer"><strong>SOLFLARE</strong><span>BROWSER + MOBILE ↗</span></a>
+        <a href="https://backpack.app/download" target="_blank" rel="noopener noreferrer"><strong>BACKPACK</strong><span>BROWSER + MOBILE ↗</span></a>
+        <a href="https://nightly.app/download" target="_blank" rel="noopener noreferrer"><strong>NIGHTLY</strong><span>BROWSER + MOBILE ↗</span></a>
+      </div>
+      <p><strong>LEDGER?</strong> Connect it through Phantom or Solflare. Castalia will appear automatically when its Wallet Standard build ships.</p>
+    </section>
     <small>We never ask for a seed phrase. Ever. Anyone who does can rack off.</small>
   </dialog>
 `;
@@ -348,6 +467,9 @@ const hypeGauge = [...app.querySelectorAll<HTMLElement>('#hype-gauge i')];
 if (!hypeButton || !hypeCount) throw new Error('Missing YAHOO controls');
 const yahooButton = hypeButton;
 const yahooCount = hypeCount;
+const yahooConsoleElement = yahooButton.closest<HTMLElement>('.hype-console');
+if (!yahooConsoleElement) throw new Error('Missing YAHOO console');
+const yahooConsole: HTMLElement = yahooConsoleElement;
 
 const byId = <T extends HTMLElement>(id: string): T => {
   const element = document.querySelector<T>(`#${id}`);
@@ -360,7 +482,7 @@ byId<HTMLButtonElement>('suggestion-connect').addEventListener('click', () => {
 });
 byId<HTMLFormElement>('suggestion-form').addEventListener('submit', (event) => {
   event.preventDefault();
-  byId<HTMLElement>('suggestion-status').textContent = 'The real suggestion transaction builder is not live yet. Nothing was sent.';
+  byId<HTMLElement>('suggestion-status').textContent = 'The on-chain suggestion transaction builder is not live yet. Nothing was sent.';
 });
 
 const shortWallet = (address: string): string => address === 'THIS BROWSER' ? address : address.length > 10
@@ -432,12 +554,57 @@ function renderLocalYahooStats(stats: LocalYahooStats) {
   );
 }
 
+let yahooBurstId = 0;
+
+function launchYahooHype() {
+  const burstId = ++yahooBurstId;
+  const burst = document.createElement('div');
+  const stamp = document.createElement('span');
+  const palette = ['var(--lime)', 'var(--aqua)', 'var(--blue)', 'var(--coral)', 'var(--pink)', 'white'];
+  burst.className = 'yahoo-burst';
+  burst.setAttribute('aria-hidden', 'true');
+  stamp.className = 'yahoo-burst__stamp';
+  stamp.textContent = 'YAHOO!';
+  burst.append(stamp);
+
+  for (let index = 0; index < 16; index += 1) {
+    const particle = document.createElement('i');
+    const angle = (Math.PI * 2 * index) / 16 - Math.PI / 2;
+    const distance = 75 + (index % 4) * 18;
+    particle.className = 'yahoo-burst__particle';
+    particle.style.setProperty('--burst-x', `${Math.cos(angle) * distance}px`);
+    particle.style.setProperty('--burst-y', `${Math.sin(angle) * distance}px`);
+    particle.style.setProperty('--burst-rotate', `${index * 47}deg`);
+    particle.style.setProperty('--burst-delay', `${(index % 3) * 18}ms`);
+    particle.style.setProperty('--burst-colour', palette[index % palette.length]);
+    burst.append(particle);
+  }
+
+  yahooConsole.querySelectorAll('.yahoo-burst').forEach((effect) => effect.remove());
+  yahooConsole.append(burst);
+  yahooConsole.classList.remove('yahoo-hit');
+  yahooCount.classList.remove('yahoo-count-pop');
+  void yahooConsole.offsetWidth;
+  yahooConsole.classList.add('yahoo-hit');
+  yahooCount.classList.add('yahoo-count-pop');
+
+  window.setTimeout(() => {
+    burst.remove();
+    if (burstId === yahooBurstId) {
+      yahooConsole.classList.remove('yahoo-hit');
+      yahooCount.classList.remove('yahoo-count-pop');
+    }
+  }, 900);
+}
+
 yahooButton.addEventListener('click', () => {
   if (!localYahooMode) return;
   renderLocalYahooStats(recordLocalYahoo());
+  launchYahooHype();
   yahooButton.textContent = 'YAHOO!';
   window.setTimeout(() => { yahooButton.textContent = 'LET ANOTHER RIP'; }, 260);
 });
+yahooButton.addEventListener('dblclick', (event) => event.preventDefault());
 onLocalYahooChange((stats) => {
   if (localYahooMode) renderLocalYahooStats(stats);
 });
@@ -458,7 +625,13 @@ function renderRecord(record: PublicRecord) {
   const status = byId<HTMLElement>('status-chip');
   status.className = `status-chip ${launched ? 'launched' : 'prelaunch'}`;
   status.innerHTML = `<i></i>${launched ? 'Canonical mint verified' : 'Pre-launch · no mint'}`;
-  byId<HTMLElement>('mint-nav-state').textContent = launched ? 'MINT VERIFIED · CHECK HERE' : 'NO MINT YET · CHECK HERE';
+  const mintNavState = byId<HTMLAnchorElement>('mint-nav-state');
+  mintNavState.textContent = launched ? 'BUY NEAL · LIVE' : 'NO MINT YET · CHECK HERE';
+  mintNavState.href = launched ? '#buy' : '#verify';
+  byId<HTMLElement>('buy-mint').textContent = record.execution.mintAddress ?? 'NOT AVAILABLE';
+  byId<HTMLAnchorElement>('buy-pump-link').href = record.execution.mintAddress
+    ? `https://pump.fun/coin/${record.execution.mintAddress}`
+    : 'https://pump.fun';
 
   byId<HTMLElement>('network').textContent = present(record.launch.network);
   byId<HTMLElement>('route').textContent = present(record.launch.canonicalRoute);
@@ -488,15 +661,18 @@ function renderRecord(record: PublicRecord) {
   }
 
   const questShare = record.programs.economics.questTreasury.creatorFeeShareBasisPoints / 100;
-  byId<HTMLElement>('program-status').textContent = `${questShare}% of creator fees → quest buybacks`;
+  const airdropCap = record.programs.economics.questTreasury.openSourceDeveloperAirdrops
+    ? record.programs.economics.questTreasury.openSourceDeveloperAirdrops.maxHoldingsSupplyBasisPoints / 100
+    : null;
+  byId<HTMLElement>('program-status').textContent = `${questShare}% of creator fees → quests + dev airdrops`;
   byId<HTMLElement>('dev-wallet-state').textContent = record.programs.economics.devPurchase.wallet ?? 'POSTS HERE ONCE LIVE';
   byId<HTMLElement>('quest-wallet-state').textContent = record.programs.economics.questTreasury.wallet ?? 'POSTS HERE ONCE LIVE';
   const feeRouting = record.programs.economics.creatorFeeRouting;
   const routingCopy = byId<HTMLElement>('fee-routing-state');
   if (feeRouting?.status === 'active') {
-    routingCopy.textContent = "Pump's on-chain split sends 42% to the published quest treasury and 58% to the dev recipient. Distribution receipts and every quest buyback go up here.";
+    routingCopy.textContent = `Pump's on-chain split sends 42% to the published treasury and 58% to the dev. Treasury market buys fund quests and open-source-dev airdrops${airdropCap === null ? '' : `, with airdrop holdings capped at ${airdropCap}% of supply unless every NEAL holder approves more`}. Every receipt goes up here.`;
   } else if (feeRouting) {
-    routingCopy.textContent = "Pump's 58/42 on-chain split is planned but not active yet. It gets one final setup after the quest wallet exists; any earlier fees owe the same disclosed 42% sweep.";
+    routingCopy.textContent = `Pump's 58/42 on-chain split is planned but not active yet. Both wallets are published; after the mint, the final setup sends 42% to treasury market buys for quests and open-source-dev airdrops${airdropCap === null ? '' : `, with airdrop holdings capped at ${airdropCap}% of supply unless every NEAL holder approves more`}.`;
   }
 
   const yahoos = record.programs.yahoos;
@@ -524,40 +700,26 @@ function renderRecord(record: PublicRecord) {
   }
 
   const suggestion = record.programs.communitySuggestions;
-  const suggestionAssets = suggestion?.acceptedEntryAssets?.length
-    ? suggestion.acceptedEntryAssets
-    : [{ symbol: 'NEAL' as const, amountTokens: suggestion?.entryFeeTokens ?? '1', canonicalMintSource: 'execution.mintAddress' as const }];
-  const suggestionFee = suggestionAssets.map((asset) => `${asset.amountTokens} ${asset.symbol}`).join(' OR ');
-  const acceptsDregg = suggestionAssets.some((asset) => asset.symbol === 'DREGG');
-  const dreggMintReady = Boolean(record.secondaryLiquidity.quoteMint);
-  const treasuryReady = Boolean(record.programs.economics.questTreasury.wallet);
   const registryReady = Boolean(suggestion?.registryUri);
-  const suggestionFields = byId<HTMLFieldSetElement>('suggestion-fields');
-  suggestionFields.disabled = true;
-  byId<HTMLElement>('suggestion-entry-fee').textContent = suggestionFee;
-  byId<HTMLButtonElement>('suggestion-submit').textContent = 'PAY SELECTED TOKEN & YAP';
-  byId<HTMLElement>('suggestion-dregg-option').hidden = !acceptsDregg;
-  byId<HTMLInputElement>('suggestion-dregg-input').disabled = !dreggMintReady;
-  byId<HTMLElement>('suggestion-dregg-state').textContent = dreggMintReady ? 'CANONICAL MINT VERIFIED' : 'WAITS FOR REAL MINT';
+  const suggestionSubmit = byId<HTMLButtonElement>('suggestion-submit');
+  suggestionSubmit.disabled = true;
+  suggestionSubmit.textContent = 'SEND SUGGESTION ON-CHAIN';
 
   if (!suggestion) {
     byId<HTMLElement>('suggestion-gate').textContent = 'POLICY MISSING';
     byId<HTMLElement>('suggestion-status').textContent = 'No public community-suggestion policy is available.';
   } else if (!launched) {
     byId<HTMLElement>('suggestion-gate').textContent = 'PRE-LAUNCH';
-    byId<HTMLElement>('suggestion-status').textContent = 'Opens after the canonical NEAL mint, quest treasury, and public suggestion registry are live. DREGG unlocks only after its real mint is verified.';
-  } else if (!treasuryReady) {
-    byId<HTMLElement>('suggestion-gate').textContent = 'TREASURY NEXT';
-    byId<HTMLElement>('suggestion-status').textContent = 'The quest-treasury wallet must be published before any paid suggestion entry can be built.';
+    byId<HTMLElement>('suggestion-status').textContent = 'Write now. Sending opens after the canonical NEAL mint and public on-chain suggestion feed are live.';
   } else if (!registryReady) {
     byId<HTMLElement>('suggestion-gate').textContent = 'REGISTRY NEXT';
-    byId<HTMLElement>('suggestion-status').textContent = 'The public suggestion registry must be published before entries open.';
+    byId<HTMLElement>('suggestion-status').textContent = 'The public on-chain suggestion feed must be published before entries open.';
   } else if (suggestion.status !== 'active') {
     byId<HTMLElement>('suggestion-gate').textContent = suggestion.status.replaceAll('_', ' ').toUpperCase();
     byId<HTMLElement>('suggestion-status').textContent = 'Community suggestions are currently paused.';
   } else {
     byId<HTMLElement>('suggestion-gate').textContent = 'BUILDER PENDING';
-    byId<HTMLElement>('suggestion-status').textContent = 'Infrastructure is recorded. The reviewed dual-token suggestion builder is the remaining gate.';
+    byId<HTMLElement>('suggestion-status').textContent = 'The feed is recorded. The reviewed wallet transaction builder is the remaining gate.';
   }
 }
 
@@ -571,9 +733,12 @@ function renderFailure() {
   byId<HTMLElement>('program-status').textContent = 'Quest-wallet record unavailable';
   byId<HTMLElement>('footer-state').textContent = 'VERIFICATION UNAVAILABLE';
   byId<HTMLElement>('mint-nav-state').textContent = 'MINT CHECK OFFLINE';
+  byId<HTMLElement>('buy-mint').textContent = 'VERIFICATION UNAVAILABLE';
+  byId<HTMLAnchorElement>('buy-pump-link').href = 'https://pump.fun';
 }
 
 async function start() {
+  mountMatrixGc();
   try {
     const response = await fetch('/launch-record.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`Public record returned ${response.status}`);
@@ -596,7 +761,8 @@ async function start() {
         renderYahooRows(byId<HTMLOListElement>('yahoo-top-rate'), [], 'LEADERBOARD UNAVAILABLE');
       }
     }
-    await mountWalletIdentity(() => canonicalMintAddress);
+    const walletIdentity = await mountWalletIdentity(() => canonicalMintAddress);
+    if (walletIdentity) mountNealPurchase(() => canonicalMintAddress, walletIdentity);
   }
 }
 

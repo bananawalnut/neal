@@ -2,7 +2,7 @@
 
 ## Objective
 
-Launch one canonical `NEAL` mint through Pump.fun, publish an authoritative verification surface, and operate quests only against NEAL bought by the disclosed quest treasury. Tidemark remains generic and never creates a second NEAL mint.
+Launch one canonical `NEAL` mint through Pump.fun, publish an authoritative verification surface, and operate quests and open-source-developer airdrops only against NEAL bought by the disclosed treasury. Tidemark remains generic and never creates a second NEAL mint.
 
 ## System map
 
@@ -79,9 +79,24 @@ Deliverables:
 - On-chain balance and transaction ledger
 - Clear separation of dev, operations, and quest-treasury inventory
 - Public distinction between creator-fee revenue, settled treasury buybacks, and confirmed quest balances
+- Purpose-labelled inventory separating quest rewards from open-source-developer airdrops
+- Live airdrop-earmarked treasury-balance accounting capped at 18% of finalized total NEAL supply unless every holder approves more
 - No program announcement until inventory is proven
 
 Exit gate: every advertised reward is backed by a recorded token account and approved program budget.
+
+### Phase 3B — open-source-developer airdrops
+
+Deliverables:
+
+- Public eligibility, review, sybil-resistance, disclosure, and appeals rules
+- Market-buy receipts labelled as airdrop inventory
+- Continuous airdrop-earmarked balance accounting that hard-stops at 18%
+- A reviewed holder snapshot, vote, and unanimity proof before any higher cap can take effect
+- Public recipient and distribution receipts without exposing unnecessary personal data
+- No claim or direct distribution until the canonical mint, treasury, policy, and reviewed transaction builder are independently verified
+
+Exit gate: policy review, cap reconciliation, recipient-record review, simulation, and human wallet approval all pass.
 
 ### Phase 4 — quests
 

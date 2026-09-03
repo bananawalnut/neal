@@ -1,0 +1,673 @@
+; Loom Image Provenance v1
+; JSON data model; RFC 8785 JCS is the normative hash/signature projection.
+;
+; CONTRACT.md supplies semantic rules that CDDL cannot express: duplicate-key
+; rejection, Unicode NFC, hash/signature equations, exact cross-record artifact
+; equality, graph acyclicity, sorted head sets, journal transitions, profile
+; proof bindings, trust, and policy evaluation.
+
+; ---------------------------------------------------------------------------
+; Top-level protocol objects
+; ---------------------------------------------------------------------------
+
+record-body =
+  capture-record-body /
+  source-record-body /
+  transform-record-body
+
+record-envelope = {
+  "schema": "loom.image-provenance.record-envelope/v1",
+  "recordId": record-id,
+  "body": record-body,
+  "signatures": [+ record-signature]
+}
+
+record-endorsement = {
+  "schema": "loom.image-provenance.endorsement/v1",
+  "profileUri": uri,
+  "targetRecordId": record-id,
+  "expectedBindings": [+ evidence-binding],
+  "evidence": exact-blob
+}
+
+; EvidenceAttachmentDigest is process-local, not an evidence-ref or
+; record-endorsement member. Its domain is
+; "loom.image-provenance.evidence-attachment-id/v1"; CONTRACT.md defines the
+; domain-separated digest and EvidenceResult binding.
+
+journal-entry-envelope = {
+  "schema": "loom.image-provenance.journal-envelope/v1",
+  "entryId": journal-entry-id,
+  "body": journal-entry-body,
+  "signatures": [+ journal-signature]
+}
+
+anchor-receipt = {
+  "schema": "loom.image-provenance.anchor-receipt/v1",
+  "profileUri": uri,
+  "witnessId": nonempty-text,
+  "subjectEntryId": journal-entry-id,
+  "receipt": exact-blob,
+  "checkpoint": exact-blob,
+  ? "consistencyProof": exact-blob,
+  ? "witnessedAtClaim": rfc3339-timestamp
+}
+
+; AnchorReceiptDigest is process-local, not an anchor-receipt member. Its
+; domain is "loom.image-provenance.anchor-receipt-id/v1"; CONTRACT.md defines
+; the domain-separated digest and WitnessResult binding.
+
+provenance-bundle = {
+  "schema": "loom.image-provenance.bundle/v1",
+  "records": [* record-envelope],
+  "journalEntries": [* journal-entry-envelope],
+  "endorsements": [* record-endorsement],
+  "anchors": [* anchor-receipt],
+  "blobs": [* blob-location],
+  ? "suggestedRoots": [* output-pointer]
+}
+
+operation-descriptor = {
+  "schema": "loom.image-provenance.operation-descriptor/v1",
+  "uri": uri,
+  "version": nonempty-text,
+  "inputRoles": [* operation-input-role],
+  "outputRoles": [* nonempty-text],
+  "parameterSchema": canonical-value,
+  ? "colourSemantics": canonical-value,
+  ? "metadataSemantics": canonical-value,
+  ? "replayProfileUri": uri,
+  ? "extensions": extension-map,
+  ? "criticalExtensions": [* uri]
+}
+
+verification-policy = {
+  "schema": "loom.image-provenance.verification-policy/v1",
+  "trustedSignatureRequiredFor": [* record-kind],
+  "allowedSourceRoots": [* source-root-kind],
+  "minimumOriginAssurance": origin-assurance,
+  "requireVerifiedCaptureBoundary": bool,
+  "requireEveryReachableRecordAnchored": bool,
+  "requireJournalConsistency": bool,
+  "requireDisclosedParameters": bool,
+  "requireHermeticTransforms": bool,
+  "replayRequirement": replay-requirement,
+  "limits": verification-limits
+}
+
+verification-report = {
+  "schema": "loom.image-provenance.verification-report/v1",
+  "verdict": verification-verdict,
+  "rootOutput": output-pointer,
+  "structural": check-status,
+  "byteIntegrity": check-status,
+  "signatures": check-status,
+  "lineage": lineage-status,
+  "anchoring": check-status,
+  "captureEvidence": capture-evidence,
+  "records": [* record-verification],
+  "findings": [* verification-finding]
+}
+
+; ---------------------------------------------------------------------------
+; Common record fields and immutable artifact references
+; ---------------------------------------------------------------------------
+
+common-record-fields = (
+  "occurredAt": rfc3339-timestamp / null,
+  "actor": actor-claim,
+  "outputs": [+ named-output],
+  "evidenceRefs": [* evidence-ref],
+  ? "extensions": extension-map,
+  ? "criticalExtensions": [* uri]
+)
+
+exact-blob = {
+  "digest": sha256-digest,
+  "byteLength": decimal-uint,
+  "mediaType": media-type
+}
+
+artifact-ref = {
+  "blob": exact-blob,
+  "representation": artifact-representation,
+  ? "layout": canonical-map
+}
+
+artifact-representation =
+  "encoded-image" /
+  "sensor-samples" /
+  "pixel-plane" /
+  "depth-map" /
+  "mask" /
+  "operation-descriptor" /
+  "model-weights" /
+  "lookup-table" /
+  "colour-profile" /
+  "font" /
+  "opaque"
+
+named-output = {
+  "outputName": nonempty-text,
+  "role": nonempty-text,
+  "artifact": artifact-ref
+}
+
+input-edge = {
+  "role": nonempty-text,
+  "relation": input-relation,
+  "producerRecordId": record-id,
+  "producerOutputName": nonempty-text,
+  "expectedArtifact": artifact-ref
+}
+
+input-relation = "consumes" / "uses"
+
+actor-claim = {
+  ? "id": nonempty-text,
+  "software": {
+    "name": nonempty-text,
+    "version": nonempty-text,
+    ? "buildDigest": sha256-digest
+  }
+}
+
+evidence-ref = {
+  "profileUri": uri,
+  "blob": exact-blob
+}
+
+; ---------------------------------------------------------------------------
+; Capture and explicit source roots
+; ---------------------------------------------------------------------------
+
+capture-record-body = {
+  "schema": "loom.image-provenance.capture/v1",
+  "kind": "capture",
+  common-record-fields,
+  "inputs": [],
+  "subject": capture-subject
+}
+
+capture-subject = {
+  "sessionId": nonempty-text,
+  "shotSequence": decimal-uint,
+  ? "challenge": capture-challenge,
+  "acquisition": capture-acquisition,
+  ? "deviceTimeClaim": rfc3339-timestamp,
+  ? "monotonicTimeClaim": decimal-uint,
+  ? "locationClaim": canonical-value
+}
+
+capture-challenge = {
+  "issuer": uri,
+  "audience": nonempty-text,
+  "nonce": base64url,
+  "issuedAt": rfc3339-timestamp,
+  "expiresAt": rfc3339-timestamp
+}
+
+capture-acquisition = {
+  "boundary": capture-boundary,
+  "providerUri": uri,
+  "providerVersion": nonempty-text,
+  ? "providerBuildDigest": sha256-digest,
+  "serializationProfileUri": uri,
+  "digitalSourceTypeUri": uri,
+  "upstreamProcessing": upstream-processing,
+  ? "requestedSettings": canonical-value,
+  ? "reportedSettings": canonical-value
+}
+
+capture-boundary =
+  "sensor-samples" /
+  "os-raw" /
+  "os-pixel-buffer" /
+  "os-encoded-asset"
+
+upstream-processing = "declared" / "opaque" / "unknown"
+
+source-record-body = {
+  "schema": "loom.image-provenance.source/v1",
+  "kind": "source",
+  common-record-fields,
+  "inputs": [],
+  "subject": source-subject
+}
+
+source-subject = {
+  "sourceType": source-type,
+  ? "description": text,
+  ? "upstreamManifest": evidence-ref
+}
+
+source-type = "imported" / "generated" / "external-provenance"
+
+; ---------------------------------------------------------------------------
+; Generic transforms
+; ---------------------------------------------------------------------------
+
+transform-record-body = {
+  ; V1 semantic invariant: every consumes input contributes to every output.
+  ; Producers split records when output dependency sets differ.
+  "schema": "loom.image-provenance.transform/v1",
+  "kind": "transform",
+  common-record-fields,
+  "inputs": [+ input-edge],
+  "subject": transform-subject
+}
+
+transform-subject = {
+  "operation": operation-ref,
+  "parameters": disclosed-parameters / committed-parameters,
+  ? "implementation": implementation-ref,
+  ? "environment": environment-ref,
+  "isolation": isolation-claim,
+  "replay": replay-claim,
+  "executionEvidenceRefs": [* evidence-ref]
+}
+
+operation-ref = {
+  "uri": uri,
+  "version": nonempty-text,
+  "descriptorDigest": sha256-digest
+}
+
+disclosed-parameters = {
+  "disclosure": "inline",
+  "value": canonical-value
+}
+
+committed-parameters = {
+  "disclosure": "commitment",
+  "commitment": sha256-digest,
+  "mediaType": media-type
+}
+
+implementation-ref = {
+  "kind": implementation-kind,
+  ? "name": nonempty-text,
+  ? "version": nonempty-text,
+  ? "digest": sha256-digest
+}
+
+implementation-kind = "wasm" / "native" / "container" / "service" / "opaque"
+
+environment-ref = {
+  "descriptorDigest": sha256-digest
+}
+
+isolation-claim = "hermetic" / "declared-input-sandbox" / "unconstrained"
+
+replay-claim =
+  bit-exact-replay /
+  tolerance-defined-replay /
+  non-replayable
+
+bit-exact-replay = {
+  "claim": "bit-exact"
+}
+
+tolerance-defined-replay = {
+  "claim": "tolerance-defined",
+  "toleranceProfileDigest": sha256-digest
+}
+
+non-replayable = {
+  "claim": "non-replayable",
+  ? "reason": text
+}
+
+operation-input-role = {
+  "role": nonempty-text,
+  "relation": input-relation
+}
+
+; ---------------------------------------------------------------------------
+; Record signatures
+; ---------------------------------------------------------------------------
+
+record-signature-statement = {
+  "domain": "loom.image-provenance.signature/v1",
+  "recordId": record-id,
+  "purpose": signature-purpose,
+  "suite": signature-suite,
+  "signerKeyFingerprint": key-fingerprint
+}
+
+record-signature = {
+  "statement": record-signature-statement,
+  ; 64-byte Ed25519 or 64-byte raw IEEE-P1363 ES256.
+  "signature": signature-value,
+  ? "inlinePublicKey": inline-public-key,
+  ? "publicKeyRef": evidence-ref,
+  ? "attestationRefs": [* evidence-ref]
+}
+
+inline-public-key = {
+  "format": "spki-der",
+  "value": base64url
+}
+
+signature-purpose =
+  "capture-origin" /
+  "source-ingest" /
+  "transform-executor" /
+  "operator-approval"
+
+trusted-signature-purpose = signature-purpose / "journal-append"
+
+signature-suite = "Ed25519" / "ES256"
+
+; ---------------------------------------------------------------------------
+; Detached evidence, attestations, and proof bindings
+; ---------------------------------------------------------------------------
+
+evidence-binding =
+  record-evidence-binding /
+  artifact-evidence-binding /
+  key-evidence-binding /
+  challenge-evidence-binding
+
+record-evidence-binding = {
+  "target": "record",
+  "recordId": record-id
+}
+
+artifact-evidence-binding = {
+  "target": "artifact",
+  "digest": sha256-digest
+}
+
+key-evidence-binding = {
+  "target": "key",
+  "keyFingerprint": key-fingerprint
+}
+
+challenge-evidence-binding = {
+  "target": "challenge",
+  "issuer": uri,
+  "nonce": base64url
+}
+
+; Post-record computational proofs use record-endorsement with a registered
+; proof profile. The profile verifier must establish its claimed bindings.
+
+; ---------------------------------------------------------------------------
+; Append-only journal
+; ---------------------------------------------------------------------------
+
+journal-entry-body = {
+  "schema": "loom.image-provenance.journal-entry/v1",
+  "journalId": nonempty-text,
+  "sequence": decimal-uint,
+  "previousEntryId": journal-entry-id / null,
+  "event": journal-event,
+  ; Semantic invariant: sorted and duplicate-free.
+  "priorHeads": [* record-id],
+  ; Semantic invariant: sorted and duplicate-free.
+  "resultingHeads": [* record-id]
+}
+
+; Semantic chain rules: genesis is sequence "0" / null predecessor / empty
+; priorHeads. Later entries retain journalId, increment sequence exactly once,
+; name the immediately preceding recomputed entryId, and copy its resultingHeads
+; into priorHeads. CONTRACT.md defines record-committed and checkpoint updates.
+
+journal-event = record-committed-event / heads-checkpoint-event
+
+record-committed-event = {
+  "kind": "record-committed",
+  "recordId": record-id
+}
+
+heads-checkpoint-event = {
+  "kind": "heads-checkpoint",
+  ; Semantic invariant: sorted, duplicate-free, and equal to prior/result heads.
+  "headRecordIds": [* record-id]
+}
+
+journal-signature-statement = {
+  "domain": "loom.image-provenance.journal-signature/v1",
+  "entryId": journal-entry-id,
+  "purpose": "journal-append",
+  "suite": signature-suite,
+  "signerKeyFingerprint": key-fingerprint
+}
+
+journal-signature = {
+  "statement": journal-signature-statement,
+  "signature": signature-value,
+  ? "inlinePublicKey": inline-public-key,
+  ? "publicKeyRef": evidence-ref
+}
+
+; ---------------------------------------------------------------------------
+; Anchors, blob transport, and externally selected roots
+; ---------------------------------------------------------------------------
+
+; Optional AnchorReceipt.profileUri value:
+; "loom.image-provenance/witness/dregg/v1"
+
+blob-location = {
+  "blob": exact-blob,
+  ? "inlineBase64Url": base64url,
+  ? "locations": [* uri]
+}
+
+output-pointer = {
+  "recordId": record-id,
+  "outputName": nonempty-text
+}
+
+; ---------------------------------------------------------------------------
+; Verification policy, trust inputs, and result
+; ---------------------------------------------------------------------------
+
+record-kind = "capture" / "source" / "transform"
+source-root-kind = "capture" / "source"
+
+origin-assurance =
+  "self-declared" /
+  "app-attested" /
+  "os-attested" /
+  "sensor-path-attested"
+
+replay-requirement = "none" / "when-claimed" / "every-transform"
+
+verification-limits = {
+  "maxBundleObjects": decimal-uint,
+  "maxRecords": decimal-uint,
+  "maxDepth": decimal-uint,
+  "maxReferencedBytes": decimal-uint,
+  "maxBlobCandidatesPerDigest": decimal-uint,
+  "maxVerificationBytes": decimal-uint
+}
+
+trusted-key = {
+  "fingerprint": key-fingerprint,
+  "purposes": [* trusted-signature-purpose],
+  "publicKey": inline-public-key,
+  ? "notBefore": rfc3339-timestamp,
+  ? "notAfter": rfc3339-timestamp,
+  ? "revokedAt": rfc3339-timestamp
+}
+
+trusted-checkpoint = {
+  "witnessId": nonempty-text,
+  "profileUri": uri,
+  "checkpoint": exact-blob,
+  "checkpointBytes": base64url
+}
+
+trust-store = {
+  "keys": [* trusted-key],
+  "acceptedEvidenceProfiles": [* uri],
+  "acceptedWitnessProfiles": [* uri]
+}
+
+verification-verdict = "accept" / "reject" / "indeterminate"
+
+check-status =
+  "valid" /
+  "invalid" /
+  "indeterminate" /
+  "unsupported" /
+  "not-present"
+
+lineage-status = "complete" / "partial" / "broken"
+
+execution-status =
+  "declared" /
+  "replayed-exact" /
+  "replayed-within-tolerance" /
+  "proof-verified" /
+  "execution-attested" /
+  "not-reproducible"
+
+capture-evidence = {
+  "contentRoots": [* content-root-verification],
+  "contentComposition": "capture-only" / "source-only" / "mixed" / "not-reached",
+  "captures": [* capture-verification],
+  "minimumRequired": origin-assurance,
+  "weakestOriginAssurance": origin-assurance / "not-reached",
+  "allCapturesSatisfyMinimum": check-status
+}
+
+content-root-verification = {
+  "recordId": record-id,
+  "kind": "capture" / "source",
+  ? "sourceType": source-type
+}
+
+capture-verification = {
+  "recordId": record-id,
+  "acquisitionBoundary": capture-boundary,
+  "originAssurance": origin-assurance,
+  "boundaryBinding": check-status,
+  "appIdentity": check-status,
+  "osBinding": check-status,
+  "keyProtection": check-status,
+  "sensorBinding": check-status,
+  "freshness": check-status,
+  "time": check-status,
+  "location": check-status
+}
+
+record-verification = {
+  "recordId": record-id,
+  "structure": check-status,
+  "signature": check-status,
+  "signerTrust": check-status,
+  "artifacts": check-status,
+  "operationSemantics": check-status,
+  "execution": execution-status
+}
+
+verification-finding = {
+  "code": finding-code,
+  "status": finding-status,
+  "message": nonempty-text,
+  ? "recordId": record-id,
+  ? "outputName": nonempty-text
+}
+
+finding-status = "valid" / "invalid" / "indeterminate" / "unsupported"
+
+finding-code =
+  "HASH_MISMATCH" /
+  "BYTE_LENGTH_MISMATCH" /
+  "SIGNATURE_INVALID" /
+  "SIGNER_UNTRUSTED" /
+  "SIGNER_REVOKED" /
+  "MISSING_PARENT" /
+  "MISSING_OUTPUT" /
+  "EDGE_ARTIFACT_MISMATCH" /
+  "MISSING_BLOB" /
+  "ATTESTATION_INVALID" /
+  "LOG_PROOF_INVALID" /
+  "LOG_CONSISTENCY_INVALID" /
+  "CLOCK_UNTRUSTED" /
+  "EXECUTION_UNVERIFIED" /
+  "OPERATION_UNVERIFIED" /
+  "REPLAY_MISMATCH" /
+  "UNKNOWN_CRITICAL_EXTENSION" /
+  "UNSUPPORTED_VERSION" /
+  "UNSUPPORTED_ALGORITHM" /
+  "GRAPH_CYCLE" /
+  "POLICY_DENIED"
+
+; ---------------------------------------------------------------------------
+; Number-free canonical JSON values
+; ---------------------------------------------------------------------------
+
+canonical-value =
+  null /
+  true /
+  false /
+  text /
+  canonical-decimal /
+  canonical-bytes /
+  canonical-array /
+  canonical-map
+
+canonical-decimal = {
+  "$type": "decimal",
+  "coefficient": decimal-integer,
+  "scale": decimal-integer
+}
+
+canonical-bytes = {
+  "$type": "bytes",
+  "base64url": base64url
+}
+
+canonical-array = [* canonical-value]
+
+; "$type" is reserved and forbidden in an ordinary canonical-map.
+canonical-map = {
+  * canonical-map-key => canonical-value
+}
+
+canonical-map-key = text .ne "$type"
+
+extension-map = {
+  * uri => canonical-value
+}
+
+; ---------------------------------------------------------------------------
+; Lexical types
+; ---------------------------------------------------------------------------
+
+decimal-integer = text .regexp "(0|-?[1-9][0-9]*)"
+; TypeScript name: NonNegativeDecimalInteger.
+decimal-uint = text .regexp "(0|[1-9][0-9]*)"
+
+; Canonical unpadded base64url, including zeroed unused bits.
+base64url =
+  text .regexp "([A-Za-z0-9_-]{4})*([A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?"
+
+; Canonical unpadded base64url for exactly 32 bytes.
+sha256-digest =
+  text .regexp "sha256:[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]"
+
+record-id = sha256-digest
+journal-entry-id = sha256-digest
+key-fingerprint = sha256-digest
+
+; Canonical unpadded base64url for exactly 64 bytes.
+signature-value = text .regexp "[A-Za-z0-9_-]{85}[AQgw]"
+
+; A conservative ASCII lexical precheck. CONTRACT.md requires full RFC 3986
+; absolute-URI parsing, valid percent escapes, and no IRI characters.
+uri = text .regexp "[A-Za-z][A-Za-z0-9+.-]*:[!-~]+"
+nonempty-text = text .regexp ".+"
+
+; Full RFC 9110 parameter and quoted-string validation is semantic.
+media-type =
+  text .regexp "[A-Za-z0-9!#$%&'*+.^_`|~-]+/[A-Za-z0-9!#$%&'*+.^_`|~-]+([ \t]*;[ \t]*[^\r\n]+)?"
+
+; Full calendar validation is semantic; v1 intentionally rejects leap-second
+; :60 as well as lowercase t/z.
+rfc3339-timestamp =
+  text .regexp "[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])"

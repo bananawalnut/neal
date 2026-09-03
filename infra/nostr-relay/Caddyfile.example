@@ -1,0 +1,32 @@
+# Install Caddy on the Linux host and keep both upstream services bound to
+# loopback. Caddy handles TLS and WebSocket upgrades automatically.
+
+nealtheseal.org, www.nealtheseal.org {
+    root * /srv/neal/site
+    encode zstd gzip
+    try_files {path} /index.html
+    file_server
+}
+
+matrix.nealtheseal.org {
+    @matrix_server_discovery path /.well-known/matrix/server
+    header @matrix_server_discovery Content-Type application/json
+    respond @matrix_server_discovery `{"m.server":"matrix.nealtheseal.org:443"}` 200
+
+    @matrix_client_discovery path /.well-known/matrix/client
+    header @matrix_client_discovery Content-Type application/json
+    header @matrix_client_discovery Access-Control-Allow-Origin *
+    respond @matrix_client_discovery `{"m.homeserver":{"base_url":"https://matrix.nealtheseal.org"}}` 200
+
+    @synapse_admin path /_synapse/admin/*
+    respond @synapse_admin 404
+
+    reverse_proxy 127.0.0.1:8008
+}
+
+nostr.nealtheseal.org {
+    @relay_metrics path /metrics
+    respond @relay_metrics 404
+
+    reverse_proxy 127.0.0.1:7777
+}

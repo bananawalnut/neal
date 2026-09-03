@@ -1,0 +1,744 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:loom:image-provenance:schema:bundle:v1",
+  "title": "Loom image-provenance v1 bundle",
+  "description": "Strict structural schema for the platform-neutral image-provenance transport bundle. Hash recomputation, cross-record equality, signature verification, graph closure, and trust policy are verifier responsibilities.",
+  "$ref": "#/$defs/provenanceBundle",
+  "$defs": {
+    "sha256Digest": {
+      "type": "string",
+      "description": "SHA-256 followed by the canonical, unpadded base64url encoding of 32 bytes.",
+      "pattern": "^sha256:[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "decimalInteger": {
+      "type": "string",
+      "description": "Canonical base-10 integer: no leading zero, plus sign, exponent, or negative zero.",
+      "pattern": "^(?:0|-?[1-9][0-9]*)$"
+    },
+    "nonNegativeDecimalInteger": {
+      "type": "string",
+      "description": "Canonical non-negative base-10 integer.",
+      "pattern": "^(?:0|[1-9][0-9]*)$"
+    },
+    "base64Url": {
+      "type": "string",
+      "description": "Canonical unpadded base64url. Empty is valid for an empty byte string.",
+      "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$"
+    },
+    "signatureValue": {
+      "type": "string",
+      "description": "Unpadded base64url encoding of a 64-byte Ed25519 or IEEE-P1363 ES256 signature.",
+      "pattern": "^(?:[A-Za-z0-9_-]{4})*[A-Za-z0-9_-][AQgw]$",
+      "minLength": 86,
+      "maxLength": 86
+    },
+    "uri": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z][A-Za-z0-9+.-]*:(?:[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=-]|%[0-9A-Fa-f]{2})+$",
+      "format": "uri"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$",
+      "format": "date-time"
+    },
+    "mediaType": {
+      "type": "string",
+      "description": "An Internet media type without surrounding whitespace.",
+      "pattern": "^[A-Za-z0-9!#$%&'*+.^_`|~-]+/[A-Za-z0-9!#$%&'*+.^_`|~-]+(?:[ \\t]*;[^\\r\\n]*)*$",
+      "x-loom-format": "rfc9110-media-type"
+    },
+    "canonicalDecimal": {
+      "type": "object",
+      "required": ["$type", "coefficient", "scale"],
+      "properties": {
+        "$type": { "const": "decimal" },
+        "coefficient": { "$ref": "#/$defs/decimalInteger" },
+        "scale": { "$ref": "#/$defs/decimalInteger" }
+      },
+      "additionalProperties": false
+    },
+    "canonicalBytes": {
+      "type": "object",
+      "required": ["$type", "base64url"],
+      "properties": {
+        "$type": { "const": "bytes" },
+        "base64url": { "$ref": "#/$defs/base64Url" }
+      },
+      "additionalProperties": false
+    },
+    "canonicalArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/canonicalValue" }
+    },
+    "canonicalMap": {
+      "type": "object",
+      "description": "A number-free string-keyed map. The $type key is reserved for canonical tagged values.",
+      "not": {
+        "type": "object",
+        "required": ["$type"],
+        "properties": { "$type": true }
+      },
+      "additionalProperties": { "$ref": "#/$defs/canonicalValue" }
+    },
+    "canonicalValue": {
+      "description": "A recursively number-free JSON value safe for the v1 JCS signed value space.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "string" },
+        { "$ref": "#/$defs/canonicalDecimal" },
+        { "$ref": "#/$defs/canonicalBytes" },
+        { "$ref": "#/$defs/canonicalArray" },
+        { "$ref": "#/$defs/canonicalMap" }
+      ]
+    },
+    "extensionMap": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/uri" },
+      "additionalProperties": { "$ref": "#/$defs/canonicalValue" }
+    },
+    "exactBlob": {
+      "type": "object",
+      "description": "Exact byte identity; storage locations are deliberately excluded.",
+      "required": ["digest", "byteLength", "mediaType"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/sha256Digest" },
+        "byteLength": { "$ref": "#/$defs/nonNegativeDecimalInteger" },
+        "mediaType": { "$ref": "#/$defs/mediaType" }
+      },
+      "additionalProperties": false
+    },
+    "artifactRepresentation": {
+      "enum": [
+        "encoded-image",
+        "sensor-samples",
+        "pixel-plane",
+        "depth-map",
+        "mask",
+        "operation-descriptor",
+        "model-weights",
+        "lookup-table",
+        "colour-profile",
+        "font",
+        "opaque"
+      ]
+    },
+    "artifactRef": {
+      "type": "object",
+      "description": "Exact artifact identity. Layout is required by the applicable profile when the bytes are not a self-describing file.",
+      "required": ["blob", "representation"],
+      "properties": {
+        "blob": { "$ref": "#/$defs/exactBlob" },
+        "representation": { "$ref": "#/$defs/artifactRepresentation" },
+        "layout": { "$ref": "#/$defs/canonicalMap" }
+      },
+      "additionalProperties": false
+    },
+    "namedOutput": {
+      "type": "object",
+      "required": ["outputName", "role", "artifact"],
+      "properties": {
+        "outputName": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "artifact": { "$ref": "#/$defs/artifactRef" }
+      },
+      "additionalProperties": false
+    },
+    "inputEdge": {
+      "type": "object",
+      "description": "A verifier must require expectedArtifact to exactly equal the selected named producer output.",
+      "required": ["role", "relation", "producerRecordId", "producerOutputName", "expectedArtifact"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "relation": { "enum": ["consumes", "uses"] },
+        "producerRecordId": { "$ref": "#/$defs/sha256Digest" },
+        "producerOutputName": { "type": "string", "minLength": 1 },
+        "expectedArtifact": { "$ref": "#/$defs/artifactRef" }
+      },
+      "additionalProperties": false
+    },
+    "actorClaim": {
+      "type": "object",
+      "required": ["software"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "software": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 },
+            "buildDigest": { "$ref": "#/$defs/sha256Digest" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidenceRef": {
+      "type": "object",
+      "required": ["profileUri", "blob"],
+      "properties": {
+        "profileUri": { "$ref": "#/$defs/uri" },
+        "blob": { "$ref": "#/$defs/exactBlob" }
+      },
+      "additionalProperties": false
+    },
+    "commonRecordBody": {
+      "type": "object",
+      "description": "Common number-free properties hashed as part of every record body.",
+      "required": ["occurredAt", "actor", "inputs", "outputs", "evidenceRefs"],
+      "properties": {
+        "occurredAt": {
+          "oneOf": [
+            { "$ref": "#/$defs/timestamp" },
+            { "type": "null" }
+          ]
+        },
+        "actor": { "$ref": "#/$defs/actorClaim" },
+        "inputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/inputEdge" }
+        },
+        "outputs": {
+          "type": "array",
+          "description": "Output names must be unique within their producer; that cross-item invariant is checked by the verifier.",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/namedOutput" },
+          "uniqueItems": true
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" },
+          "uniqueItems": true
+        },
+        "extensions": { "$ref": "#/$defs/extensionMap" },
+        "criticalExtensions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/uri" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "required": ["issuer", "audience", "nonce", "issuedAt", "expiresAt"],
+      "properties": {
+        "issuer": { "$ref": "#/$defs/uri" },
+        "audience": { "type": "string", "minLength": 1 },
+        "nonce": { "$ref": "#/$defs/base64Url" },
+        "issuedAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "captureAcquisition": {
+      "type": "object",
+      "required": [
+        "boundary",
+        "providerUri",
+        "providerVersion",
+        "serializationProfileUri",
+        "digitalSourceTypeUri",
+        "upstreamProcessing"
+      ],
+      "properties": {
+        "boundary": {
+          "enum": ["sensor-samples", "os-raw", "os-pixel-buffer", "os-encoded-asset"]
+        },
+        "providerUri": { "$ref": "#/$defs/uri" },
+        "providerVersion": { "type": "string", "minLength": 1 },
+        "providerBuildDigest": { "$ref": "#/$defs/sha256Digest" },
+        "serializationProfileUri": { "$ref": "#/$defs/uri" },
+        "digitalSourceTypeUri": { "$ref": "#/$defs/uri" },
+        "upstreamProcessing": { "enum": ["declared", "opaque", "unknown"] },
+        "requestedSettings": { "$ref": "#/$defs/canonicalValue" },
+        "reportedSettings": { "$ref": "#/$defs/canonicalValue" }
+      },
+      "additionalProperties": false
+    },
+    "captureSubject": {
+      "type": "object",
+      "required": ["sessionId", "shotSequence", "acquisition"],
+      "properties": {
+        "sessionId": { "type": "string", "minLength": 1 },
+        "shotSequence": { "$ref": "#/$defs/nonNegativeDecimalInteger" },
+        "challenge": { "$ref": "#/$defs/challenge" },
+        "acquisition": { "$ref": "#/$defs/captureAcquisition" },
+        "deviceTimeClaim": { "$ref": "#/$defs/timestamp" },
+        "monotonicTimeClaim": { "$ref": "#/$defs/nonNegativeDecimalInteger" },
+        "locationClaim": { "$ref": "#/$defs/canonicalValue" }
+      },
+      "additionalProperties": false
+    },
+    "captureRecordBody": {
+      "type": "object",
+      "description": "The signed capture body. It cannot contain its own recordId and contains no JSON numbers.",
+      "allOf": [
+        { "$ref": "#/$defs/commonRecordBody" },
+        {
+          "type": "object",
+          "required": ["schema", "kind", "subject"],
+          "properties": {
+            "schema": { "const": "loom.image-provenance.capture/v1" },
+            "kind": { "const": "capture" },
+            "inputs": { "type": "array", "maxItems": 0 },
+            "subject": { "$ref": "#/$defs/captureSubject" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "sourceSubject": {
+      "type": "object",
+      "required": ["sourceType"],
+      "properties": {
+        "sourceType": { "enum": ["imported", "generated", "external-provenance"] },
+        "description": { "type": "string" },
+        "upstreamManifest": { "$ref": "#/$defs/evidenceRef" }
+      },
+      "additionalProperties": false
+    },
+    "sourceRecordBody": {
+      "type": "object",
+      "description": "The signed explicit-source body. It cannot contain its own recordId and contains no JSON numbers.",
+      "allOf": [
+        { "$ref": "#/$defs/commonRecordBody" },
+        {
+          "type": "object",
+          "required": ["schema", "kind", "subject"],
+          "properties": {
+            "schema": { "const": "loom.image-provenance.source/v1" },
+            "kind": { "const": "source" },
+            "inputs": { "type": "array", "maxItems": 0 },
+            "subject": { "$ref": "#/$defs/sourceSubject" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "operation": {
+      "type": "object",
+      "required": ["uri", "version", "descriptorDigest"],
+      "properties": {
+        "uri": { "$ref": "#/$defs/uri" },
+        "version": { "type": "string", "minLength": 1 },
+        "descriptorDigest": { "$ref": "#/$defs/sha256Digest" }
+      },
+      "additionalProperties": false
+    },
+    "disclosedParameters": {
+      "type": "object",
+      "required": ["disclosure", "value"],
+      "properties": {
+        "disclosure": { "const": "inline" },
+        "value": { "$ref": "#/$defs/canonicalValue" }
+      },
+      "additionalProperties": false
+    },
+    "committedParameters": {
+      "type": "object",
+      "required": ["disclosure", "commitment", "mediaType"],
+      "properties": {
+        "disclosure": { "const": "commitment" },
+        "commitment": { "$ref": "#/$defs/sha256Digest" },
+        "mediaType": { "$ref": "#/$defs/mediaType" }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["wasm", "native", "container", "service", "opaque"] },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "$ref": "#/$defs/sha256Digest" }
+      },
+      "additionalProperties": false
+    },
+    "executionEnvironment": {
+      "type": "object",
+      "required": ["descriptorDigest"],
+      "properties": {
+        "descriptorDigest": { "$ref": "#/$defs/sha256Digest" }
+      },
+      "additionalProperties": false
+    },
+    "replayClaim": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["claim"],
+          "properties": { "claim": { "const": "bit-exact" } },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["claim", "toleranceProfileDigest"],
+          "properties": {
+            "claim": { "const": "tolerance-defined" },
+            "toleranceProfileDigest": { "$ref": "#/$defs/sha256Digest" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["claim"],
+          "properties": {
+            "claim": { "const": "non-replayable" },
+            "reason": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "transformSubject": {
+      "type": "object",
+      "required": ["operation", "parameters", "isolation", "replay", "executionEvidenceRefs"],
+      "properties": {
+        "operation": { "$ref": "#/$defs/operation" },
+        "parameters": {
+          "oneOf": [
+            { "$ref": "#/$defs/disclosedParameters" },
+            { "$ref": "#/$defs/committedParameters" }
+          ]
+        },
+        "implementation": { "$ref": "#/$defs/implementation" },
+        "environment": { "$ref": "#/$defs/executionEnvironment" },
+        "isolation": { "enum": ["hermetic", "declared-input-sandbox", "unconstrained"] },
+        "replay": { "$ref": "#/$defs/replayClaim" },
+        "executionEvidenceRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "transformRecordBody": {
+      "type": "object",
+      "description": "The signed generic transform body. It cannot contain its own recordId and contains no JSON numbers. V1 semantics require every consumes input to contribute to every named output; split records when output dependency sets differ.",
+      "allOf": [
+        { "$ref": "#/$defs/commonRecordBody" },
+        {
+          "type": "object",
+          "required": ["schema", "kind", "subject"],
+          "properties": {
+            "schema": { "const": "loom.image-provenance.transform/v1" },
+            "kind": { "const": "transform" },
+            "inputs": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/inputEdge" }
+            },
+            "subject": { "$ref": "#/$defs/transformSubject" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "recordBody": {
+      "oneOf": [
+        { "$ref": "#/$defs/captureRecordBody" },
+        { "$ref": "#/$defs/sourceRecordBody" },
+        { "$ref": "#/$defs/transformRecordBody" }
+      ]
+    },
+    "signaturePurpose": {
+      "enum": ["capture-origin", "source-ingest", "transform-executor", "operator-approval"]
+    },
+    "recordSignatureStatement": {
+      "type": "object",
+      "description": "The exact RFC 8785 object signed by a record signature.",
+      "required": ["domain", "recordId", "purpose", "suite", "signerKeyFingerprint"],
+      "properties": {
+        "domain": { "const": "loom.image-provenance.signature/v1" },
+        "recordId": { "$ref": "#/$defs/sha256Digest" },
+        "purpose": { "$ref": "#/$defs/signaturePurpose" },
+        "suite": { "enum": ["Ed25519", "ES256"] },
+        "signerKeyFingerprint": { "$ref": "#/$defs/sha256Digest" }
+      },
+      "additionalProperties": false
+    },
+    "inlinePublicKey": {
+      "type": "object",
+      "required": ["format", "value"],
+      "properties": {
+        "format": { "const": "spki-der" },
+        "value": { "$ref": "#/$defs/base64Url" }
+      },
+      "additionalProperties": false
+    },
+    "recordSignature": {
+      "type": "object",
+      "required": ["statement", "signature"],
+      "properties": {
+        "statement": { "$ref": "#/$defs/recordSignatureStatement" },
+        "signature": { "$ref": "#/$defs/signatureValue" },
+        "inlinePublicKey": { "$ref": "#/$defs/inlinePublicKey" },
+        "publicKeyRef": { "$ref": "#/$defs/evidenceRef" },
+        "attestationRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "recordEnvelope": {
+      "type": "object",
+      "description": "The body is hashed into recordId. Signatures are detached and each statement.recordId must equal this envelope recordId.",
+      "required": ["schema", "recordId", "body", "signatures"],
+      "properties": {
+        "schema": { "const": "loom.image-provenance.record-envelope/v1" },
+        "recordId": { "$ref": "#/$defs/sha256Digest" },
+        "body": { "$ref": "#/$defs/recordBody" },
+        "signatures": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/recordSignature" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidenceBinding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["target", "recordId"],
+          "properties": {
+            "target": { "const": "record" },
+            "recordId": { "$ref": "#/$defs/sha256Digest" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["target", "digest"],
+          "properties": {
+            "target": { "const": "artifact" },
+            "digest": { "$ref": "#/$defs/sha256Digest" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["target", "keyFingerprint"],
+          "properties": {
+            "target": { "const": "key" },
+            "keyFingerprint": { "$ref": "#/$defs/sha256Digest" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["target", "issuer", "nonce"],
+          "properties": {
+            "target": { "const": "challenge" },
+            "issuer": { "$ref": "#/$defs/uri" },
+            "nonce": { "$ref": "#/$defs/base64Url" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "recordEndorsement": {
+      "type": "object",
+      "description": "Post-record evidence. Only its exact profile verifier may promote the expected bindings to established claims.",
+      "required": ["schema", "profileUri", "targetRecordId", "expectedBindings", "evidence"],
+      "properties": {
+        "schema": { "const": "loom.image-provenance.endorsement/v1" },
+        "profileUri": { "$ref": "#/$defs/uri" },
+        "targetRecordId": { "$ref": "#/$defs/sha256Digest" },
+        "expectedBindings": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidenceBinding" },
+          "uniqueItems": true
+        },
+        "evidence": { "$ref": "#/$defs/exactBlob" }
+      },
+      "additionalProperties": false
+    },
+    "recordCommittedEvent": {
+      "type": "object",
+      "required": ["kind", "recordId"],
+      "properties": {
+        "kind": { "const": "record-committed" },
+        "recordId": { "$ref": "#/$defs/sha256Digest" }
+      },
+      "additionalProperties": false
+    },
+    "headsCheckpointEvent": {
+      "type": "object",
+      "required": ["kind", "headRecordIds"],
+      "properties": {
+        "kind": { "const": "heads-checkpoint" },
+        "headRecordIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sha256Digest" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "journalEntryBody": {
+      "type": "object",
+      "description": "The number-free signed journal-entry body. It cannot contain its own entryId.",
+      "required": ["schema", "journalId", "sequence", "previousEntryId", "event", "priorHeads", "resultingHeads"],
+      "properties": {
+        "schema": { "const": "loom.image-provenance.journal-entry/v1" },
+        "journalId": { "type": "string", "minLength": 1 },
+        "sequence": { "$ref": "#/$defs/nonNegativeDecimalInteger" },
+        "previousEntryId": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256Digest" },
+            { "type": "null" }
+          ]
+        },
+        "event": {
+          "oneOf": [
+            { "$ref": "#/$defs/recordCommittedEvent" },
+            { "$ref": "#/$defs/headsCheckpointEvent" }
+          ]
+        },
+        "priorHeads": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sha256Digest" },
+          "uniqueItems": true
+        },
+        "resultingHeads": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sha256Digest" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "journalSignatureStatement": {
+      "type": "object",
+      "description": "The exact RFC 8785 object signed by a journal signature.",
+      "required": ["domain", "entryId", "purpose", "suite", "signerKeyFingerprint"],
+      "properties": {
+        "domain": { "const": "loom.image-provenance.journal-signature/v1" },
+        "entryId": { "$ref": "#/$defs/sha256Digest" },
+        "purpose": { "const": "journal-append" },
+        "suite": { "enum": ["Ed25519", "ES256"] },
+        "signerKeyFingerprint": { "$ref": "#/$defs/sha256Digest" }
+      },
+      "additionalProperties": false
+    },
+    "journalSignature": {
+      "type": "object",
+      "required": ["statement", "signature"],
+      "properties": {
+        "statement": { "$ref": "#/$defs/journalSignatureStatement" },
+        "signature": { "$ref": "#/$defs/signatureValue" },
+        "inlinePublicKey": { "$ref": "#/$defs/inlinePublicKey" },
+        "publicKeyRef": { "$ref": "#/$defs/evidenceRef" }
+      },
+      "additionalProperties": false
+    },
+    "journalEntryEnvelope": {
+      "type": "object",
+      "description": "The body is hashed into entryId. Each signature statement.entryId must equal the envelope entryId.",
+      "required": ["schema", "entryId", "body", "signatures"],
+      "properties": {
+        "schema": { "const": "loom.image-provenance.journal-envelope/v1" },
+        "entryId": { "$ref": "#/$defs/sha256Digest" },
+        "body": { "$ref": "#/$defs/journalEntryBody" },
+        "signatures": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/journalSignature" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "anchorReceipt": {
+      "type": "object",
+      "description": "Opaque external witness material. Meaning comes only from the generic profileUri and an out-of-band trusted verifier.",
+      "required": ["schema", "profileUri", "witnessId", "subjectEntryId", "receipt", "checkpoint"],
+      "properties": {
+        "schema": { "const": "loom.image-provenance.anchor-receipt/v1" },
+        "profileUri": { "$ref": "#/$defs/uri" },
+        "witnessId": { "type": "string", "minLength": 1 },
+        "subjectEntryId": { "$ref": "#/$defs/sha256Digest" },
+        "receipt": { "$ref": "#/$defs/exactBlob" },
+        "checkpoint": { "$ref": "#/$defs/exactBlob" },
+        "consistencyProof": { "$ref": "#/$defs/exactBlob" },
+        "witnessedAtClaim": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "blobLocation": {
+      "type": "object",
+      "description": "Transport-only bytes or locations. A verifier must recompute blob identity before use.",
+      "required": ["blob"],
+      "properties": {
+        "blob": { "$ref": "#/$defs/exactBlob" },
+        "inlineBase64Url": { "$ref": "#/$defs/base64Url" },
+        "locations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/uri" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputPointer": {
+      "type": "object",
+      "required": ["recordId", "outputName"],
+      "properties": {
+        "recordId": { "$ref": "#/$defs/sha256Digest" },
+        "outputName": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "provenanceBundle": {
+      "type": "object",
+      "description": "Transport container. Array order and suggestedRoots have no trust semantics; callers select the root output independently.",
+      "required": ["schema", "records", "journalEntries", "endorsements", "anchors", "blobs"],
+      "properties": {
+        "schema": { "const": "loom.image-provenance.bundle/v1" },
+        "records": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/recordEnvelope" },
+          "uniqueItems": true
+        },
+        "journalEntries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/journalEntryEnvelope" },
+          "uniqueItems": true
+        },
+        "endorsements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/recordEndorsement" },
+          "uniqueItems": true
+        },
+        "anchors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/anchorReceipt" },
+          "uniqueItems": true
+        },
+        "blobs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/blobLocation" },
+          "uniqueItems": true
+        },
+        "suggestedRoots": {
+          "type": "array",
+          "description": "Untrusted UI/transport hint only.",
+          "items": { "$ref": "#/$defs/outputPointer" },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
