@@ -1,5 +1,7 @@
 # NEAL launch control sheet
 
+[![CI](https://github.com/bananawalnut/neal/actions/workflows/ci.yml/badge.svg)](https://github.com/bananawalnut/neal/actions/workflows/ci.yml)
+
 The complete program is defined in [the master plan](docs/MASTER_PLAN.md), with separate [architecture](docs/ARCHITECTURE.md), [decisions](docs/DECISIONS.md), [threat model](docs/THREAT_MODEL.md), [contract](docs/CONTRACT.md), and [live status](docs/STATUS.md) documents.
 
 To open the separate pre-launch verification site on macOS, double-click `Start NEAL Site.command`. Launch and wallet actions remain fail-closed and the site states that no official mint exists; the free local YAHOO toy is interactive.
