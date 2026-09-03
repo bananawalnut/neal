@@ -1,0 +1,139 @@
+{
+  "model_version": "2.0.0",
+  "launch_date": "2026-09-01",
+  "horizon_days": 21,
+  "report_day": 14,
+  "simulations": 20000,
+  "seed": 20260903,
+  "probability_sweep": {
+    "simulations": 5000,
+    "target_probabilities": [0.5, 0.8, 0.9],
+    "trades_per_active_grid": {
+      "bounded_community": [80, 90, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145],
+      "incidence_baseline": [38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62],
+      "stock_momentum": [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
+      "branching_breakout": [30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56]
+    }
+  },
+  "milestones": {
+    "day_3_cumulative_buyers": 22.0,
+    "day_7_cumulative_buyers": 100.0,
+    "condition_simulated_paths": true,
+    "interpretation": "user supplied planning targets; every simulated path is bridged through Day 3 and Day 7"
+  },
+  "historical_daily": [
+    {
+      "day": 1,
+      "date": "2026-09-01",
+      "volume_usd": 758.1311999195037,
+      "close_market_cap_usd": 3247.7924464612765
+    },
+    {
+      "day": 2,
+      "date": "2026-09-02",
+      "volume_usd": 302.2977314363593,
+      "close_market_cap_usd": 3275.787941862094
+    }
+  ],
+  "trading": {
+    "average_transaction_usd": 20.0,
+    "transaction_size_cv": 0.75,
+    "target_creator_fees_usd": 5000.0,
+    "treasury_share_of_creator_fee": 0.42,
+    "curve_fee_profile": {
+      "creator": 0.003,
+      "protocol": 0.0095,
+      "lp": 0.0,
+      "total": 0.0125
+    },
+    "post_grad_low_tier_profile": {
+      "creator": 0.003,
+      "protocol": 0.0093,
+      "lp": 0.0002,
+      "total": 0.0125
+    },
+    "post_grad_bonus_tier_profile": {
+      "creator": 0.0095,
+      "protocol": 0.0005,
+      "lp": 0.002,
+      "total": 0.012
+    }
+  },
+  "market": {
+    "token_supply": 1000000000.0,
+    "sol_usd": 99.56440808137744,
+    "virtual_sol_start": 32.54365449,
+    "virtual_token_start": 989132921.180439,
+    "virtual_sol_floor": 30.0,
+    "real_sol_start": 2.54365449,
+    "graduation_real_sol": 85.0053591696342,
+    "net_flow_capture": 1.0
+  },
+  "scenarios": [
+    {
+      "name": "bounded_community",
+      "label": "Bounded community",
+      "diffusion": "logistic",
+      "carrying_capacity": 500.0,
+      "buyer_dispersion": 35.0,
+      "daily_repeat_participation_probability": 0.3,
+      "participation_age_decay": 0.08,
+      "trades_per_active_buyer": 5.0,
+      "activity_shape": 5.0,
+      "buy_share_mean": 0.5,
+      "buy_share_concentration": 140.0,
+      "post_grad_fee_profile": "post_grad_low_tier_profile"
+    },
+    {
+      "name": "incidence_baseline",
+      "label": "Incidence baseline",
+      "diffusion": "incidence_exponential",
+      "carrying_capacity": null,
+      "buyer_dispersion": 45.0,
+      "daily_repeat_participation_probability": 0.5,
+      "participation_age_decay": 0.04,
+      "trades_per_active_buyer": 10.0,
+      "activity_shape": 8.0,
+      "buy_share_mean": 0.5,
+      "buy_share_concentration": 180.0,
+      "post_grad_fee_profile": "post_grad_low_tier_profile"
+    },
+    {
+      "name": "stock_momentum",
+      "label": "Stock-growth stress",
+      "diffusion": "stock_exponential",
+      "carrying_capacity": null,
+      "buyer_dispersion": 40.0,
+      "daily_repeat_participation_probability": 0.6,
+      "participation_age_decay": 0.0,
+      "trades_per_active_buyer": 26.0,
+      "activity_shape": 7.0,
+      "buy_share_mean": 0.5,
+      "buy_share_concentration": 180.0,
+      "post_grad_fee_profile": "post_grad_low_tier_profile"
+    },
+    {
+      "name": "branching_breakout",
+      "label": "Referral-renewal breakout",
+      "diffusion": "branching",
+      "carrying_capacity": 5000.0,
+      "external_buyers_per_day": 0.5,
+      "referral_delay_weights": [0.45, 0.3, 0.15, 0.07, 0.03],
+      "buyer_dispersion": 30.0,
+      "daily_repeat_participation_probability": 0.75,
+      "participation_age_decay": 0.02,
+      "trades_per_active_buyer": 15.0,
+      "activity_shape": 5.0,
+      "buy_share_mean": 0.55,
+      "buy_share_concentration": 100.0,
+      "post_grad_fee_profile": "post_grad_low_tier_profile"
+    }
+  ],
+  "sources": {
+    "pump_fees": "https://pump.fun/docs/fees",
+    "pump_bonding_curve": "https://pump.fun/docs/bonding-curve",
+    "pump_coin_api": "https://frontend-api-v3.pump.fun/coins/8JBYSxrFRMf1Y4NcbjyEsxGPFe4AXzHXELmXh4WYDCBE",
+    "gecko_daily_ohlcv": "https://api.geckoterminal.com/api/v2/networks/solana/pools/MrBVDvfCYpVvTeT38MjgaoPvYXFepirjDsu7C3tKEAL/ohlcv/day?aggregate=1&limit=100&currency=usd&token=base",
+    "launch_record": "https://nealtheseal.org/launch-record.json"
+  }
+}
