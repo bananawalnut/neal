@@ -58,15 +58,19 @@ reward amount is ever paid or refunded.
 
 ```bash
 cargo test -p neal-bounty-factory
-cargo build-sbf -p neal-bounty-factory
+cargo build-sbf --arch v0 --manifest-path programs/bounty-factory/Cargo.toml
 ```
 
 The host tests cover wire sizes, instruction stability, PDA domain separation,
 and the central invariant that completing a proof completes exactly one bounty.
+Validator-backed tests run this program beside the official SPL Token processor
+and verify both successful and adversarial transaction paths, including atomic
+rollback. The same suite passes against the compiled SBF artifact. See
+`TESTING.md` for the exact matrix and artifact command.
 The `client` module contains matching PDA derivation and instruction builders;
 callers must read `Factory.bounty_count` and `Bounty.proof_count` immediately
 before building creation/submission transactions and simulate before signing.
-Before deployment, add validator integration tests for SPL Token CPIs,
+Before deployment, repeat the artifact suite on the exact target validator,
 publish an IDL/client builder, rehearse on devnet, and obtain an independent
 security review. No program ID is embedded yet because it must be derived from
 the reviewed deployment keypair rather than invented in source.

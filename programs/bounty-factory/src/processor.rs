@@ -87,7 +87,12 @@ fn initialize_factory(
     require_key(system_program_info, &system_program::id())?;
     validate_token_program(token_program)?;
     validate_mint(reward_mint, token_program, None)?;
-    validate_token_account(fee_recipient, token_program, reward_mint.key, None)?;
+    validate_token_account(
+        fee_recipient,
+        token_program,
+        reward_mint.key,
+        Some(authority.key),
+    )?;
 
     let id_bytes = factory_id.to_le_bytes();
     let (expected, bump) = Pubkey::find_program_address(

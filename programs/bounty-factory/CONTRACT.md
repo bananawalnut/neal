@@ -1,6 +1,7 @@
 # Bounty factory wire contract
 
-Status: `draft/v1` — implemented and host-tested, not deployed or audited.
+Status: `draft/v1` — implemented, validator-tested, and compiled-SBF-tested; not
+deployed or audited.
 
 The Borsh enum order is part of the wire format and must never be reordered:
 
@@ -34,8 +35,9 @@ transaction; any failure rolls the entire instruction back.
 
 ## Protocol revenue
 
-Factory initialization fixes a creation-fee recipient and one integer fee in
-atomic reward-token units. Creating a bounty performs both transfers atomically:
+Factory initialization fixes an authority-owned creation-fee token account and
+one integer fee in atomic reward-token units. Creating a bounty performs both
+transfers atomically:
 
 ```text
 creator -> bounty vault: advertised reward
@@ -72,6 +74,8 @@ The on-chain program treats nonzero values as opaque commitments.
 - Reward amounts and mint decimals use integer atomic units.
 - Only the proof submitter can receive a completed bounty's reward.
 - Only the factory's immutable fee token account receives the creation fee.
+- The fee token account must be controlled by the factory authority when the
+  factory is initialized, preventing a self-transfer fee bypass.
 - Only the creator can receive an expired bounty refund.
 - A terminal bounty or completed proof cannot be replayed.
 - Sequential PDA counters create an append-only discoverable ledger.
@@ -82,7 +86,7 @@ The on-chain program treats nonzero values as opaque commitments.
 
 ## Not yet authorized for mainnet
 
-The v1 core still requires validator-level CPI tests, a deployment program ID,
-devnet rehearsal, client transaction previews, indexer reconciliation, an
-incident runbook, and independent security review. The factory should not hold
-production inventory until those gates pass.
+The v1 core still requires an exact target-validator compatibility pass, a
+deployment program ID, devnet rehearsal, client transaction previews, indexer
+reconciliation, an incident runbook, and independent security review. The
+factory should not hold production inventory until those gates pass.
