@@ -43,6 +43,7 @@ type ClientUi = {
   userInput: HTMLInputElement;
   passwordInput: HTMLInputElement;
   loginButton: HTMLButtonElement;
+  loginToggle: HTMLButtonElement;
   ssoLoginButton: HTMLButtonElement;
   createForm: HTMLFormElement;
   createDomainInput: HTMLInputElement;
@@ -59,6 +60,7 @@ type ClientUi = {
   sessionPanel: HTMLElement;
   knockButton: HTMLButtonElement;
   joinButton: HTMLButtonElement;
+  cipherPreview: HTMLOListElement;
   messages: HTMLOListElement;
   composer: HTMLFormElement;
   messageInput: HTMLTextAreaElement;
@@ -66,6 +68,14 @@ type ClientUi = {
   moderation: HTMLElement;
   knockList: HTMLUListElement;
 };
+
+type ActivityDockUi = {
+  root: HTMLElement;
+  state: HTMLElement;
+  list: HTMLOListElement;
+};
+
+let activityDock: ActivityDockUi | null = null;
 
 let sdkPromise: Promise<MatrixSdk> | null = null;
 
@@ -182,6 +192,57 @@ const appendEmpty = (list: HTMLElement, copy: string): void => {
 
 const displayName = (room: Room, sender: string): string => room.getMember(sender)?.name || sender;
 
+const setActivityDockState = (
+  message: string,
+  state: 'idle' | 'working' | 'good' | 'bad' = 'idle',
+): void => {
+  if (!activityDock) return;
+  activityDock.state.textContent = message;
+  activityDock.state.dataset.state = state;
+  activityDock.root.dataset.state = state;
+};
+
+const activityGlyphs = (event: MatrixEvent): string => {
+  const source = `${event.getId() ?? ''}:${event.getTs()}`;
+  const palette = ['◆', '◇', '✦', '●', '▲', '▰'];
+  let seed = 0;
+  for (const character of source) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
+  return Array.from({ length: 5 }, (_, index) => palette[(seed + index * 7) % palette.length]).join(' ');
+};
+
+const renderActivityDock = (timeline: MatrixEvent[]): void => {
+  if (!activityDock) return;
+  const signals = timeline
+    .filter((event) => event.getType() === 'm.room.message' || event.getType() === 'm.room.encrypted')
+    .slice(-3)
+    .reverse();
+  clearList(activityDock.list);
+  if (signals.length === 0) {
+    const item = document.createElement('li');
+    const symbols = document.createElement('b');
+    const label = document.createElement('span');
+    symbols.setAttribute('aria-hidden', 'true');
+    symbols.textContent = '◇ ◇ ◇';
+    label.textContent = 'NO ROOM SIGNALS ON THIS DEVICE YET';
+    item.append(symbols, label);
+    activityDock.list.append(item);
+    setActivityDockState('CONNECTED · WAITING FOR ACTIVITY', 'good');
+    return;
+  }
+  for (const event of signals) {
+    const item = document.createElement('li');
+    const symbols = document.createElement('b');
+    const label = document.createElement('span');
+    const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(event.getTs());
+    symbols.setAttribute('aria-hidden', 'true');
+    symbols.textContent = activityGlyphs(event);
+    label.textContent = `ENCRYPTED SIGNAL · ${time}`;
+    item.append(symbols, label);
+    activityDock.list.append(item);
+  }
+  setActivityDockState(`${signals.length} RECENT SIGNAL${signals.length === 1 ? '' : 'S'} · CONTENT SEALED`, 'good');
+};
+
 const renderMessages = async (ui: ClientUi, client: MatrixClient, room: Room): Promise<void> => {
   const timeline = room.getLiveTimeline().getEvents().slice(-60);
   await Promise.all(timeline.map(async (event) => {
@@ -193,6 +254,7 @@ const renderMessages = async (ui: ClientUi, client: MatrixClient, room: Room): P
   }));
 
   if (client !== activeClient) return;
+  renderActivityDock(timeline);
   clearList(ui.messages);
   const messages = timeline.filter((event) => event.getType() === 'm.room.message');
   if (messages.length === 0) {
@@ -205,16 +267,25 @@ const renderMessages = async (ui: ClientUi, client: MatrixClient, room: Room): P
     if (typeof content.body !== 'string') continue;
     const sender = event.getSender() ?? 'UNKNOWN';
     const item = document.createElement('li');
+    const name = displayName(room, sender);
+    const avatar = document.createElement('span');
+    const bubble = document.createElement('div');
     const meta = document.createElement('div');
     const author = document.createElement('strong');
     const time = document.createElement('time');
     const body = document.createElement('p');
-    author.textContent = displayName(room, sender);
+    item.classList.toggle('matrix-message--own', sender === client.getUserId());
+    avatar.className = 'matrix-avatar';
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.textContent = name.trim().charAt(0).toUpperCase() || '?';
+    bubble.className = 'matrix-bubble';
+    author.textContent = name;
     time.dateTime = new Date(event.getTs()).toISOString();
     time.textContent = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(event.getTs());
     body.textContent = content.msgtype === 'm.emote' ? `* ${content.body}` : content.body;
     meta.append(author, time);
-    item.append(meta, body);
+    bubble.append(meta, body);
+    item.append(avatar, bubble);
     ui.messages.append(item);
   }
   ui.messages.scrollTop = ui.messages.scrollHeight;
@@ -267,14 +338,18 @@ const renderRoom = async (ui: ClientUi, client: MatrixClient, sdk: MatrixSdk): P
 
   if (membership === sdk.KnownMembership.Join && room) {
     setStatus(ui, 'Inside the encrypted NEAL GC.', 'good');
+    setActivityDockState('SYNCING ENCRYPTED ROOM SIGNAL…', 'working');
     await renderMessages(ui, client, room);
     renderModeration(ui, client, sdk, room);
   } else if (membership === sdk.KnownMembership.Knock) {
     setStatus(ui, 'Knock sent. A room moderator must admit you.', 'good');
+    setActivityDockState('KNOCK SENT · WAITING AT THE DOOR', 'good');
   } else if (membership === sdk.KnownMembership.Invite) {
     setStatus(ui, 'The door is open. Accept the invite to enter.', 'good');
+    setActivityDockState('INVITED · OPEN CHAT TO ENTER', 'good');
   } else {
     setStatus(ui, 'Authenticated. Knock to request entry.', 'idle');
+    setActivityDockState('SIGNED IN · KNOCK TO SEE ACTIVITY', 'idle');
   }
 };
 
@@ -293,10 +368,13 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
   ui.account.textContent = session.userId;
   ui.entryTabs.hidden = true;
   ui.loginForm.hidden = true;
+  ui.loginToggle.hidden = true;
   ui.createForm.hidden = true;
+  ui.cipherPreview.hidden = true;
   ui.sessionPanel.hidden = false;
   ui.logoutButton.hidden = false;
   setStatus(ui, 'Starting encrypted Matrix session…', 'working');
+  setActivityDockState('CONNECTING ENCRYPTED SIGNAL…', 'working');
 
   client.on(sdk.RoomEvent.Timeline, (event: MatrixEvent, room: Room | undefined, toStartOfTimeline: boolean | undefined) => {
     if (!toStartOfTimeline && room?.roomId === ROOM_ID) void renderRoom(ui, client, sdk);
@@ -309,8 +387,14 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
   });
   client.on(sdk.ClientEvent.Sync, (state) => {
     if (state === sdk.SyncState.Prepared || state === sdk.SyncState.Syncing) void renderRoom(ui, client, sdk);
-    if (state === sdk.SyncState.Reconnecting) setStatus(ui, 'Reconnecting to your homeserver…', 'working');
-    if (state === sdk.SyncState.Error) setStatus(ui, 'Matrix sync failed. Check the homeserver and try again.', 'bad');
+    if (state === sdk.SyncState.Reconnecting) {
+      setStatus(ui, 'Reconnecting to your homeserver…', 'working');
+      setActivityDockState('RECONNECTING ENCRYPTED SIGNAL…', 'working');
+    }
+    if (state === sdk.SyncState.Error) {
+      setStatus(ui, 'Matrix sync failed. Check the homeserver and try again.', 'bad');
+      setActivityDockState('ROOM SIGNAL OFFLINE · OPEN CHAT', 'bad');
+    }
   });
 
   try {
@@ -323,6 +407,8 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
     client.stopClient();
     sessionStorage.removeItem(SESSION_KEY);
     ui.loginForm.hidden = false;
+    ui.loginToggle.hidden = false;
+    ui.cipherPreview.hidden = false;
     ui.sessionPanel.hidden = true;
     ui.logoutButton.hidden = true;
     throw error;
@@ -549,6 +635,11 @@ const consumeSsoCallback = async (ui: ClientUi): Promise<boolean> => {
 
 export const mountMatrixGc = (): void => {
   const root = required<HTMLElement>(document, '#matrix-client');
+  activityDock = {
+    root: required(document, '#gc-dock'),
+    state: required(document, '#gc-dock-state'),
+    list: required(document, '#gc-dock-activity'),
+  };
   const ui: ClientUi = {
     root,
     entryTabs: required(root, '#matrix-entry-tabs'),
@@ -558,6 +649,7 @@ export const mountMatrixGc = (): void => {
     userInput: required(root, '#matrix-user-id'),
     passwordInput: required(root, '#matrix-password'),
     loginButton: required(root, '#matrix-login'),
+    loginToggle: required(root, '#gc-login-toggle'),
     ssoLoginButton: required(root, '#matrix-sso-login'),
     createForm: required(root, '#matrix-create-form'),
     createDomainInput: required(root, '#matrix-create-domain'),
@@ -574,6 +666,7 @@ export const mountMatrixGc = (): void => {
     sessionPanel: required(root, '#matrix-session'),
     knockButton: required(root, '#matrix-knock'),
     joinButton: required(root, '#matrix-join'),
+    cipherPreview: required(root, '#matrix-cipher-preview'),
     messages: required(root, '#matrix-messages'),
     composer: required(root, '#matrix-composer'),
     messageInput: required(root, '#matrix-message'),
@@ -746,12 +839,28 @@ export const mountMatrixGc = (): void => {
       ui.entryTabs.hidden = false;
       showEntryMode(ui, 'login');
       ui.loginForm.hidden = false;
+      ui.loginToggle.hidden = false;
+      ui.loginToggle.setAttribute('aria-expanded', 'false');
+      ui.root.closest('#gc')?.classList.remove('gc-login-open');
+      ui.cipherPreview.hidden = false;
       ui.sessionPanel.hidden = true;
       ui.logoutButton.hidden = true;
       ui.logoutButton.disabled = false;
       ui.account.textContent = 'NOT SIGNED IN';
       ui.memberState.textContent = '—';
       clearList(ui.messages);
+      if (activityDock) {
+        clearList(activityDock.list);
+        const item = document.createElement('li');
+        const symbols = document.createElement('b');
+        const label = document.createElement('span');
+        symbols.setAttribute('aria-hidden', 'true');
+        symbols.textContent = '◆ ◇ ✦';
+        label.textContent = 'ROOM ACTIVITY STAYS SEALED';
+        item.append(symbols, label);
+        activityDock.list.append(item);
+      }
+      setActivityDockState('LOCKED SIGNAL · SIGN IN TO SEE ACTIVITY');
     }
   });
 
@@ -763,6 +872,10 @@ export const mountMatrixGc = (): void => {
     } catch (error) {
       ui.entryTabs.hidden = false;
       showEntryMode(ui, 'login');
+      ui.loginToggle.hidden = false;
+      ui.loginToggle.setAttribute('aria-expanded', 'false');
+      ui.root.closest('#gc')?.classList.remove('gc-login-open');
+      ui.cipherPreview.hidden = false;
       setStatus(ui, errorMessage(error), 'bad');
     }
   })();

@@ -158,7 +158,7 @@ app.innerHTML = `
               <div><strong>LOCAL TOP SPEED</strong><ol id="yahoo-top-rate"><li><span>NO LOCAL SPEED YET</span><b>—</b></li></ol></div>
             </div>
           </div>
-          <div class="hero-actions"><a class="primary-action" href="#quests">GET IN THE QUEST PIT ↓</a><a class="secondary-action buy-action" href="#buy">BUY NEAL</a><a class="secondary-action" href="#verify">CHECK THE BLOODY MINT</a></div>
+          <div class="hero-actions"><a class="primary-action" href="#quests">GET IN THE QUEST PIT ↓</a><a class="secondary-action buy-action" href="#buy">BUY NEAL</a><a class="secondary-action" href="#verify">CHECK THE BLOODY MINT</a><a class="secondary-action proof-action" href="#bounty-proof">SEE TEST PROOF</a></div>
         </div>
 
         <div class="hero-visual">
@@ -307,7 +307,7 @@ app.innerHTML = `
         <div class="quests-copy">
           <p class="eyebrow">NEAL's kingdom / the federated GC</p>
           <h2>THE MOB YAPS.<br><em>LORD NEAL SEALS THE DECREE.</em></h2>
-          <p>NEAL is the monarch. Holders are the mob. Together, we're the Army of Debauchery. The federated GC is the royal court: chuck in your requests, dumb bits, good bits, and local nonsense. Every request and chat message feeds the NEAL egregore—the shared lore, running jokes, voice, and personality the mob builds around him. You're not issuing orders; you're helping shape what NEAL becomes. If the mob gets around an idea, NEAL might bless it as an official quest.</p>
+          <p>NEAL is the monarch. Holders are the mob. Together, we're the Army of Debauchery. The federated GC is the royal court: chuck in your dumb bits, good bits, stories, and local nonsense. Every chat message feeds the NEAL egregore—the shared lore, running jokes, voice, and personality the mob builds around him. You're not issuing orders; you're helping shape what NEAL becomes. If the mob gets around an idea, NEAL might bless it as one of his official quests.</p>
         </div>
         <div class="program-state" id="program-state">
           <span class="record-label">NEAL's treasury / quests + dev drops</span>
@@ -318,32 +318,14 @@ app.innerHTML = `
 
       <div class="nealonomics" aria-labelledby="nealonomics-title">
         <p class="eyebrow">THE NEAL LOOP / ACTUAL TOKENOMICS</p>
-        <h3 id="nealonomics-title">ONE NEAL OR DREGG TO YAP.<br>QUESTS PAY THE MOB.</h3>
-        <p class="nealonomics-truth">The dev buys his own NEAL. The mob spends 1 NEAL—or 1 DREGG once the real mint is verified—to put an idea on the ballot. The treasury gets 42% of creator fees, then market-buys NEAL for quests and open-source-dev airdrops. Airdrop holdings may not exceed 18% of supply unless every NEAL holder approves more.</p>
+        <h3 id="nealonomics-title">YAP IN THE GC.<br>NEAL'S QUESTS PAY THE MOB.</h3>
+        <p class="nealonomics-truth">The dev buys his own NEAL. The mob shapes NEAL in the encrypted GC. When NEAL publishes one of his quests, its brief, reward, deadline, proof rules, and reviewer go up before anyone enters. The treasury gets 42% of creator fees, then market-buys NEAL for quests and open-source-dev airdrops. Airdrop holdings may not exceed 18% of supply unless every NEAL holder approves more.</p>
         <div class="nealonomics-wallets" aria-label="Wallet publication status">
           <span><strong>DEV WALLET</strong><i id="dev-wallet-state">POSTS HERE ONCE LIVE</i></span>
           <span><strong>QUEST TREASURY</strong><i id="quest-wallet-state">POSTS HERE ONCE LIVE</i></span>
         </div>
-        <p class="nealonomics-racket" aria-hidden="true">BUY NEAL ✦ 1 NEAL OR 1 DREGG TO YAP ✦ QUESTS PAY ✦ OPEN-SOURCE DEVS GET DROPS</p>
+        <p class="nealonomics-racket" aria-hidden="true">BUY NEAL ✦ YAP IN THE ENCRYPTED GC ✦ NEAL'S QUESTS PAY ✦ OPEN-SOURCE DEVS GET DROPS</p>
       </div>
-
-      <section class="community-vote" id="community-vote" aria-labelledby="community-vote-title">
-        <div class="community-vote-copy">
-          <p class="eyebrow">THE COMMUNITY SUGGESTION BOX</p>
-          <h3 id="community-vote-title">GOT A THOUGHT?<br><em>CHUCK IT IN.</em></h3>
-          <p>Send NEAL a request, bit, reference, or loose thought. It joins the mob's public pile and contributes to the egregore—NEAL's evolving lore, tastes, voice, and personality—even if it never becomes a quest. Not orders for NEAL; material for him to draw from when cooking quests and bounties.</p>
-          <div class="vote-loop" aria-label="Suggestion flow"><span>WRITE IT</span><i>→</i><span>SIGN IT</span><i>→</i><span>ADD IT TO THE PILE</span></div>
-        </div>
-        <form class="suggestion-entry" id="suggestion-form">
-          <header><span>PUBLIC SUGGESTION</span><strong id="suggestion-gate">PRE-LAUNCH</strong></header>
-          <fieldset id="suggestion-fields">
-            <label class="suggestion-text"><span>YOUR SUGGESTION</span><textarea id="suggestion-pitch" name="suggestion" maxlength="280" placeholder="CHUCK A THOUGHT INTO THE PILE…" required></textarea></label>
-            <button id="suggestion-submit" type="submit" disabled>SEND SUGGESTION ON-CHAIN</button>
-          </fieldset>
-          <button class="suggestion-connect" id="suggestion-connect" type="button">CONNECT WALLET</button>
-          <p id="suggestion-status" role="status">Write now. Sending opens when the public on-chain suggestion feed is live.</p>
-        </form>
-      </section>
 
       <section class="gc-portal" id="gc" aria-labelledby="gc-title">
         <div class="gc-portal-copy">
@@ -352,18 +334,30 @@ app.innerHTML = `
           <p>Bring an existing account from any federated homeserver—or create one through an always-online provider. Chat with the mob, add stories and in-jokes, and help shape NEAL's egregore in real time. NEAL discovers the server and speaks Matrix directly: no Element detour and no NEAL credential backend.</p>
         </div>
         <div class="gc-room-board" id="matrix-client">
-          <header><span>NEAL MATRIX GC</span><strong>LIVE · ENCRYPTED</strong></header>
+          <header class="gc-chat-header">
+            <span class="gc-chat-room"><img src="/neal-favicon.png" alt="" /><span><b>NEAL GC</b><small>THE MOB · MATRIX</small></span></span>
+            <strong><i aria-hidden="true"></i><span>ENCRYPTED</span></strong>
+            <button class="gc-drawer-close" id="gc-drawer-close" type="button" aria-label="Close the NEAL group chat">×</button>
+          </header>
           <code>#neal-gc:<wbr>matrix.nealtheseal.org</code>
           <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>KNOCK TO JOIN</span><span>FEDERATED</span><span>E2EE</span></div>
+          <ol class="gc-cipher-preview" id="matrix-cipher-preview" aria-label="Sealed preview of the NEAL GC before sign-in">
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>JUST NOW</time></div><p aria-label="Encrypted message">▰▰▰▰ ▰▰ ▰▰▰▰▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>2M</time></div><p aria-label="Encrypted message">▰▰ ▰▰▰▰▰ ▰▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>8M</time></div><p aria-label="Encrypted message">▰▰▰▰▰▰ ▰▰▰ ▰▰▰▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>13M</time></div><p aria-label="Encrypted message">▰▰▰ ▰▰▰▰▰▰ ▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>21M</time></div><p aria-label="Encrypted message">▰▰▰▰▰ ▰▰ ▰▰▰▰</p></div></li>
+          </ol>
           <div class="matrix-entry-tabs" id="matrix-entry-tabs" role="tablist" aria-label="Matrix account options">
             <button id="matrix-tab-login" type="button" role="tab" aria-selected="true" aria-controls="matrix-login-form">I HAVE AN ACCOUNT</button>
             <button id="matrix-tab-create" type="button" role="tab" aria-selected="false" aria-controls="matrix-create-form">CREATE AN ACCOUNT</button>
           </div>
+          <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO DECRYPT THE CHAT</strong><span>Your credentials go directly to your Matrix homeserver.</span></button>
           <form class="matrix-login" id="matrix-login-form">
-            <label><span>YOUR MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="@YOU:YOUR-HOMESERVER.ORG" required /></label>
-            <label><span>YOUR MATRIX PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="STAYS IN THIS FORM UNTIL LOGIN" required /></label>
+            <label><span>MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="@you:your-homeserver.org" required /></label>
+            <label><span>PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="Your Matrix password" required /></label>
             <div class="matrix-login-actions">
-              <button id="matrix-login" type="submit">ENTER WITH PASSWORD</button>
+              <button id="matrix-login" type="submit">SIGN IN TO CHAT</button>
               <button class="matrix-secondary" id="matrix-sso-login" type="button">USE HOMESERVER SIGN-IN</button>
             </div>
             <small>Sent directly from this browser to the homeserver discovered from your Matrix ID. NEAL has no login API and stores no password.</small>
@@ -400,8 +394,8 @@ app.innerHTML = `
       <div class="quest-process gc-manifesto" id="quest-process" aria-labelledby="quest-process-title">
         <span class="gc-coming">THE GC IS THE COOKER</span>
         <h3 id="quest-process-title">THE MOB PITCHES.<br>LORD NEAL SEALS THE DECREE.<br><em>THE ARMY CAUSES A SCENE.</em></h3>
-        <p>Cook up a quest for the community. If the mob gets around it, NEAL can make it official. Some missions will be built for stream so everyone can watch the submissions roll in, roast the carry-on, cheer the lunatics, and see the winners crowned.</p>
-        <a class="gc-cta" href="#community-vote"><strong>CHUCK IN A SUGGESTION <span aria-hidden="true">↗</span></strong><small>PUBLIC FEED</small></a>
+        <p>Cook up a bit with the mob in the GC. If the racket catches NEAL's eye, he can publish it as one of his official quests. Some missions will be built for stream so everyone can watch the submissions roll in, roast the carry-on, cheer the lunatics, and see the winners crowned.</p>
+        <a class="gc-cta" href="#gc"><strong>OPEN THE NEAL GC <span aria-hidden="true">↗</span></strong><small>LIVE · ENCRYPTED</small></a>
         <div class="quest-tease" aria-label="Coming quest features"><span>COMMUNITY-COOKED QUESTS</span><span>WATCH SUBMISSIONS LIVE</span><span>REWARDS FROM NEAL'S WALLET</span></div>
       </div>
 
@@ -428,8 +422,77 @@ app.innerHTML = `
       </aside>
     </section>
 
+    <section class="bounty-proof" id="bounty-proof" aria-labelledby="bounty-proof-title">
+      <header class="bounty-proof__head">
+        <div>
+          <p class="eyebrow">QUEST ENGINE / PUBLIC BUILD RECEIPTS</p>
+          <h2 id="bounty-proof-title">DON'T TRUST THE BARK.<br><em>CHECK THE BLOODY PROOF.</em></h2>
+          <p>The general-purpose bounty factory has been exercised inside a Solana validator with the official SPL Token processor. It can run ordinary bounties for any reviewed deployment; this site will use it for NEAL's quests. The suite proves the reward path, the ugly paths, and the rollback paths before a live program gets anywhere near the mob's funds.</p>
+        </div>
+        <div class="bounty-proof__stamp" aria-label="Current bounty factory release status">
+          <span>DRAFT / V1</span>
+          <strong>VALIDATOR<br>TESTED</strong>
+          <small>NOT DEPLOYED · NOT AUDITED</small>
+        </div>
+      </header>
+
+      <div class="proof-scoreboard" aria-label="Bounty factory verification summary">
+        <article><strong>33</strong><span>RUST TESTS<br>GREEN ON MAIN</span></article>
+        <article><strong>02</strong><span>VALIDATOR<br>LIFECYCLES</span></article>
+        <article><strong>00</strong><span>FAILURES<br>OR IGNORES</span></article>
+        <article><strong>V0</strong><span>COMPILED SBF<br>ARTIFACT PASS</span></article>
+      </div>
+
+      <div class="proof-grid">
+        <article class="proof-ledger">
+          <header><span>WHAT THE VALIDATOR SAW</span><strong>PASS</strong></header>
+          <ol>
+            <li><b>FEE DESTINATION LOCKED</b><span>The factory only accepts an authority-controlled fee token account. Self-transfer bypasses get rejected.</span></li>
+            <li><b>ONE ATOMIC CREATION</b><span>Reward escrow and the fixed creation fee move together—or the whole transaction rolls back.</span></li>
+            <li><b>PROOF BEFORE PAYOUT</b><span>Only the proof submitter can receive a completed bounty's full advertised reward.</span></li>
+            <li><b>NO REPLAY RACKET</b><span>Completed bounties and proofs cannot be paid twice.</span></li>
+            <li><b>EXPIRY MEANS REFUND</b><span>After expiry, only the creator gets the escrow back; the creation fee stays paid.</span></li>
+            <li><b>PAUSE ACTUALLY PAUSES</b><span>Creation and completion stop while paused. Expired refunds remain available.</span></li>
+          </ol>
+        </article>
+
+        <aside class="proof-receipt">
+          <span class="proof-receipt__tape">RECEIPT / 48F2B26</span>
+          <p class="record-label">LAST VERIFIED MAINLINE</p>
+          <strong>COMMIT 48F2B26</strong>
+          <dl>
+            <div><dt>WORKSPACE SUITE</dt><dd>33 PASSED</dd></div>
+            <div><dt>VALIDATOR SUITE</dt><dd>2 PASSED</dd></div>
+            <div><dt>CLIPPY</dt><dd>0 WARNINGS</dd></div>
+            <div><dt>CI RUN</dt><dd>#4 SUCCESS</dd></div>
+          </dl>
+          <code>cargo test --workspace --locked</code>
+          <code>cargo clippy -p neal-bounty-factory --all-targets --locked -- -D warnings</code>
+          <div class="proof-links">
+            <a href="/bounty-contract.txt" target="_blank" rel="noopener">READ THE WIRE CONTRACT ↗</a>
+            <a href="/bounty-testing.txt" target="_blank" rel="noopener">OPEN THE TEST MATRIX ↗</a>
+          </div>
+        </aside>
+      </div>
+
+      <p class="proof-caveat"><strong>FAIR DINKUM LIMIT:</strong> Validator and compiled-artifact tests are engineering evidence, not an audit. The exact deployment validator, devnet rehearsal, public program ID, transaction previews, incident runbook, and independent security review remain gates before production inventory.</p>
+    </section>
+
     <footer><span>NEAL / GOOD CUNT</span><span id="footer-state">CHECKING THE BORING BITS</span></footer>
   </main>
+
+  <button class="gc-drawer-backdrop" id="gc-drawer-backdrop" type="button" aria-label="Close the NEAL group chat" hidden></button>
+
+  <aside class="gc-dock" id="gc-dock" aria-labelledby="gc-dock-title">
+    <a href="#gc" aria-label="Open the encrypted NEAL Matrix group chat">
+      <header><i aria-hidden="true"></i><strong id="gc-dock-title">NEAL GC</strong><span>E2EE</span></header>
+      <p id="gc-dock-state" role="status">Sign in to view chat activity</p>
+      <ol id="gc-dock-activity" aria-label="Recent encrypted GC activity">
+          <li><b aria-hidden="true">◆ ◇ ✦</b><span>Messages are encrypted</span></li>
+      </ol>
+      <div class="gc-dock__open"><strong>Open chat</strong><span aria-hidden="true">→</span></div>
+    </a>
+  </aside>
 
   <dialog class="wallet-dialog" id="wallet-dialog" aria-labelledby="wallet-dialog-title">
     <div class="wallet-dialog-head">
@@ -477,13 +540,83 @@ const byId = <T extends HTMLElement>(id: string): T => {
   return element;
 };
 
-byId<HTMLButtonElement>('suggestion-connect').addEventListener('click', () => {
-  byId<HTMLButtonElement>('wallet-button').click();
+const gcPortal = byId<HTMLElement>('gc');
+const gcBackdrop = byId<HTMLButtonElement>('gc-drawer-backdrop');
+const gcClose = byId<HTMLButtonElement>('gc-drawer-close');
+const gcLoginToggle = byId<HTMLButtonElement>('gc-login-toggle');
+const gcMinimizedKey = 'neal.gc.minimized.v1';
+let gcReturnFocus: HTMLElement | null = null;
+
+const setGcDrawerOpen = (open: boolean, focusClose = false): void => {
+  gcPortal.classList.toggle('gc-portal--drawer', open);
+  gcBackdrop.hidden = !open;
+  document.body.classList.toggle('gc-drawer-open', open);
+  if (open) {
+    gcPortal.setAttribute('role', 'dialog');
+    gcPortal.setAttribute('aria-modal', 'true');
+    if (focusClose) window.requestAnimationFrame(() => gcClose.focus());
+  } else {
+    gcPortal.removeAttribute('role');
+    gcPortal.removeAttribute('aria-modal');
+  }
+};
+
+const openGcDrawer = (trigger?: HTMLElement): void => {
+  gcReturnFocus = trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  sessionStorage.removeItem(gcMinimizedKey);
+  if (window.location.hash !== '#gc') window.history.pushState(null, '', '#gc');
+  setGcDrawerOpen(true, true);
+};
+
+const closeGcDrawer = (): void => {
+  sessionStorage.setItem(gcMinimizedKey, 'true');
+  if (window.location.hash === '#gc') {
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  }
+  setGcDrawerOpen(false);
+  gcPortal.classList.remove('gc-login-open');
+  gcLoginToggle.setAttribute('aria-expanded', 'false');
+  gcReturnFocus?.focus();
+  gcReturnFocus = null;
+};
+
+document.querySelectorAll<HTMLAnchorElement>('a[href="#gc"]').forEach((link) => {
+  link.addEventListener('click', (event) => {
+    event.preventDefault();
+    openGcDrawer(link);
+  });
 });
-byId<HTMLFormElement>('suggestion-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-  byId<HTMLElement>('suggestion-status').textContent = 'The on-chain suggestion transaction builder is not live yet. Nothing was sent.';
+gcClose.addEventListener('click', closeGcDrawer);
+gcBackdrop.addEventListener('click', closeGcDrawer);
+gcLoginToggle.addEventListener('click', () => {
+  gcPortal.classList.add('gc-login-open');
+  gcLoginToggle.setAttribute('aria-expanded', 'true');
+  window.requestAnimationFrame(() => byId<HTMLInputElement>('matrix-user-id').focus());
 });
+window.addEventListener('popstate', () => setGcDrawerOpen(window.location.hash === '#gc'));
+window.addEventListener('hashchange', () => setGcDrawerOpen(window.location.hash === '#gc'));
+window.addEventListener('keydown', (event) => {
+  if (!gcPortal.classList.contains('gc-portal--drawer')) return;
+  if (event.key === 'Escape') {
+    closeGcDrawer();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+
+  const focusable = [...gcPortal.querySelectorAll<HTMLElement>('button, a[href], input, textarea, select, [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hasAttribute('disabled') && !element.hidden && element.getClientRects().length > 0);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+setGcDrawerOpen(window.location.hash === '#gc' || sessionStorage.getItem(gcMinimizedKey) !== 'true');
 
 const shortWallet = (address: string): string => address === 'THIS BROWSER' ? address : address.length > 10
   ? `${address.slice(0, 4)}…${address.slice(-4)}`
@@ -699,28 +832,6 @@ function renderRecord(record: PublicRecord) {
     byId<HTMLElement>('yahoo-rule-copy').textContent = 'Program published. The separately reviewed wallet transaction builder is the remaining gate.';
   }
 
-  const suggestion = record.programs.communitySuggestions;
-  const registryReady = Boolean(suggestion?.registryUri);
-  const suggestionSubmit = byId<HTMLButtonElement>('suggestion-submit');
-  suggestionSubmit.disabled = true;
-  suggestionSubmit.textContent = 'SEND SUGGESTION ON-CHAIN';
-
-  if (!suggestion) {
-    byId<HTMLElement>('suggestion-gate').textContent = 'POLICY MISSING';
-    byId<HTMLElement>('suggestion-status').textContent = 'No public community-suggestion policy is available.';
-  } else if (!launched) {
-    byId<HTMLElement>('suggestion-gate').textContent = 'PRE-LAUNCH';
-    byId<HTMLElement>('suggestion-status').textContent = 'Write now. Sending opens after the canonical NEAL mint and public on-chain suggestion feed are live.';
-  } else if (!registryReady) {
-    byId<HTMLElement>('suggestion-gate').textContent = 'REGISTRY NEXT';
-    byId<HTMLElement>('suggestion-status').textContent = 'The public on-chain suggestion feed must be published before entries open.';
-  } else if (suggestion.status !== 'active') {
-    byId<HTMLElement>('suggestion-gate').textContent = suggestion.status.replaceAll('_', ' ').toUpperCase();
-    byId<HTMLElement>('suggestion-status').textContent = 'Community suggestions are currently paused.';
-  } else {
-    byId<HTMLElement>('suggestion-gate').textContent = 'BUILDER PENDING';
-    byId<HTMLElement>('suggestion-status').textContent = 'The feed is recorded. The reviewed wallet transaction builder is the remaining gate.';
-  }
 }
 
 function renderFailure() {

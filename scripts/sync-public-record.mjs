@@ -8,8 +8,16 @@ const sourcePath = resolve(projectRoot, 'launch-config.json');
 const destinationPath = resolve(projectRoot, 'apps/site/public/launch-record.json');
 const yahooLeaderboardPath = resolve(projectRoot, 'apps/site/public/yahoo-leaderboard.json');
 const tokenMetadataPath = resolve(projectRoot, 'apps/site/public/token-metadata.json');
+const bountyContractSourcePath = resolve(projectRoot, 'programs/bounty-factory/CONTRACT.md');
+const bountyTestingSourcePath = resolve(projectRoot, 'programs/bounty-factory/TESTING.md');
+const bountyContractPath = resolve(projectRoot, 'apps/site/public/bounty-contract.txt');
+const bountyTestingPath = resolve(projectRoot, 'apps/site/public/bounty-testing.txt');
 
 const source = JSON.parse(await readFile(sourcePath, 'utf8'));
+const [bountyContract, bountyTesting] = await Promise.all([
+  readFile(bountyContractSourcePath, 'utf8'),
+  readFile(bountyTestingSourcePath, 'utf8'),
+]);
 const mintAddress = source.execution?.mintAddress ?? null;
 const creationTransaction = source.execution?.creationTransaction ?? null;
 
@@ -102,4 +110,6 @@ await Promise.all([
   writeFile(destinationPath, `${JSON.stringify(publicRecord, null, 2)}\n`, 'utf8'),
   writeFile(yahooLeaderboardPath, `${JSON.stringify(yahooLeaderboardRecord, null, 2)}\n`, 'utf8'),
   writeFile(tokenMetadataPath, `${JSON.stringify(tokenMetadata, null, 2)}\n`, 'utf8'),
+  writeFile(bountyContractPath, bountyContract, 'utf8'),
+  writeFile(bountyTestingPath, bountyTesting, 'utf8'),
 ]);
