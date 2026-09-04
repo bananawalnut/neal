@@ -46,7 +46,9 @@
   separately isolated Synapse serves `matrix.nealtheseal.org`; the two join
   rooms through normal federation and never share databases or signing keys.
 - The NEAL Matrix client sends credentials directly from the browser to the
-  homeserver discovered from the user's Matrix ID. Its access token is scoped
+  homeserver discovered from the user's Matrix ID. A bare username is expanded
+  only to `@username:matrix.nealtheseal.org`; full federated IDs remain
+  unchanged. Its access token is scoped
   to the current browser tab. Signed-out visitors receive the public plaintext
   transcript through a fixed GET-only Caddy route; its guest reader token stays
   on the VPS and is never sent to the browser. Guest joining remains forbidden,

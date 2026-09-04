@@ -350,13 +350,13 @@ app.innerHTML = `
           </div>
           <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO SEND A MESSAGE</strong><span>Reading is public. Your credentials go directly to your Matrix homeserver.</span></button>
           <form class="matrix-login" id="matrix-login-form">
-            <label><span>MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="@you:your-homeserver.org" required /></label>
+            <label><span>USERNAME OR MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="neal or @you:matrix.org" required /></label>
             <label><span>PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="Your Matrix password" required /></label>
             <div class="matrix-login-actions">
               <button id="matrix-login" type="submit">SIGN IN TO CHAT</button>
               <button class="matrix-secondary" id="matrix-sso-login" type="button">USE HOMESERVER SIGN-IN</button>
             </div>
-            <small>Sent directly from this browser to the homeserver discovered from your Matrix ID. NEAL has no login API and stores no password.</small>
+            <small>NEAL account? Enter just your username. Federated account? Enter the full Matrix ID. Credentials go directly to your homeserver; NEAL has no login API and stores no password.</small>
           </form>
           <form class="matrix-create" id="matrix-create-form" hidden>
             <label><span>ACCOUNT PROVIDER</span><input id="matrix-create-domain" type="text" inputmode="url" autocomplete="url" spellcheck="false" value="matrix.nealtheseal.org" list="matrix-provider-options" required /><datalist id="matrix-provider-options"><option value="matrix.nealtheseal.org"></option><option value="salix.host"></option><option value="matrix.org"></option><option value="unredacted.org"></option></datalist></label>

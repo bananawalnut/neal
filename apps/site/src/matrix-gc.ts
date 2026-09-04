@@ -15,6 +15,7 @@ const DIRECT_HOMESERVER_BASE_URLS = new Map([
 ]);
 const PUBLIC_FEED_URL = 'https://matrix.nealtheseal.org/_neal/gc/messages';
 const PUBLIC_REFRESH_MS = 10_000;
+const NEAL_HOMESERVER_DOMAIN = 'matrix.nealtheseal.org';
 const SESSION_KEY = 'neal.matrix.session.v1';
 const SSO_PENDING_KEY = 'neal.matrix.sso.pending.v1';
 const SSO_MAX_AGE_MS = 20 * 60 * 1000;
@@ -109,11 +110,22 @@ const errorMessage = (error: unknown): string => {
   return 'Matrix did not accept that request.';
 };
 
-const parseMatrixId = (value: string): { userId: string; domain: string } => {
-  const userId = value.trim();
+export const parseMatrixId = (value: string): { userId: string; domain: string } => {
+  const candidate = value.trim();
+  if (!candidate.includes(':')) {
+    const localpart = candidate.startsWith('@') ? candidate.slice(1) : candidate;
+    if (!/^[a-z0-9._=\/-]+$/.test(localpart)) {
+      throw new Error('Use your NEAL username, like neal, or a full Matrix ID.');
+    }
+    return {
+      userId: `@${localpart}:${NEAL_HOMESERVER_DOMAIN}`,
+      domain: NEAL_HOMESERVER_DOMAIN,
+    };
+  }
+  const userId = candidate;
   const separator = userId.indexOf(':');
   if (!userId.startsWith('@') || separator < 2 || separator === userId.length - 1) {
-    throw new Error('Use a full Matrix ID, like @name:matrix.org.');
+    throw new Error('Use your NEAL username, like neal, or a full Matrix ID like @name:matrix.org.');
   }
   return { userId, domain: userId.slice(separator + 1) };
 };

@@ -25,14 +25,15 @@ the unencrypted room.
 ## First-party client contract
 
 The NEAL site uses the official `matrix-js-sdk`; visitors are not redirected to
-Element. A user supplies a full Matrix ID, the browser discovers that identity's
-homeserver through `/.well-known/matrix/client`, and credentials go directly
-from the browser to the discovered homeserver. NEAL and Vercel expose no login
-backend.
+Element. A local NEAL user may enter only the account localpart—`neal`, for
+example—which the client expands to `@neal:matrix.nealtheseal.org`. A federated
+user supplies a full Matrix ID; the browser discovers that identity's homeserver
+through `/.well-known/matrix/client`. Credentials go directly from the browser
+to the selected homeserver. NEAL and Vercel expose no login backend.
 
 The current beta client supports:
 
-- password login from a federated homeserver;
+- password login using a short NEAL username or a full federated Matrix ID;
 - email-free NEAL and Salix account creation through one-use
   registration-token flows, completed directly inside NEAL;
 - Matrix.org and other compatible providers through their advertised SSO
