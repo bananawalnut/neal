@@ -14,6 +14,8 @@ Linux; the migration uses a portable logical dump.
 - Caddy TLS on ports 80/443
 - no public Synapse admin API
 - no-email account creation, guarded by short-lived registration tokens
+- public, plaintext GC reads through a fixed Caddy route; sign-in and room
+  membership remain required to post
 - `nealtheseal.org` remains on Vercel
 - Buzz/Nostr remains out of this deployment
 
@@ -52,8 +54,10 @@ Linux; the migration uses a portable logical dump.
    `restore_snapshot.sh --replace-existing`, point `matrix.nealtheseal.org`
    A/AAAA records to the VPS, and start Caddy with
    `docker compose up -d caddy`.
-8. Run `verify_public.sh`, then update NEAL's native registration provider to
-   `matrix.nealtheseal.org` and deploy the site.
+8. Run `python3 /srv/neal-matrix/configure_public_neal_gc.py` to apply the
+   public-read/write-gated room policy and create the root-only Caddy reader
+credential. Then run `verify_public.sh`, update NEAL's native registration
+   provider to `matrix.nealtheseal.org`, and deploy the site.
 9. Keep the local service frozen but intact for rollback until the VPS has passed
    a 24-hour soak. Do not run both copies publicly at once.
 
@@ -69,6 +73,17 @@ python3 /srv/neal-matrix/create_registration_token.py --uses 1 --minutes 15
 The token is the only intentional secret printed by this command. NEAL's client
 sends the selected username, password, and token directly to Synapse. Vercel
 does not receive them.
+
+## Public GC feed
+
+`https://matrix.nealtheseal.org/_neal/gc/messages` returns the canonical room's
+plaintext message timeline without requiring a browser credential. Caddy
+injects an expiring NEAL reader-device token from the root-owned
+`runtime/caddy.env` and only exposes the fixed GET route. This member token is
+needed to include plaintext history from before the public-history cutover; it
+is never sent to the browser. Guest registration is disabled and the room's
+guest-access policy remains `forbidden`. Run `configure_public_neal_gc.py`
+after a restore and `verify_public.sh` after every gateway change.
 
 ## Backups and rollback
 

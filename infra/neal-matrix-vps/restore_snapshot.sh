@@ -99,6 +99,7 @@ form_secret: '$form_secret'
 enable_registration: true
 enable_registration_without_verification: true
 registration_requires_token: true
+allow_guest_access: false
 allow_public_rooms_without_auth: false
 allow_public_rooms_over_federation: false
 require_auth_for_profile_requests: true
@@ -113,6 +114,10 @@ rc_registration:
   per_second: 0.01
   burst_count: 3
 EOF
+
+if [[ ! -f "$project_root/runtime/caddy.env" ]]; then
+  install -m 600 /dev/null "$project_root/runtime/caddy.env"
+fi
 
 cat >"$synapse_root/log.config" <<'EOF'
 version: 1

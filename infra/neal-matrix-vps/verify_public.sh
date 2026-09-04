@@ -20,7 +20,12 @@ with urllib.request.urlopen(base + "/.well-known/matrix/client", timeout=20) as 
     client = json.load(response)
 with urllib.request.urlopen(base + "/.well-known/matrix/server", timeout=20) as response:
     server = json.load(response)
+with urllib.request.urlopen(base + "/_neal/gc/messages", timeout=20) as response:
+    feed = json.load(response)
 assert client["m.homeserver"]["base_url"] == "https://matrix.nealtheseal.org/"
 assert server["m.server"] == "matrix.nealtheseal.org:443"
-print("Client, federation, discovery, and public-admin blocking checks passed.")
+assert isinstance(feed.get("chunk"), list)
+assert all(event.get("type") == "m.room.message" for event in feed["chunk"])
+assert all(isinstance(event.get("content", {}).get("body"), str) for event in feed["chunk"])
+print("Client, federation, discovery, public chat feed, and public-admin blocking checks passed.")
 PY

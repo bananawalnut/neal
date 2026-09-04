@@ -24,6 +24,19 @@ matrix.nealtheseal.org {
         respond `{"errcode":"M_NOT_FOUND","error":"Not found"}` 404
     }
 
+    @neal_gc_feed {
+        method GET
+        path /_neal/gc/messages
+    }
+    handle @neal_gc_feed {
+        rewrite * /_matrix/client/v3/rooms/%21KliLLiEXeNPupDcYwe%3Amatrix.nealtheseal.org/messages?dir=b&limit=100&filter=%7B%22types%22%3A%5B%22m.room.message%22%5D%7D
+        header Cache-Control "public, max-age=5, stale-while-revalidate=20"
+        reverse_proxy synapse:8008 {
+            header_up Authorization "Bearer {$NEAL_GC_READER_TOKEN}"
+            header_down -Cache-Control
+        }
+    }
+
     handle {
         reverse_proxy synapse:8008
     }

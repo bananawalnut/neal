@@ -31,7 +31,8 @@ ROOM_ALIAS_LOCALPART = "neal-gc"
 ROOM_NAME = "NEAL GC"
 ROOM_TOPIC = (
     "Coordinate quests, request help, and shape NEAL together. This room is "
-    "not end-to-end encrypted; do not post secrets. Knock to request entry."
+    "publicly readable and not end-to-end encrypted; do not post secrets. "
+    "Sign in and knock to request posting access."
 )
 REGISTRATION_SECRET = (
     Path.home()
@@ -265,7 +266,7 @@ def main() -> int:
                     {
                         "type": "m.room.history_visibility",
                         "state_key": "",
-                        "content": {"history_visibility": "invited"},
+                        "content": {"history_visibility": "world_readable"},
                     },
                     {
                         "type": "m.room.guest_access",
@@ -315,7 +316,7 @@ def main() -> int:
             "unencrypted": not encryption_present,
             "knock": join_rules.get("join_rule") == "knock",
             "guests forbidden": guest_access.get("guest_access") == "forbidden",
-            "history invited": history.get("history_visibility") == "invited",
+            "history public": history.get("history_visibility") == "world_readable",
             "canonical alias": canonical_alias.get("alias") == ROOM_ALIAS,
             "directory alias": room_if_present(base_url=api_base_url) == room_id,
         }

@@ -8,7 +8,8 @@
 - NEAL account: `@neal:matrix.nealtheseal.org`
 - Room alias: `#neal-gc:matrix.nealtheseal.org`
 - Room ID: `!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org`
-- Room policy: federated, unencrypted, private, knock-to-join, no guests, invited-history only
+- Room policy: federated, unencrypted, publicly readable, private-directory,
+  knock-to-join, guest joining forbidden
 
 The current room was created and verified on 2026-09-04 through the Matrix
 Client API. Its short-lived owner token was logged out and the temporary
@@ -40,11 +41,24 @@ The current beta client supports:
 - a state-bound, single-use `m.login.token` callback which returns the user to
   the NEAL client without an Element redirect;
 - session access-token storage scoped to the current browser tab;
+- a plaintext, read-only room transcript before sign-in;
 - knocking, accepting an invitation, unencrypted text messages, and signing out;
 - admitting waiting knocks when the signed-in account has invite power.
 
-The GC is intentionally not end-to-end encrypted. Messages are plaintext to
-joined members and homeserver operators, so users must not post secrets.
+The GC is intentionally public and not end-to-end encrypted. Anyone can read
+messages on the NEAL site; signing in and joining the room are required only to
+post. Users must not post secrets. Public history starts at the 2026-09-04
+cutover notice because Matrix history-visibility changes are not retroactive.
+
+The browser reads `https://matrix.nealtheseal.org/_neal/gc/messages` without a
+credential. Caddy maps that one fixed GET route to the canonical room's Matrix
+messages API and injects an expiring, server-held NEAL reader-device token. A
+room-member token is required to include the plaintext message sent before the
+public-history cutover. The token is stored only in the VPS root-owned
+`runtime/caddy.env`; it is never sent to the site or committed. Caddy accepts
+only GET on the fixed route, so the public surface cannot use it to post.
+Message bodies are rendered as text, never HTML. Guest account registration is
+disabled and room guest joining remains forbidden.
 
 `matrix.nealtheseal.org` is the default account provider. It requires no email
 or phone number and accepts only short-lived, one-use registration tokens.
@@ -97,8 +111,10 @@ As of 2026-09-04:
 2. Matrix federation version returns `200` through the public gateway.
 3. The canonical room alias resolves to the recorded room ID.
 4. The current room state contains no `m.room.encryption` event.
-5. The public Synapse admin path returns `404`.
-6. External federation discovery, TLS, server name, and signing-key checks pass.
+5. Room history is `world_readable`, while guest joining remains `forbidden`.
+6. The public read-only feed returns only `m.room.message` events.
+7. The public Synapse admin path returns `404`.
+8. External federation discovery, TLS, server name, and signing-key checks pass.
 
 ## Remaining durability gates
 

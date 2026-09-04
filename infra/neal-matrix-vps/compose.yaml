@@ -46,6 +46,8 @@ services:
     restart: unless-stopped
     depends_on:
       - synapse
+    env_file:
+      - ./runtime/caddy.env
     ports:
       - "80:80"
       - "443:443"

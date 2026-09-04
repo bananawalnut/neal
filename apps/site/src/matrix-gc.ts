@@ -13,6 +13,8 @@ const NATIVE_REGISTRATION_SERVERS = new Set([
 const DIRECT_HOMESERVER_BASE_URLS = new Map([
   ['matrix.nealtheseal.org', 'https://matrix.nealtheseal.org'],
 ]);
+const PUBLIC_FEED_URL = 'https://matrix.nealtheseal.org/_neal/gc/messages';
+const PUBLIC_REFRESH_MS = 10_000;
 const SESSION_KEY = 'neal.matrix.session.v1';
 const SSO_PENDING_KEY = 'neal.matrix.sso.pending.v1';
 const SSO_MAX_AGE_MS = 20 * 60 * 1000;
@@ -32,6 +34,13 @@ type PendingSso = {
   action: 'login' | 'register';
   state: string;
   createdAt: number;
+};
+
+type PublicMessage = {
+  body: string;
+  msgtype: string;
+  sender: string;
+  timestamp: number;
 };
 
 type ClientUi = {
@@ -60,7 +69,7 @@ type ClientUi = {
   sessionPanel: HTMLElement;
   knockButton: HTMLButtonElement;
   joinButton: HTMLButtonElement;
-  cipherPreview: HTMLOListElement;
+  publicMessages: HTMLOListElement;
   messages: HTMLOListElement;
   composer: HTMLFormElement;
   messageInput: HTMLTextAreaElement;
@@ -76,6 +85,7 @@ type ActivityDockUi = {
 };
 
 let activityDock: ActivityDockUi | null = null;
+let publicRefreshTimer: number | null = null;
 
 let sdkPromise: Promise<MatrixSdk> | null = null;
 
@@ -192,6 +202,11 @@ const appendEmpty = (list: HTMLElement, copy: string): void => {
 
 const displayName = (room: Room, sender: string): string => room.getMember(sender)?.name || sender;
 
+const publicDisplayName = (sender: string): string => {
+  const separator = sender.indexOf(':');
+  return sender.startsWith('@') && separator > 1 ? sender.slice(1, separator) : sender;
+};
+
 const setActivityDockState = (
   message: string,
   state: 'idle' | 'working' | 'good' | 'bad' = 'idle',
@@ -240,7 +255,126 @@ const renderActivityDock = (timeline: MatrixEvent[]): void => {
     item.append(symbols, label);
     activityDock.list.append(item);
   }
-  setActivityDockState(`${signals.length} RECENT MESSAGE${signals.length === 1 ? '' : 'S'} · SIGN IN TO READ`, 'good');
+  setActivityDockState(`${signals.length} RECENT MESSAGE${signals.length === 1 ? '' : 'S'} · LIVE`, 'good');
+};
+
+const renderPublicActivityDock = (messages: PublicMessage[]): void => {
+  if (!activityDock) return;
+  clearList(activityDock.list);
+  const latest = messages.at(-1);
+  if (!latest) {
+    const item = document.createElement('li');
+    const symbols = document.createElement('b');
+    const label = document.createElement('span');
+    symbols.setAttribute('aria-hidden', 'true');
+    symbols.textContent = '◇ ◇ ◇';
+    label.textContent = 'NO MESSAGES YET';
+    item.append(symbols, label);
+    activityDock.list.append(item);
+    setActivityDockState('PUBLIC CHAT · WAITING FOR ACTIVITY', 'good');
+    return;
+  }
+  const item = document.createElement('li');
+  const symbols = document.createElement('b');
+  const label = document.createElement('span');
+  symbols.setAttribute('aria-hidden', 'true');
+  symbols.textContent = '◆';
+  label.textContent = `${publicDisplayName(latest.sender)}: ${latest.body}`;
+  item.append(symbols, label);
+  activityDock.list.append(item);
+  setActivityDockState('PUBLIC CHAT · TAP TO READ', 'good');
+};
+
+const publicMessageFromEvent = (value: unknown): PublicMessage | null => {
+  if (!value || typeof value !== 'object') return null;
+  const event = value as {
+    content?: { body?: unknown; msgtype?: unknown };
+    origin_server_ts?: unknown;
+    sender?: unknown;
+    type?: unknown;
+  };
+  if (
+    event.type !== 'm.room.message'
+    || typeof event.content?.body !== 'string'
+    || typeof event.sender !== 'string'
+    || typeof event.origin_server_ts !== 'number'
+  ) return null;
+  return {
+    body: event.content.body,
+    msgtype: typeof event.content.msgtype === 'string' ? event.content.msgtype : 'm.text',
+    sender: event.sender,
+    timestamp: event.origin_server_ts,
+  };
+};
+
+const renderPublicMessages = (ui: ClientUi, messages: PublicMessage[]): void => {
+  clearList(ui.publicMessages);
+  if (messages.length === 0) {
+    appendEmpty(ui.publicMessages, 'NO MESSAGES YET. SIGN IN AND START THE RACKET.');
+    renderPublicActivityDock(messages);
+    return;
+  }
+  for (const message of messages) {
+    const item = document.createElement('li');
+    const name = publicDisplayName(message.sender);
+    const avatar = document.createElement('span');
+    const bubble = document.createElement('div');
+    const meta = document.createElement('div');
+    const author = document.createElement('strong');
+    const time = document.createElement('time');
+    const body = document.createElement('p');
+    avatar.className = 'matrix-avatar';
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.textContent = name.trim().charAt(0).toUpperCase() || '?';
+    bubble.className = 'matrix-bubble';
+    author.textContent = name;
+    time.dateTime = new Date(message.timestamp).toISOString();
+    time.textContent = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(message.timestamp);
+    body.textContent = message.msgtype === 'm.emote' ? `* ${message.body}` : message.body;
+    meta.append(author, time);
+    bubble.append(meta, body);
+    item.append(avatar, bubble);
+    ui.publicMessages.append(item);
+  }
+  ui.publicMessages.scrollTop = ui.publicMessages.scrollHeight;
+  renderPublicActivityDock(messages);
+};
+
+const refreshPublicMessages = async (ui: ClientUi): Promise<void> => {
+  try {
+    const response = await fetch(PUBLIC_FEED_URL, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`Public room feed returned ${response.status}.`);
+    const payload = await response.json() as { chunk?: unknown };
+    if (!Array.isArray(payload.chunk)) throw new Error('Public room feed returned no timeline.');
+    const messages = payload.chunk
+      .map(publicMessageFromEvent)
+      .filter((message): message is PublicMessage => Boolean(message))
+      .reverse();
+    renderPublicMessages(ui, messages);
+    if (!activeClient) setStatus(ui, 'Conversation is public. Sign in to send a message.', 'good');
+  } catch {
+    if (ui.publicMessages.childElementCount === 0 || ui.publicMessages.querySelector('.matrix-empty')) {
+      clearList(ui.publicMessages);
+      appendEmpty(ui.publicMessages, 'CHAT IS RECONNECTING…');
+    }
+    if (!activeClient) setStatus(ui, 'Could not load the public conversation. Retrying…', 'bad');
+    setActivityDockState('PUBLIC CHAT · RECONNECTING', 'bad');
+  }
+};
+
+const startPublicTimeline = (ui: ClientUi): void => {
+  void refreshPublicMessages(ui);
+  if (publicRefreshTimer !== null) return;
+  publicRefreshTimer = window.setInterval(() => void refreshPublicMessages(ui), PUBLIC_REFRESH_MS);
+};
+
+const stopPublicTimeline = (): void => {
+  if (publicRefreshTimer === null) return;
+  window.clearInterval(publicRefreshTimer);
+  publicRefreshTimer = null;
 };
 
 const renderMessages = (ui: ClientUi, client: MatrixClient, room: Room): void => {
@@ -326,20 +460,25 @@ const renderRoom = async (ui: ClientUi, client: MatrixClient, sdk: MatrixSdk): P
   ui.joinButton.hidden = membership !== sdk.KnownMembership.Invite;
   ui.composer.hidden = membership !== sdk.KnownMembership.Join;
   ui.messages.hidden = membership !== sdk.KnownMembership.Join;
+  ui.publicMessages.hidden = membership === sdk.KnownMembership.Join;
   ui.moderation.hidden = true;
 
   if (membership === sdk.KnownMembership.Join && room) {
+    stopPublicTimeline();
     setStatus(ui, 'Inside the NEAL GC.', 'good');
     setActivityDockState('SYNCING ROOM MESSAGES…', 'working');
     renderMessages(ui, client, room);
     renderModeration(ui, client, sdk, room);
   } else if (membership === sdk.KnownMembership.Knock) {
+    startPublicTimeline(ui);
     setStatus(ui, 'Knock sent. A room moderator must admit you.', 'good');
     setActivityDockState('KNOCK SENT · WAITING AT THE DOOR', 'good');
   } else if (membership === sdk.KnownMembership.Invite) {
+    startPublicTimeline(ui);
     setStatus(ui, 'The door is open. Accept the invite to enter.', 'good');
     setActivityDockState('INVITED · OPEN CHAT TO ENTER', 'good');
   } else {
+    startPublicTimeline(ui);
     setStatus(ui, 'Authenticated. Knock to request entry.', 'idle');
     setActivityDockState('SIGNED IN · KNOCK TO SEE ACTIVITY', 'idle');
   }
@@ -362,7 +501,6 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
   ui.loginForm.hidden = true;
   ui.loginToggle.hidden = true;
   ui.createForm.hidden = true;
-  ui.cipherPreview.hidden = true;
   ui.sessionPanel.hidden = false;
   ui.logoutButton.hidden = false;
   setStatus(ui, 'Starting Matrix session…', 'working');
@@ -397,9 +535,10 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
     sessionStorage.removeItem(SESSION_KEY);
     ui.loginForm.hidden = false;
     ui.loginToggle.hidden = false;
-    ui.cipherPreview.hidden = false;
+    ui.publicMessages.hidden = false;
     ui.sessionPanel.hidden = true;
     ui.logoutButton.hidden = true;
+    startPublicTimeline(ui);
     throw error;
   }
 };
@@ -655,7 +794,7 @@ export const mountMatrixGc = (): void => {
     sessionPanel: required(root, '#matrix-session'),
     knockButton: required(root, '#matrix-knock'),
     joinButton: required(root, '#matrix-join'),
-    cipherPreview: required(root, '#matrix-cipher-preview'),
+    publicMessages: required(root, '#matrix-public-messages'),
     messages: required(root, '#matrix-messages'),
     composer: required(root, '#matrix-composer'),
     messageInput: required(root, '#matrix-message'),
@@ -831,25 +970,14 @@ export const mountMatrixGc = (): void => {
       ui.loginToggle.hidden = false;
       ui.loginToggle.setAttribute('aria-expanded', 'false');
       ui.root.closest('#gc')?.classList.remove('gc-login-open');
-      ui.cipherPreview.hidden = false;
+      ui.publicMessages.hidden = false;
       ui.sessionPanel.hidden = true;
       ui.logoutButton.hidden = true;
       ui.logoutButton.disabled = false;
       ui.account.textContent = 'NOT SIGNED IN';
       ui.memberState.textContent = '—';
       clearList(ui.messages);
-      if (activityDock) {
-        clearList(activityDock.list);
-        const item = document.createElement('li');
-        const symbols = document.createElement('b');
-        const label = document.createElement('span');
-        symbols.setAttribute('aria-hidden', 'true');
-        symbols.textContent = '◆ ◇ ✦';
-        label.textContent = 'SIGN IN TO VIEW ROOM ACTIVITY';
-        item.append(symbols, label);
-        activityDock.list.append(item);
-      }
-      setActivityDockState('LOCKED SIGNAL · SIGN IN TO SEE ACTIVITY');
+      startPublicTimeline(ui);
     }
   });
 
@@ -858,13 +986,15 @@ export const mountMatrixGc = (): void => {
       if (await consumeSsoCallback(ui)) return;
       const session = readSession();
       if (session) await connectSession(ui, session);
+      else startPublicTimeline(ui);
     } catch (error) {
       ui.entryTabs.hidden = false;
       showEntryMode(ui, 'login');
       ui.loginToggle.hidden = false;
       ui.loginToggle.setAttribute('aria-expanded', 'false');
       ui.root.closest('#gc')?.classList.remove('gc-login-open');
-      ui.cipherPreview.hidden = false;
+      ui.publicMessages.hidden = false;
+      startPublicTimeline(ui);
       setStatus(ui, errorMessage(error), 'bad');
     }
   })();

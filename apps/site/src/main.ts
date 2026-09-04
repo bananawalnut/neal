@@ -341,18 +341,14 @@ app.innerHTML = `
           </header>
           <code>#neal-gc:<wbr>matrix.nealtheseal.org</code>
           <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>KNOCK TO JOIN</span><span>FEDERATED</span><span>UNENCRYPTED</span></div>
-          <ol class="gc-cipher-preview" id="matrix-cipher-preview" aria-label="Message placeholders shown before sign-in">
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>JUST NOW</time></div><p aria-label="Message hidden until sign-in">▰▰▰▰ ▰▰ ▰▰▰▰▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>2M</time></div><p aria-label="Message hidden until sign-in">▰▰ ▰▰▰▰▰ ▰▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>8M</time></div><p aria-label="Message hidden until sign-in">▰▰▰▰▰▰ ▰▰▰ ▰▰▰▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>13M</time></div><p aria-label="Message hidden until sign-in">▰▰▰ ▰▰▰▰▰▰ ▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>21M</time></div><p aria-label="Message hidden until sign-in">▰▰▰▰▰ ▰▰ ▰▰▰▰</p></div></li>
+          <ol class="matrix-public-messages" id="matrix-public-messages" aria-label="Public NEAL GC conversation">
+            <li class="matrix-empty">LOADING THE PUBLIC CONVERSATION…</li>
           </ol>
           <div class="matrix-entry-tabs" id="matrix-entry-tabs" role="tablist" aria-label="Matrix account options">
             <button id="matrix-tab-login" type="button" role="tab" aria-selected="true" aria-controls="matrix-login-form">I HAVE AN ACCOUNT</button>
             <button id="matrix-tab-create" type="button" role="tab" aria-selected="false" aria-controls="matrix-create-form">CREATE AN ACCOUNT</button>
           </div>
-          <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO VIEW THE CHAT</strong><span>Your credentials go directly to your Matrix homeserver.</span></button>
+          <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO SEND A MESSAGE</strong><span>Reading is public. Your credentials go directly to your Matrix homeserver.</span></button>
           <form class="matrix-login" id="matrix-login-form">
             <label><span>MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="@you:your-homeserver.org" required /></label>
             <label><span>PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="Your Matrix password" required /></label>
@@ -386,8 +382,8 @@ app.innerHTML = `
             <form class="matrix-composer" id="matrix-composer" hidden><label for="matrix-message">MESSAGE THE GC</label><textarea id="matrix-message" maxlength="4000" placeholder="CHUCK SOMETHING INTO THE GC…" required></textarea><button id="matrix-send" type="submit">SEND MESSAGE</button></form>
             <aside class="matrix-moderation" id="matrix-moderation" hidden><strong>KNOCKS WAITING</strong><ul id="matrix-knocks"></ul></aside>
           </section>
-          <div class="matrix-client-footer"><p id="matrix-status" role="status" data-state="idle">Sign in with a federated Matrix account. Your access token stays in this browser tab.</p><button id="matrix-logout" type="button" hidden>SIGN OUT</button></div>
-          <p class="matrix-security-note"><strong>UNENCRYPTED ROOM:</strong> messages are visible to joined members and homeserver operators. Do not post secrets. Provider account creation, password or SSO login, room entry, live text, and knock moderation are available.</p>
+          <div class="matrix-client-footer"><p id="matrix-status" role="status" data-state="idle">Loading the public conversation…</p><button id="matrix-logout" type="button" hidden>SIGN OUT</button></div>
+          <p class="matrix-security-note"><strong>PUBLIC, UNENCRYPTED ROOM:</strong> anyone can read messages on the NEAL site. Sign in and join to post. Do not share secrets.</p>
         </div>
       </section>
 
@@ -486,9 +482,9 @@ app.innerHTML = `
   <aside class="gc-dock" id="gc-dock" aria-labelledby="gc-dock-title">
     <a href="#gc" aria-label="Open the NEAL Matrix group chat">
       <header><i aria-hidden="true"></i><strong id="gc-dock-title">NEAL GC</strong><span>LIVE</span></header>
-      <p id="gc-dock-state" role="status">Sign in to view chat activity</p>
+      <p id="gc-dock-state" role="status">Public chat · tap to read</p>
       <ol id="gc-dock-activity" aria-label="Recent GC activity">
-          <li><b aria-hidden="true">◆ ◇ ✦</b><span>Sign in to view messages</span></li>
+          <li><b aria-hidden="true">◆</b><span>Loading latest message…</span></li>
       </ol>
       <div class="gc-dock__open"><strong>Open chat</strong><span aria-hidden="true">→</span></div>
     </a>

@@ -14,8 +14,8 @@
 | Suggestion registry | Append-only public records | Record paid proposals, support signals, moderation, and dispositions | Service signing key only |
 | Local YAHOO toy | Vanilla TypeScript + browser local storage | Record free local clicks and calculate this browser's personal records | No |
 | Future YAHOO program/indexer | Undecided | Only exists if a later product decision approves wallet-linked, global, or on-chain YAHOOS | Undecided |
-| NEAL Matrix client | Vanilla TypeScript + official `matrix-js-sdk` | Discover a user's homeserver, initiate provider-owned account creation or login, consume one-time SSO login tokens, knock, moderate, and exchange GC messages without an Element redirect | Session access token only |
-| NEAL Matrix homeserver | Synapse + Postgres + filtered local gateway | Serve `matrix.nealtheseal.org` and the unencrypted federated NEAL GC beta | Server signing keys only |
+| NEAL Matrix client | Vanilla TypeScript + official `matrix-js-sdk` | Show the public GC transcript, discover a user's homeserver, initiate account creation or login, knock, moderate, and exchange GC messages without an Element redirect | Session access token only when signed in |
+| NEAL Matrix homeserver | Synapse + Postgres + filtered local gateway | Serve `matrix.nealtheseal.org`, the public unencrypted GC, and a fixed read-only message feed | Server signing keys and a server-held NEAL reader-device token |
 | Future NEAL Nostr relay | strfry + isolated LMDB volume | Reserved plan for `nostr.nealtheseal.org`; not deployed | No user or wallet keys |
 | NEAL agent runner | Custom Nostr bridge + Goose ACP | Connect a separately keyed NEAL agent to reviewed event threads | Agent Nostr key only |
 | Quest ledger | Append-only signed records | Record eligibility inputs and decisions | Service signing key only |
@@ -47,11 +47,13 @@
   rooms through normal federation and never share databases or signing keys.
 - The NEAL Matrix client sends credentials directly from the browser to the
   homeserver discovered from the user's Matrix ID. Its access token is scoped
-  to the current browser tab; end-to-end crypto state lives in IndexedDB. The
-  client has no NEAL/Vercel credential backend and renders remote text as text,
-  never HTML.
-- New-account onboarding defaults to Matrix.org because it is independent of
-  the Mac-hosted NEAL Synapse. The provider domain remains editable. NEAL uses
+  to the current browser tab. Signed-out visitors receive the public plaintext
+  transcript through a fixed GET-only Caddy route; its expiring NEAL reader
+  token stays on the VPS and is never sent to the browser. Guest registration
+  is disabled. The client has no NEAL/Vercel credential backend and renders
+  remote text as text, never HTML.
+- New-account onboarding defaults to `matrix.nealtheseal.org`. The provider
+  domain remains editable. NEAL uses
   the homeserver's advertised SSO/CAS registration action and validates a
   tab-scoped state value before exchanging the returned one-time login token.
 - Public Matrix traffic passes through a gateway which exposes Matrix client,
