@@ -78,12 +78,13 @@ does not receive them.
 
 `https://matrix.nealtheseal.org/_neal/gc/messages` returns the canonical room's
 plaintext message timeline without requiring a browser credential. Caddy
-injects an expiring NEAL reader-device token from the root-owned
-`runtime/caddy.env` and only exposes the fixed GET route. This member token is
-needed to include plaintext history from before the public-history cutover; it
-is never sent to the browser. Guest registration is disabled and the room's
-guest-access policy remains `forbidden`. Run `configure_public_neal_gc.py`
-after a restore and `verify_public.sh` after every gateway change.
+injects a guest reader token from the root-owned `runtime/caddy.env` and only
+exposes the fixed GET route. It is never sent to the browser, and the room's
+guest-access policy remains `forbidden`. The configuration script republishes
+pre-cutover plaintext messages with explicit original attribution so the site
+can show the complete current conversation without a privileged member token.
+Run `configure_public_neal_gc.py` after a restore and `verify_public.sh` after
+every gateway change.
 
 ## Backups and rollback
 

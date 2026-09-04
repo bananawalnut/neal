@@ -288,7 +288,11 @@ const renderPublicActivityDock = (messages: PublicMessage[]): void => {
 const publicMessageFromEvent = (value: unknown): PublicMessage | null => {
   if (!value || typeof value !== 'object') return null;
   const event = value as {
-    content?: { body?: unknown; msgtype?: unknown };
+    content?: {
+      body?: unknown;
+      msgtype?: unknown;
+      'org.nealtheseal.public_history'?: unknown;
+    };
     origin_server_ts?: unknown;
     sender?: unknown;
     type?: unknown;
@@ -299,11 +303,17 @@ const publicMessageFromEvent = (value: unknown): PublicMessage | null => {
     || typeof event.sender !== 'string'
     || typeof event.origin_server_ts !== 'number'
   ) return null;
+  const archive = event.content['org.nealtheseal.public_history'];
+  const original = archive && typeof archive === 'object' ? archive as {
+    body?: unknown;
+    sender?: unknown;
+    timestamp?: unknown;
+  } : null;
   return {
-    body: event.content.body,
+    body: typeof original?.body === 'string' ? original.body : event.content.body,
     msgtype: typeof event.content.msgtype === 'string' ? event.content.msgtype : 'm.text',
-    sender: event.sender,
-    timestamp: event.origin_server_ts,
+    sender: typeof original?.sender === 'string' ? original.sender : event.sender,
+    timestamp: typeof original?.timestamp === 'number' ? original.timestamp : event.origin_server_ts,
   };
 };
 

@@ -99,7 +99,7 @@ form_secret: '$form_secret'
 enable_registration: true
 enable_registration_without_verification: true
 registration_requires_token: true
-allow_guest_access: false
+allow_guest_access: true
 allow_public_rooms_without_auth: false
 allow_public_rooms_over_federation: false
 require_auth_for_profile_requests: true

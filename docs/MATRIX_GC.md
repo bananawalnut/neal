@@ -52,13 +52,14 @@ cutover notice because Matrix history-visibility changes are not retroactive.
 
 The browser reads `https://matrix.nealtheseal.org/_neal/gc/messages` without a
 credential. Caddy maps that one fixed GET route to the canonical room's Matrix
-messages API and injects an expiring, server-held NEAL reader-device token. A
-room-member token is required to include the plaintext message sent before the
-public-history cutover. The token is stored only in the VPS root-owned
-`runtime/caddy.env`; it is never sent to the site or committed. Caddy accepts
-only GET on the fixed route, so the public surface cannot use it to post.
-Message bodies are rendered as text, never HTML. Guest account registration is
-disabled and room guest joining remains forbidden.
+messages API and injects a server-held guest reader token. The token is stored
+only in the VPS root-owned `runtime/caddy.env`; it is never sent to the site or
+committed. Caddy accepts only GET on the fixed route, and room guest joining is
+forbidden, so the public surface cannot post. The one plaintext message from
+before the public-history cutover is republished with its original sender and
+timestamp recorded in the event; this makes the complete current conversation
+visible without retaining a privileged member token. Message bodies are
+rendered as text, never HTML.
 
 `matrix.nealtheseal.org` is the default account provider. It requires no email
 or phone number and accepts only short-lived, one-use registration tokens.

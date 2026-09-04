@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Publish the full NEAL GC history while keeping room writes authenticated.
 
-Run as root from ``/srv/neal-matrix``. The script disables guest registration,
-marks future room history world-readable, creates one expiring server-held
-NEAL reader device, and restarts Caddy with that token. The fixed Caddy route
-uses the member token to include the room's pre-cutover plaintext history. The
-browser never sees the token and the route accepts reads only.
+Run as root from ``/srv/neal-matrix``. The script enables guest accounts, marks
+future room history world-readable, republishes any pre-cutover plaintext
+messages with explicit original attribution, creates one server-held guest
+reader token, and restarts Caddy with that token. The browser never sees the
+token, the guest cannot join, and the fixed route accepts reads only.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, "/srv/neal-matrix")
@@ -30,22 +31,24 @@ CADDY_ENV = PROJECT_ROOT / "runtime/caddy.env"
 OWNER = "@neal:matrix.nealtheseal.org"
 ROOM_ID = "!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org"
 PUBLIC_FEED = "https://matrix.nealtheseal.org/_neal/gc/messages"
-READER_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000
+MESSAGE_FILTER = "%7B%22types%22%3A%5B%22m.room.message%22%5D%7D"
+MESSAGES_PATH = f"/_matrix/client/v3/rooms/{encoded(ROOM_ID)}/messages?dir=b&limit=100&filter={MESSAGE_FILTER}"
+ARCHIVE_KEY = "org.nealtheseal.public_history"
 
 
-def disable_guest_accounts() -> bool:
+def enable_guest_accounts() -> bool:
     original = HOMESERVER_CONFIG.stat()
     config = HOMESERVER_CONFIG.read_text()
-    disabled = "allow_guest_access: false"
-    if disabled in config:
+    enabled = "allow_guest_access: true"
+    if enabled in config:
         return False
-    if "allow_guest_access: true" in config:
-        updated = config.replace("allow_guest_access: true", disabled, 1)
+    if "allow_guest_access: false" in config:
+        updated = config.replace("allow_guest_access: false", enabled, 1)
     else:
         anchor = "registration_requires_token: true\n"
         if anchor not in config:
             raise TokenError("Could not locate the Synapse registration policy anchor")
-        updated = config.replace(anchor, anchor + disabled + "\n", 1)
+        updated = config.replace(anchor, anchor + enabled + "\n", 1)
     temporary = HOMESERVER_CONFIG.with_suffix(".yaml.tmp")
     temporary.write_text(updated)
     os.chmod(temporary, original.st_mode & 0o777)
@@ -84,27 +87,82 @@ def existing_reader_token() -> str:
     return ""
 
 
-def valid_reader_token(token: str) -> bool:
+def valid_guest_token(token: str) -> bool:
     if not token:
         return False
     try:
         whoami = request_json("GET", "/_matrix/client/v3/account/whoami", token=token)
-        return whoami.get("user_id") == OWNER and whoami.get("is_guest") is not True
+        return whoami.get("is_guest") is True
     except TokenError:
         return False
 
 
-def create_reader_token(admin_token: str) -> str:
-    reader = request_json(
+def create_guest_token() -> str:
+    guest = request_json(
         "POST",
-        f"/_synapse/admin/v1/users/{encoded(OWNER)}/login",
-        body={"valid_until_ms": int(time.time() * 1000) + READER_LIFETIME_MS},
-        token=admin_token,
+        "/_matrix/client/v3/register?kind=guest",
+        body={"initial_device_display_name": "NEAL public site reader"},
     )
-    token = reader.get("access_token")
+    token = guest.get("access_token")
     if not isinstance(token, str) or not token:
-        raise TokenError("Synapse returned no public reader access token")
+        raise TokenError("Synapse returned no guest access token")
     return token
+
+
+def timeline(token: str) -> list[dict[str, object]]:
+    payload = request_json("GET", MESSAGES_PATH, token=token)
+    chunk = payload.get("chunk")
+    if not isinstance(chunk, list):
+        raise TokenError("Matrix returned no room message timeline")
+    return [event for event in chunk if isinstance(event, dict)]
+
+
+def republish_private_history(owner_token: str, guest_token: str) -> int:
+    owner_events = timeline(owner_token)
+    public_events = timeline(guest_token)
+    public_ids = {event.get("event_id") for event in public_events}
+    archived_ids = {
+        archive.get("event_id")
+        for event in owner_events
+        if isinstance(event.get("content"), dict)
+        and isinstance((archive := event["content"].get(ARCHIVE_KEY)), dict)
+    }
+    copied = 0
+    for event in reversed(owner_events):
+        event_id = event.get("event_id")
+        content = event.get("content")
+        if (
+            not isinstance(event_id, str)
+            or event_id in public_ids
+            or event_id in archived_ids
+            or not isinstance(content, dict)
+            or ARCHIVE_KEY in content
+            or not isinstance(content.get("body"), str)
+            or not isinstance(event.get("sender"), str)
+            or not isinstance(event.get("origin_server_ts"), int)
+        ):
+            continue
+        sender = event["sender"]
+        timestamp = event["origin_server_ts"]
+        body = content["body"]
+        sent_at = datetime.fromtimestamp(timestamp / 1000, tz=UTC).isoformat(timespec="minutes")
+        request_json(
+            "PUT",
+            f"/_matrix/client/v3/rooms/{encoded(ROOM_ID)}/send/m.room.message/{secrets.token_hex(12)}",
+            body={
+                "msgtype": "m.notice",
+                "body": f"PUBLIC HISTORY · {sender} · {sent_at}\n{body}",
+                ARCHIVE_KEY: {
+                    "event_id": event_id,
+                    "sender": sender,
+                    "timestamp": timestamp,
+                    "body": body,
+                },
+            },
+            token=owner_token,
+        )
+        copied += 1
+    return copied
 
 
 def save_reader_token(token: str) -> None:
@@ -130,7 +188,7 @@ def main() -> int:
     if not CADDY_ENV.exists():
         CADDY_ENV.write_text("")
         os.chmod(CADDY_ENV, 0o600)
-    config_changed = disable_guest_accounts()
+    config_changed = enable_guest_accounts()
     if config_changed:
         restart("synapse")
         wait_for_synapse()
@@ -181,14 +239,16 @@ def main() -> int:
             )
 
         reader_token = existing_reader_token()
-        if not valid_reader_token(reader_token):
-            reader_token = create_reader_token(admin_token)
+        if not valid_guest_token(reader_token):
+            reader_token = create_guest_token()
             save_reader_token(reader_token)
+        archived_message_count = republish_private_history(owner_token, reader_token)
 
         restart("caddy")
         message_count = verify_public_feed()
         print(json.dumps({
-            "guest_accounts_enabled": False,
+            "archived_message_count": archived_message_count,
+            "guest_accounts_enabled": True,
             "guest_joining_forbidden": True,
             "history_visibility": "world_readable",
             "message_count": message_count,

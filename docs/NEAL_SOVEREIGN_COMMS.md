@@ -72,8 +72,8 @@ the audit and permission model is reviewed.
 The Synapse beta runs on an always-online Hetzner CX23 with PostgreSQL 16 and
 Caddy. The original database, media state, server signing key, and
 `matrix.nealtheseal.org` identity were migrated together. Caddy blocks public
-admin APIs and exposes one fixed GET-only GC feed using a server-held NEAL
-reader-device token; Synapse listens only on loopback. Hetzner daily backups are enabled,
+admin APIs and exposes one fixed GET-only GC feed using a server-held guest
+reader token; Synapse listens only on loopback. Hetzner daily backups are enabled,
 and an encrypted final snapshot remains off-server for rollback. See
 [`MATRIX_GC.md`](MATRIX_GC.md) and
 [`../infra/neal-matrix-vps`](../infra/neal-matrix-vps).
