@@ -1,7 +1,7 @@
 import type { MatrixClient, MatrixEvent, Room } from 'matrix-js-sdk';
 
 const ROOM_ALIAS = '#neal-gc:matrix.nealtheseal.org';
-const ROOM_ID = '!kBjRkJEIsGBWCyrBQO:matrix.nealtheseal.org';
+const ROOM_ID = '!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org';
 const ROOM_VIA_SERVERS = [
   'matrix.nealtheseal.org',
   'salix.host',
@@ -213,7 +213,7 @@ const activityGlyphs = (event: MatrixEvent): string => {
 const renderActivityDock = (timeline: MatrixEvent[]): void => {
   if (!activityDock) return;
   const signals = timeline
-    .filter((event) => event.getType() === 'm.room.message' || event.getType() === 'm.room.encrypted')
+    .filter((event) => event.getType() === 'm.room.message')
     .slice(-3)
     .reverse();
   clearList(activityDock.list);
@@ -236,23 +236,15 @@ const renderActivityDock = (timeline: MatrixEvent[]): void => {
     const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(event.getTs());
     symbols.setAttribute('aria-hidden', 'true');
     symbols.textContent = activityGlyphs(event);
-    label.textContent = `ENCRYPTED SIGNAL · ${time}`;
+    label.textContent = `ROOM MESSAGE · ${time}`;
     item.append(symbols, label);
     activityDock.list.append(item);
   }
-  setActivityDockState(`${signals.length} RECENT SIGNAL${signals.length === 1 ? '' : 'S'} · CONTENT SEALED`, 'good');
+  setActivityDockState(`${signals.length} RECENT MESSAGE${signals.length === 1 ? '' : 'S'} · SIGN IN TO READ`, 'good');
 };
 
-const renderMessages = async (ui: ClientUi, client: MatrixClient, room: Room): Promise<void> => {
+const renderMessages = (ui: ClientUi, client: MatrixClient, room: Room): void => {
   const timeline = room.getLiveTimeline().getEvents().slice(-60);
-  await Promise.all(timeline.map(async (event) => {
-    try {
-      await client.decryptEventIfNeeded(event);
-    } catch {
-      // A message may predate this device or still be waiting for keys.
-    }
-  }));
-
   if (client !== activeClient) return;
   renderActivityDock(timeline);
   clearList(ui.messages);
@@ -337,9 +329,9 @@ const renderRoom = async (ui: ClientUi, client: MatrixClient, sdk: MatrixSdk): P
   ui.moderation.hidden = true;
 
   if (membership === sdk.KnownMembership.Join && room) {
-    setStatus(ui, 'Inside the encrypted NEAL GC.', 'good');
-    setActivityDockState('SYNCING ENCRYPTED ROOM SIGNAL…', 'working');
-    await renderMessages(ui, client, room);
+    setStatus(ui, 'Inside the NEAL GC.', 'good');
+    setActivityDockState('SYNCING ROOM MESSAGES…', 'working');
+    renderMessages(ui, client, room);
     renderModeration(ui, client, sdk, room);
   } else if (membership === sdk.KnownMembership.Knock) {
     setStatus(ui, 'Knock sent. A room moderator must admit you.', 'good');
@@ -373,8 +365,8 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
   ui.cipherPreview.hidden = true;
   ui.sessionPanel.hidden = false;
   ui.logoutButton.hidden = false;
-  setStatus(ui, 'Starting encrypted Matrix session…', 'working');
-  setActivityDockState('CONNECTING ENCRYPTED SIGNAL…', 'working');
+  setStatus(ui, 'Starting Matrix session…', 'working');
+  setActivityDockState('CONNECTING TO THE ROOM…', 'working');
 
   client.on(sdk.RoomEvent.Timeline, (event: MatrixEvent, room: Room | undefined, toStartOfTimeline: boolean | undefined) => {
     if (!toStartOfTimeline && room?.roomId === ROOM_ID) void renderRoom(ui, client, sdk);
@@ -389,7 +381,7 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
     if (state === sdk.SyncState.Prepared || state === sdk.SyncState.Syncing) void renderRoom(ui, client, sdk);
     if (state === sdk.SyncState.Reconnecting) {
       setStatus(ui, 'Reconnecting to your homeserver…', 'working');
-      setActivityDockState('RECONNECTING ENCRYPTED SIGNAL…', 'working');
+      setActivityDockState('RECONNECTING TO THE ROOM…', 'working');
     }
     if (state === sdk.SyncState.Error) {
       setStatus(ui, 'Matrix sync failed. Check the homeserver and try again.', 'bad');
@@ -398,9 +390,6 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
   });
 
   try {
-    await client.initRustCrypto({
-      cryptoDatabasePrefix: `neal-gc-${encodeURIComponent(session.userId)}-${encodeURIComponent(session.deviceId)}`,
-    });
     await client.startClient({ initialSyncLimit: 60, lazyLoadMembers: true, disablePresence: true });
   } catch (error) {
     activeClient = null;
@@ -795,7 +784,7 @@ export const mountMatrixGc = (): void => {
   ui.joinButton.addEventListener('click', async () => {
     if (!activeClient) return;
     ui.joinButton.disabled = true;
-    setStatus(ui, 'Entering the encrypted room…', 'working');
+    setStatus(ui, 'Entering the room…', 'working');
     try {
       await activeClient.joinRoom(ROOM_ID, { viaServers: ROOM_VIA_SERVERS });
       const sdk = await loadSdk();
@@ -815,7 +804,7 @@ export const mountMatrixGc = (): void => {
     try {
       await activeClient.sendTextMessage(ROOM_ID, body);
       ui.messageInput.value = '';
-      setStatus(ui, 'Encrypted message sent.', 'good');
+      setStatus(ui, 'Message sent.', 'good');
     } catch (error) {
       setStatus(ui, errorMessage(error), 'bad');
     } finally {
@@ -856,7 +845,7 @@ export const mountMatrixGc = (): void => {
         const label = document.createElement('span');
         symbols.setAttribute('aria-hidden', 'true');
         symbols.textContent = '◆ ◇ ✦';
-        label.textContent = 'ROOM ACTIVITY STAYS SEALED';
+        label.textContent = 'SIGN IN TO VIEW ROOM ACTIVITY';
         item.append(symbols, label);
         activityDock.list.append(item);
       }

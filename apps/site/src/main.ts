@@ -319,12 +319,12 @@ app.innerHTML = `
       <div class="nealonomics" aria-labelledby="nealonomics-title">
         <p class="eyebrow">THE NEAL LOOP / ACTUAL TOKENOMICS</p>
         <h3 id="nealonomics-title">YAP IN THE GC.<br>NEAL'S QUESTS PAY THE MOB.</h3>
-        <p class="nealonomics-truth">The dev buys his own NEAL. The mob shapes NEAL in the encrypted GC. When NEAL publishes one of his quests, its brief, reward, deadline, proof rules, and reviewer go up before anyone enters. The treasury gets 42% of creator fees, then market-buys NEAL for quests and open-source-dev airdrops. Airdrop holdings may not exceed 18% of supply unless every NEAL holder approves more.</p>
+        <p class="nealonomics-truth">The dev buys his own NEAL. The mob shapes NEAL in the GC. When NEAL publishes one of his quests, its brief, reward, deadline, proof rules, and reviewer go up before anyone enters. The treasury gets 42% of creator fees, then market-buys NEAL for quests and open-source-dev airdrops. Airdrop holdings may not exceed 18% of supply unless every NEAL holder approves more.</p>
         <div class="nealonomics-wallets" aria-label="Wallet publication status">
           <span><strong>DEV WALLET</strong><i id="dev-wallet-state">POSTS HERE ONCE LIVE</i></span>
           <span><strong>QUEST TREASURY</strong><i id="quest-wallet-state">POSTS HERE ONCE LIVE</i></span>
         </div>
-        <p class="nealonomics-racket" aria-hidden="true">BUY NEAL ✦ YAP IN THE ENCRYPTED GC ✦ NEAL'S QUESTS PAY ✦ OPEN-SOURCE DEVS GET DROPS</p>
+        <p class="nealonomics-racket" aria-hidden="true">BUY NEAL ✦ YAP IN THE GC ✦ NEAL'S QUESTS PAY ✦ OPEN-SOURCE DEVS GET DROPS</p>
       </div>
 
       <section class="gc-portal" id="gc" aria-labelledby="gc-title">
@@ -336,23 +336,23 @@ app.innerHTML = `
         <div class="gc-room-board" id="matrix-client">
           <header class="gc-chat-header">
             <span class="gc-chat-room"><img src="/neal-favicon.png" alt="" /><span><b>NEAL GC</b><small>THE MOB · MATRIX</small></span></span>
-            <strong><i aria-hidden="true"></i><span>ENCRYPTED</span></strong>
+            <strong><i aria-hidden="true"></i><span>LIVE</span></strong>
             <button class="gc-drawer-close" id="gc-drawer-close" type="button" aria-label="Close the NEAL group chat">×</button>
           </header>
           <code>#neal-gc:<wbr>matrix.nealtheseal.org</code>
-          <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>KNOCK TO JOIN</span><span>FEDERATED</span><span>E2EE</span></div>
-          <ol class="gc-cipher-preview" id="matrix-cipher-preview" aria-label="Sealed preview of the NEAL GC before sign-in">
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>JUST NOW</time></div><p aria-label="Encrypted message">▰▰▰▰ ▰▰ ▰▰▰▰▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>2M</time></div><p aria-label="Encrypted message">▰▰ ▰▰▰▰▰ ▰▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>8M</time></div><p aria-label="Encrypted message">▰▰▰▰▰▰ ▰▰▰ ▰▰▰▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>13M</time></div><p aria-label="Encrypted message">▰▰▰ ▰▰▰▰▰▰ ▰▰</p></div></li>
-            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>SEALED MEMBER</strong><time>21M</time></div><p aria-label="Encrypted message">▰▰▰▰▰ ▰▰ ▰▰▰▰</p></div></li>
+          <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>KNOCK TO JOIN</span><span>FEDERATED</span><span>UNENCRYPTED</span></div>
+          <ol class="gc-cipher-preview" id="matrix-cipher-preview" aria-label="Message placeholders shown before sign-in">
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>JUST NOW</time></div><p aria-label="Message hidden until sign-in">▰▰▰▰ ▰▰ ▰▰▰▰▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>2M</time></div><p aria-label="Message hidden until sign-in">▰▰ ▰▰▰▰▰ ▰▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>8M</time></div><p aria-label="Message hidden until sign-in">▰▰▰▰▰▰ ▰▰▰ ▰▰▰▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>13M</time></div><p aria-label="Message hidden until sign-in">▰▰▰ ▰▰▰▰▰▰ ▰▰</p></div></li>
+            <li><span class="matrix-avatar" aria-hidden="true">?</span><div class="matrix-bubble"><div><strong>GC MEMBER</strong><time>21M</time></div><p aria-label="Message hidden until sign-in">▰▰▰▰▰ ▰▰ ▰▰▰▰</p></div></li>
           </ol>
           <div class="matrix-entry-tabs" id="matrix-entry-tabs" role="tablist" aria-label="Matrix account options">
             <button id="matrix-tab-login" type="button" role="tab" aria-selected="true" aria-controls="matrix-login-form">I HAVE AN ACCOUNT</button>
             <button id="matrix-tab-create" type="button" role="tab" aria-selected="false" aria-controls="matrix-create-form">CREATE AN ACCOUNT</button>
           </div>
-          <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO DECRYPT THE CHAT</strong><span>Your credentials go directly to your Matrix homeserver.</span></button>
+          <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO VIEW THE CHAT</strong><span>Your credentials go directly to your Matrix homeserver.</span></button>
           <form class="matrix-login" id="matrix-login-form">
             <label><span>MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="email" autocomplete="username" spellcheck="false" placeholder="@you:your-homeserver.org" required /></label>
             <label><span>PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="Your Matrix password" required /></label>
@@ -383,11 +383,11 @@ app.innerHTML = `
             <div class="matrix-session-head"><span>ACCOUNT <strong id="matrix-account">NOT SIGNED IN</strong></span><span>ROOM <strong id="matrix-membership">—</strong></span></div>
             <div class="matrix-room-actions"><button id="matrix-knock" type="button">KNOCK TO JOIN</button><button id="matrix-join" type="button" hidden>ACCEPT INVITE & ENTER</button></div>
             <ol class="matrix-messages" id="matrix-messages" aria-label="NEAL GC messages" hidden></ol>
-            <form class="matrix-composer" id="matrix-composer" hidden><label for="matrix-message">MESSAGE THE GC</label><textarea id="matrix-message" maxlength="4000" placeholder="CHUCK SOMETHING INTO THE GC…" required></textarea><button id="matrix-send" type="submit">SEND ENCRYPTED MESSAGE</button></form>
+            <form class="matrix-composer" id="matrix-composer" hidden><label for="matrix-message">MESSAGE THE GC</label><textarea id="matrix-message" maxlength="4000" placeholder="CHUCK SOMETHING INTO THE GC…" required></textarea><button id="matrix-send" type="submit">SEND MESSAGE</button></form>
             <aside class="matrix-moderation" id="matrix-moderation" hidden><strong>KNOCKS WAITING</strong><ul id="matrix-knocks"></ul></aside>
           </section>
           <div class="matrix-client-footer"><p id="matrix-status" role="status" data-state="idle">Sign in with a federated Matrix account. Your access token stays in this browser tab.</p><button id="matrix-logout" type="button" hidden>SIGN OUT</button></div>
-          <p class="matrix-security-note">Beta client: provider account creation, password or SSO login, room entry, encrypted text, and knock moderation are live. Device verification and recovery controls come next.</p>
+          <p class="matrix-security-note"><strong>UNENCRYPTED ROOM:</strong> messages are visible to joined members and homeserver operators. Do not post secrets. Provider account creation, password or SSO login, room entry, live text, and knock moderation are available.</p>
         </div>
       </section>
 
@@ -395,7 +395,7 @@ app.innerHTML = `
         <span class="gc-coming">THE GC IS THE COOKER</span>
         <h3 id="quest-process-title">THE MOB PITCHES.<br>LORD NEAL SEALS THE DECREE.<br><em>THE ARMY CAUSES A SCENE.</em></h3>
         <p>Cook up a bit with the mob in the GC. If the racket catches NEAL's eye, he can publish it as one of his official quests. Some missions will be built for stream so everyone can watch the submissions roll in, roast the carry-on, cheer the lunatics, and see the winners crowned.</p>
-        <a class="gc-cta" href="#gc"><strong>OPEN THE NEAL GC <span aria-hidden="true">↗</span></strong><small>LIVE · ENCRYPTED</small></a>
+        <a class="gc-cta" href="#gc"><strong>OPEN THE NEAL GC <span aria-hidden="true">↗</span></strong><small>LIVE · FEDERATED</small></a>
         <div class="quest-tease" aria-label="Coming quest features"><span>COMMUNITY-COOKED QUESTS</span><span>WATCH SUBMISSIONS LIVE</span><span>REWARDS FROM NEAL'S WALLET</span></div>
       </div>
 
@@ -484,11 +484,11 @@ app.innerHTML = `
   <button class="gc-drawer-backdrop" id="gc-drawer-backdrop" type="button" aria-label="Close the NEAL group chat" hidden></button>
 
   <aside class="gc-dock" id="gc-dock" aria-labelledby="gc-dock-title">
-    <a href="#gc" aria-label="Open the encrypted NEAL Matrix group chat">
-      <header><i aria-hidden="true"></i><strong id="gc-dock-title">NEAL GC</strong><span>E2EE</span></header>
+    <a href="#gc" aria-label="Open the NEAL Matrix group chat">
+      <header><i aria-hidden="true"></i><strong id="gc-dock-title">NEAL GC</strong><span>LIVE</span></header>
       <p id="gc-dock-state" role="status">Sign in to view chat activity</p>
-      <ol id="gc-dock-activity" aria-label="Recent encrypted GC activity">
-          <li><b aria-hidden="true">◆ ◇ ✦</b><span>Messages are encrypted</span></li>
+      <ol id="gc-dock-activity" aria-label="Recent GC activity">
+          <li><b aria-hidden="true">◆ ◇ ✦</b><span>Sign in to view messages</span></li>
       </ol>
       <div class="gc-dock__open"><strong>Open chat</strong><span aria-hidden="true">→</span></div>
     </a>

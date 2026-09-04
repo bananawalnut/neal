@@ -7,12 +7,19 @@
 - Client/federation backend: `https://matrix.nealtheseal.org/`
 - NEAL account: `@neal:matrix.nealtheseal.org`
 - Room alias: `#neal-gc:matrix.nealtheseal.org`
-- Room ID: `!kBjRkJEIsGBWCyrBQO:matrix.nealtheseal.org`
-- Room policy: federated, encrypted, private, knock-to-join, no guests, invited-history only
+- Room ID: `!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org`
+- Room policy: federated, unencrypted, private, knock-to-join, no guests, invited-history only
 
-The room was created and verified on 2026-09-02 through the Matrix Client API.
-Its one-use owner token was logged out and the temporary bootstrap administrator
-was erased immediately afterward.
+The current room was created and verified on 2026-09-04 through the Matrix
+Client API. Its short-lived owner token was logged out and the temporary
+bootstrap administrator was erased immediately afterward. The canonical alias
+was moved from the original encrypted room because Matrix room encryption is
+not downgraded in place.
+
+The original encrypted room remains preserved as
+`#neal-gc-e2ee-archive-20260904:matrix.nealtheseal.org` with room ID
+`!kBjRkJEIsGBWCyrBQO:matrix.nealtheseal.org`. Its history was not copied into
+the unencrypted room.
 
 ## First-party client contract
 
@@ -33,9 +40,11 @@ The current beta client supports:
 - a state-bound, single-use `m.login.token` callback which returns the user to
   the NEAL client without an Element redirect;
 - session access-token storage scoped to the current browser tab;
-- Rust/WASM end-to-end encryption with a persistent IndexedDB crypto store;
-- knocking, accepting an invitation, encrypted text messages, and signing out;
+- knocking, accepting an invitation, unencrypted text messages, and signing out;
 - admitting waiting knocks when the signed-in account has invite power.
+
+The GC is intentionally not end-to-end encrypted. Messages are plaintext to
+joined members and homeserver operators, so users must not post secrets.
 
 `matrix.nealtheseal.org` is the default account provider. It requires no email
 or phone number and accepts only short-lived, one-use registration tokens.
@@ -57,8 +66,8 @@ room; listing a server as `via` does not itself copy room state there.
 
 Passwords are cleared from the form immediately after the login request. The
 client never asks for a Matrix recovery key, wallet seed phrase, or wallet
-signature. Device verification, cross-signing recovery, attachments, and push
-notifications are explicitly not part of this beta.
+signature. Attachments and push notifications are explicitly not part of this
+beta.
 
 ## Current host layout
 
@@ -82,13 +91,14 @@ the GC through normal Matrix federation.
 
 ## Verified checks
 
-As of 2026-09-02:
+As of 2026-09-04:
 
 1. Matrix client versions return `200` through the public gateway.
 2. Matrix federation version returns `200` through the public gateway.
 3. The canonical room alias resolves to the recorded room ID.
-4. The public Synapse admin path returns `404`.
-5. External federation discovery, TLS, server name, and signing-key checks pass.
+4. The current room state contains no `m.room.encryption` event.
+5. The public Synapse admin path returns `404`.
+6. External federation discovery, TLS, server name, and signing-key checks pass.
 
 ## Remaining durability gates
 

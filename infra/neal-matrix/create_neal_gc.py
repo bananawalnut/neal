@@ -30,8 +30,8 @@ ROOM_ALIAS = "#neal-gc:matrix.nealtheseal.org"
 ROOM_ALIAS_LOCALPART = "neal-gc"
 ROOM_NAME = "NEAL GC"
 ROOM_TOPIC = (
-    "The federated royal court for community suggestions, quests, research, "
-    "streams, and the NEAL mob. Knock to request entry."
+    "Coordinate quests, request help, and shape NEAL together. This room is "
+    "not end-to-end encrypted; do not post secrets. Knock to request entry."
 )
 REGISTRATION_SECRET = (
     Path.home()
@@ -258,11 +258,6 @@ def main() -> int:
                 "creation_content": {"m.federate": True},
                 "initial_state": [
                     {
-                        "type": "m.room.encryption",
-                        "state_key": "",
-                        "content": {"algorithm": "m.megolm.v1.aes-sha2"},
-                    },
-                    {
                         "type": "m.room.join_rules",
                         "state_key": "",
                         "content": {"join_rule": "knock"},
@@ -299,14 +294,25 @@ def main() -> int:
             base_url=api_base_url,
         )
 
-        encryption = get_state(room_id, "m.room.encryption", token, base_url=api_base_url)
+        _, room_state = request_json(
+            "GET",
+            f"/_matrix/client/v3/rooms/{encoded(room_id)}/state",
+            token=token,
+            base_url=api_base_url,
+        )
+        if not isinstance(room_state, list):
+            raise MatrixError("Room state response was not a list")
+        encryption_present = any(
+            isinstance(event, dict) and event.get("type") == "m.room.encryption"
+            for event in room_state
+        )
         join_rules = get_state(room_id, "m.room.join_rules", token, base_url=api_base_url)
         guest_access = get_state(room_id, "m.room.guest_access", token, base_url=api_base_url)
         history = get_state(room_id, "m.room.history_visibility", token, base_url=api_base_url)
         canonical_alias = get_state(room_id, "m.room.canonical_alias", token, base_url=api_base_url)
 
         checks = {
-            "encryption": encryption.get("algorithm") == "m.megolm.v1.aes-sha2",
+            "unencrypted": not encryption_present,
             "knock": join_rules.get("join_rule") == "knock",
             "guests forbidden": guest_access.get("guest_access") == "forbidden",
             "history invited": history.get("history_visibility") == "invited",

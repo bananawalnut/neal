@@ -24,7 +24,7 @@ filtered public endpoint recorded below.
 Matrix server:  matrix.nealtheseal.org
 Matrix account: @neal:matrix.nealtheseal.org
 Matrix room:    #neal-gc:matrix.nealtheseal.org
-Matrix room ID: !kBjRkJEIsGBWCyrBQO:matrix.nealtheseal.org
+Matrix room ID: !KliLLiEXeNPupDcYwe:matrix.nealtheseal.org
 Matrix backend: https://matrix-home.tailadbebb.ts.net:10000/
 Nostr relay:    wss://nostr.nealtheseal.org
 ```

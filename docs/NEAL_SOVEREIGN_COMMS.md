@@ -53,7 +53,9 @@ the audit and permission model is reviewed.
 
 ## Initial access policy
 
-- The GC is encrypted and knock-to-join. Account recovery and a second
+- The GC is unencrypted and knock-to-join. Messages are visible to joined
+  members and homeserver operators, so the room must not be used for secrets.
+  Account recovery and a second
   cross-homeserver moderator remain required durability work.
 - NIP-42 is enabled for restricted private-event reads; public writes remain
   policy-controlled and rate-limited at the proxy/relay boundary.

@@ -23,7 +23,7 @@ from create_neal_gc import (
 )
 
 
-ROOM_ID = "!kBjRkJEIsGBWCyrBQO:matrix.nealtheseal.org"
+ROOM_ID = "!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org"
 EXPECTED_REMOTE_SERVERS = {"salix.host"}
 MODERATOR_LEVEL = 50
 

@@ -14,8 +14,8 @@
 | Suggestion registry | Append-only public records | Record paid proposals, support signals, moderation, and dispositions | Service signing key only |
 | Local YAHOO toy | Vanilla TypeScript + browser local storage | Record free local clicks and calculate this browser's personal records | No |
 | Future YAHOO program/indexer | Undecided | Only exists if a later product decision approves wallet-linked, global, or on-chain YAHOOS | Undecided |
-| NEAL Matrix client | Vanilla TypeScript + official `matrix-js-sdk` | Discover a user's homeserver, initiate provider-owned account creation or login, consume one-time SSO login tokens, knock, moderate, and exchange encrypted GC messages without an Element redirect | Matrix device keys only |
-| NEAL Matrix homeserver | Synapse + Postgres + filtered local gateway | Serve `matrix.nealtheseal.org` and the encrypted federated NEAL GC beta | Server signing keys only |
+| NEAL Matrix client | Vanilla TypeScript + official `matrix-js-sdk` | Discover a user's homeserver, initiate provider-owned account creation or login, consume one-time SSO login tokens, knock, moderate, and exchange GC messages without an Element redirect | Session access token only |
+| NEAL Matrix homeserver | Synapse + Postgres + filtered local gateway | Serve `matrix.nealtheseal.org` and the unencrypted federated NEAL GC beta | Server signing keys only |
 | Future NEAL Nostr relay | strfry + isolated LMDB volume | Reserved plan for `nostr.nealtheseal.org`; not deployed | No user or wallet keys |
 | NEAL agent runner | Custom Nostr bridge + Goose ACP | Connect a separately keyed NEAL agent to reviewed event threads | Agent Nostr key only |
 | Quest ledger | Append-only signed records | Record eligibility inputs and decisions | Service signing key only |
