@@ -19,6 +19,7 @@ const NEAL_HOMESERVER_DOMAIN = 'matrix.nealtheseal.org';
 const SESSION_KEY = 'neal.matrix.session.v1';
 const SSO_PENDING_KEY = 'neal.matrix.sso.pending.v1';
 const SSO_MAX_AGE_MS = 20 * 60 * 1000;
+const MATRIX_SDK_LOAD_FAILURE = 'The chat client could not load. Check your connection, reload the page, then sign in again.';
 
 type MatrixSdk = typeof import('matrix-js-sdk');
 
@@ -90,8 +91,17 @@ let publicRefreshTimer: number | null = null;
 
 let sdkPromise: Promise<MatrixSdk> | null = null;
 
+const isModuleLoadFailure = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : '';
+  return /importing a module script failed|failed to fetch dynamically imported module|error loading dynamically imported module|load failed/i.test(message);
+};
+
 const loadSdk = (): Promise<MatrixSdk> => {
-  sdkPromise ??= import('matrix-js-sdk');
+  sdkPromise ??= import('matrix-js-sdk').catch((error: unknown) => {
+    sdkPromise = null;
+    if (isModuleLoadFailure(error)) throw new Error(MATRIX_SDK_LOAD_FAILURE);
+    throw error;
+  });
   return sdkPromise;
 };
 
@@ -828,6 +838,9 @@ export const mountMatrixGc = (): void => {
   ui.loginTab.addEventListener('click', () => showEntryMode(ui, 'login'));
   ui.createTab.addEventListener('click', () => showEntryMode(ui, 'create'));
   ui.createDomainInput.addEventListener('input', () => updateCreateProvider(ui));
+  ui.userInput.addEventListener('focus', () => {
+    void loadSdk().catch((error: unknown) => setStatus(ui, errorMessage(error), 'bad'));
+  }, { once: true });
   updateCreateProvider(ui);
 
   ui.loginForm.addEventListener('submit', async (event) => {

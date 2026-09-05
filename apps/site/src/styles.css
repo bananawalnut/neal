@@ -959,6 +959,12 @@ footer { max-width: none; margin: 0; padding: 28px clamp(24px,6vw,92px); border-
 .gc-portal--drawer .gc-login-toggle:hover,.gc-portal--drawer .gc-login-toggle:focus-visible { background: var(--lime); outline: 0; }
 .gc-portal--drawer:not(.gc-login-open) .matrix-login { display: none; }
 .gc-portal--drawer.gc-login-open .gc-login-toggle { display: none; }
-.gc-portal--drawer.gc-login-open .matrix-login:not([hidden]) { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 7px; border-top: 2px solid var(--lime); }
+.gc-portal--drawer.gc-login-open .matrix-login:not([hidden]) { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 7px; border-top: 2px solid var(--lime); }
 .gc-portal--drawer.gc-login-open .matrix-login label { min-width: 0; }
+.gc-portal--drawer.gc-login-open .matrix-login input { min-width: 0; max-width: 100%; }
 .gc-portal--drawer.gc-login-open .matrix-login-actions { grid-column: 1 / -1; }
+
+@media (max-width: 480px) {
+  .gc-portal--drawer.gc-login-open .matrix-login:not([hidden]) { grid-template-columns: minmax(0,1fr); }
+  .gc-portal--drawer.gc-login-open .matrix-login-actions { grid-column: auto; }
+}
