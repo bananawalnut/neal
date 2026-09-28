@@ -62,6 +62,22 @@ timestamp recorded in the event; this makes the complete current conversation
 visible without retaining a privileged member token. Message bodies are
 rendered as text, never HTML.
 
+## Administrator monitor
+
+`https://nealtheseal.org/admin/` is a private, read-only operational view. It
+is not linked from public navigation and is marked `noindex`. An administrator
+signs in directly with `matrix.nealtheseal.org`; the access token remains in
+browser-tab session storage and is cleared on logout.
+
+Caddy exposes only two monitor routes to the exact Neal site origin:
+`GET /_neal/admin/users` and `GET /_neal/admin/server`. Each request still
+requires a valid Synapse administrator token, returns `no-store`, and maps to
+one fixed read-only Synapse endpoint. Other origins, write methods, and the raw
+`/_synapse/admin/*` surface remain blocked. The monitor reads canonical-room
+policy and membership through ordinary authenticated Matrix Client API routes.
+Hermes publishes a credential-free `org.neal.hermes.health` room state event;
+the monitor treats it as stale after 150 seconds.
+
 `matrix.nealtheseal.org` is the default account provider. It requires no email
 or phone number and accepts only short-lived, one-use registration tokens.
 Tokens are issued by a NEAL moderator during the initial invite-only phase; the

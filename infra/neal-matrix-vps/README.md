@@ -86,6 +86,22 @@ can show the complete current conversation without a privileged member token.
 Run `configure_public_neal_gc.py` after a restore and `verify_public.sh` after
 every gateway change.
 
+## Read-only administrator monitor
+
+The private site route at `https://nealtheseal.org/admin/` signs in directly
+with Synapse and keeps its access token in browser-tab session storage. Caddy
+maps two exact, GET-only paths for that page:
+
+- `/_neal/admin/users` to the bounded Synapse account-list endpoint;
+- `/_neal/admin/server` to the Synapse version endpoint.
+
+Both paths require the exact `https://nealtheseal.org` browser origin and a
+valid Synapse administrator access token. They return `no-store`, expose no
+write method, and do not weaken the existing `/_synapse/admin/*` public block.
+The portal reads room policy and membership through ordinary authenticated
+Matrix Client API routes. Never add a generic admin proxy or a credential to
+the public site bundle.
+
 ## Backups and rollback
 
 Hetzner backups provide seven rotating whole-disk restore points, but they are

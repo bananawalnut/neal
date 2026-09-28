@@ -24,6 +24,59 @@ matrix.nealtheseal.org {
         respond `{"errcode":"M_NOT_FOUND","error":"Not found"}` 404
     }
 
+    @neal_admin_preflight {
+        method OPTIONS
+        path /_neal/admin/users /_neal/admin/server
+        header Origin https://nealtheseal.org
+    }
+    handle @neal_admin_preflight {
+        header Access-Control-Allow-Origin "https://nealtheseal.org"
+        header Access-Control-Allow-Methods "GET, OPTIONS"
+        header Access-Control-Allow-Headers "Authorization, Content-Type"
+        header Access-Control-Max-Age "600"
+        header Vary "Origin"
+        header Cache-Control "no-store"
+        respond "" 204
+    }
+
+    @neal_admin_users {
+        method GET
+        path /_neal/admin/users
+        header Origin https://nealtheseal.org
+    }
+    handle @neal_admin_users {
+        rewrite * /_synapse/admin/v2/users?limit=500
+        header Access-Control-Allow-Origin "https://nealtheseal.org"
+        header Vary "Origin"
+        header Cache-Control "no-store"
+        reverse_proxy synapse:8008 {
+            header_down -Cache-Control
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Access-Control-Expose-Headers
+        }
+    }
+
+    @neal_admin_server {
+        method GET
+        path /_neal/admin/server
+        header Origin https://nealtheseal.org
+    }
+    handle @neal_admin_server {
+        rewrite * /_synapse/admin/v1/server_version
+        header Access-Control-Allow-Origin "https://nealtheseal.org"
+        header Vary "Origin"
+        header Cache-Control "no-store"
+        reverse_proxy synapse:8008 {
+            header_down -Cache-Control
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Access-Control-Expose-Headers
+        }
+    }
+
     @neal_gc_feed {
         method GET
         path /_neal/gc/messages
