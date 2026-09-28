@@ -6,10 +6,6 @@ const ROOM_VIA_SERVERS = [
   'matrix.nealtheseal.org',
   'salix.host',
 ];
-const NATIVE_REGISTRATION_SERVERS = new Set([
-  'matrix.nealtheseal.org',
-  'salix.host',
-]);
 const DIRECT_HOMESERVER_BASE_URLS = new Map([
   ['matrix.nealtheseal.org', 'https://matrix.nealtheseal.org'],
 ]);
@@ -55,11 +51,11 @@ type ClientUi = {
   passwordInput: HTMLInputElement;
   loginButton: HTMLButtonElement;
   loginToggle: HTMLButtonElement;
+  createToggle: HTMLButtonElement;
   ssoLoginButton: HTMLButtonElement;
   createForm: HTMLFormElement;
-  createDomainInput: HTMLInputElement;
-  nativeRegister: HTMLElement;
   createUsernameInput: HTMLInputElement;
+  createIdOutput: HTMLOutputElement;
   createTokenInput: HTMLInputElement;
   createPasswordInput: HTMLInputElement;
   createConfirmInput: HTMLInputElement;
@@ -532,6 +528,7 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
   ui.entryTabs.hidden = true;
   ui.loginForm.hidden = true;
   ui.loginToggle.hidden = true;
+  ui.createToggle.hidden = true;
   ui.createForm.hidden = true;
   ui.sessionPanel.hidden = false;
   ui.logoutButton.hidden = false;
@@ -567,6 +564,7 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
     sessionStorage.removeItem(SESSION_KEY);
     ui.loginForm.hidden = false;
     ui.loginToggle.hidden = false;
+    ui.createToggle.hidden = false;
     ui.publicMessages.hidden = false;
     ui.sessionPanel.hidden = true;
     ui.logoutButton.hidden = true;
@@ -668,12 +666,113 @@ const registrationSession = (payload: RegistrationResponse, baseUrl: string): Ma
   };
 };
 
+const registrationStages = (payload: RegistrationResponse): string[][] => (
+  Array.isArray(payload.flows)
+    ? payload.flows
+      .map((flow) => Array.isArray(flow.stages) ? flow.stages.filter((stage): stage is string => typeof stage === 'string') : [])
+      .filter((stages) => stages.length > 0)
+    : []
+);
+
+const chooseRegistrationFlow = (payload: RegistrationResponse, token: string): string[] => {
+  const flows = registrationStages(payload);
+  const usable = flows.filter((stages) => (
+    !stages.includes('m.login.email.identity')
+    && !stages.includes('m.login.msisdn')
+    && (stages.includes('m.login.recaptcha') || stages.includes('m.login.registration_token'))
+    && (!stages.includes('m.login.registration_token') || Boolean(token))
+  ));
+  usable.sort((left, right) => {
+    const score = (stages: string[]): number => (
+      (stages.includes('m.login.recaptcha') ? 0 : 20)
+      + (stages.includes('m.login.registration_token') ? 10 : 0)
+      + stages.length
+    );
+    return score(left) - score(right);
+  });
+  if (usable[0]) return usable[0];
+  if (!token && flows.some((stages) => stages.includes('m.login.registration_token'))) {
+    throw new Error('This homeserver is currently invite-only. Open “Have a one-use invite token?” and enter a valid token.');
+  }
+  throw new Error('This homeserver does not offer a protected no-email registration flow this browser can complete.');
+};
+
+const waitForFallbackAuth = async (
+  baseUrl: string,
+  stage: string,
+  session: string,
+  preparedWindow: Window | null,
+): Promise<void> => {
+  const homeserver = new URL(baseUrl);
+  const fallback = new URL(
+    `/_matrix/client/v3/auth/${encodeURIComponent(stage)}/fallback/web`,
+    homeserver,
+  );
+  fallback.searchParams.set('session', session);
+  const popup = preparedWindow && !preparedWindow.closed
+    ? preparedWindow
+    : window.open('about:blank', 'neal-matrix-registration', 'popup,width=520,height=720');
+  if (!popup) throw new Error('Allow the Matrix verification pop-up, then try creating the account again.');
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', onMessage);
+      window.clearInterval(closedTimer);
+      window.clearTimeout(timeoutTimer);
+      if (error && !popup.closed) popup.close();
+      if (error) reject(error);
+      else resolve();
+    };
+    const onMessage = (event: MessageEvent): void => {
+      if (event.source !== popup || event.origin !== homeserver.origin || event.data !== 'authDone') return;
+      finish();
+    };
+    const closedTimer = window.setInterval(() => {
+      if (popup.closed) finish(new Error('Matrix verification was closed before it finished.'));
+    }, 500);
+    const timeoutTimer = window.setTimeout(
+      () => finish(new Error('Matrix verification expired. Start account creation again.')),
+      10 * 60 * 1000,
+    );
+    window.addEventListener('message', onMessage);
+    popup.location.replace(fallback.toString());
+    popup.focus();
+  });
+};
+
+const finishRegistration = async (ui: ClientUi, session: MatrixSession): Promise<void> => {
+  saveSession(session);
+  await connectSession(ui, session);
+  const client = activeClient;
+  if (!client) return;
+  const membership = client.getRoom(ROOM_ID)?.getMyMembership();
+  if (membership === 'join' || membership === 'invite' || membership === 'knock') {
+    setStatus(ui, `Account created as ${session.userId}.`, 'good');
+    return;
+  }
+  try {
+    await client.knockRoom(ROOM_ID, {
+      reason: 'New NEAL account requesting entry through the NEAL web client.',
+      viaServers: ROOM_VIA_SERVERS,
+    });
+    ui.memberState.textContent = 'KNOCK';
+    ui.knockButton.hidden = true;
+    setStatus(ui, `Account created as ${session.userId}. Knock sent to the NEAL GC.`, 'good');
+  } catch {
+    setStatus(ui, `Account created as ${session.userId}. Use “Knock to join” when you are ready.`, 'good');
+  }
+};
+
 const completeNativeRegistration = async (
   ui: ClientUi,
   baseUrl: string,
   username: string,
   password: string,
   token: string,
+  preparedWindow: Window | null,
 ): Promise<void> => {
   const availability = await fetch(
     `${baseUrl}/_matrix/client/v3/register/available?username=${encodeURIComponent(username)}`,
@@ -689,73 +788,56 @@ const completeNativeRegistration = async (
     password,
     initial_device_display_name: 'NEAL web GC',
   };
-  const started = await registrationRequest(baseUrl, registrationBody);
-  let session = registrationSession(started.payload, baseUrl);
+  let attempt = await registrationRequest(baseUrl, registrationBody);
+  let session = registrationSession(attempt.payload, baseUrl);
   if (session) {
-    saveSession(session);
-    await connectSession(ui, session);
+    preparedWindow?.close();
+    await finishRegistration(ui, session);
     return;
   }
-  if (started.response.status !== 401) {
-    throw new Error(typeof started.payload.error === 'string' ? started.payload.error : 'The homeserver rejected account creation.');
+  if (attempt.response.status !== 401) {
+    throw new Error(typeof attempt.payload.error === 'string' ? attempt.payload.error : 'The homeserver rejected account creation.');
   }
 
-  const uiaSession = requireRegistrationSession(started.payload);
-  const supportsTokenFlow = started.payload.flows?.some((flow) => (
-    Array.isArray(flow.stages)
-    && flow.stages.includes('m.login.registration_token')
-    && flow.stages.includes('m.login.dummy')
-  ));
-  if (!supportsTokenFlow) {
-    throw new Error('That homeserver does not offer NEAL\'s email-free token registration flow.');
-  }
+  const uiaSession = requireRegistrationSession(attempt.payload);
+  const chosenFlow = chooseRegistrationFlow(attempt.payload, token);
+  for (let stageCount = 0; stageCount < 8 && !session; stageCount += 1) {
+    const completed = Array.isArray(attempt.payload.completed)
+      ? attempt.payload.completed.filter((stage): stage is string => typeof stage === 'string')
+      : [];
+    const stage = chosenFlow.find((candidate) => !completed.includes(candidate));
+    if (!stage) throw new Error('Matrix verification completed, but the homeserver did not create the account.');
 
-  const tokenStage = await registrationRequest(baseUrl, {
-    ...registrationBody,
-    auth: {
-      type: 'm.login.registration_token',
-      token,
-      session: uiaSession,
-    },
-  });
-  session = registrationSession(tokenStage.payload, baseUrl);
-  if (!session) {
-    if (tokenStage.response.status !== 401) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The homeserver rejected that registration token.');
+    let auth: Record<string, unknown>;
+    if (stage === 'm.login.registration_token') {
+      if (!token) throw new Error('Enter the one-use invite token required by this homeserver.');
+      auth = { type: stage, token, session: uiaSession };
+    } else if (stage === 'm.login.dummy') {
+      auth = { type: stage, session: uiaSession };
+    } else {
+      setStatus(ui, 'Complete the Matrix human-verification window to create your account…', 'working');
+      await waitForFallbackAuth(baseUrl, stage, uiaSession, preparedWindow);
+      auth = { session: uiaSession };
     }
-    const completed = Array.isArray(tokenStage.payload.completed) ? tokenStage.payload.completed : [];
-    if (!completed.includes('m.login.registration_token')) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The one-use registration token was not accepted.');
-    }
-    const finalStage = await registrationRequest(baseUrl, {
+
+    attempt = await registrationRequest(baseUrl, {
       ...registrationBody,
-      auth: { type: 'm.login.dummy', session: uiaSession },
+      auth,
     });
-    session = registrationSession(finalStage.payload, baseUrl);
-    if (!session) {
-      throw new Error(typeof finalStage.payload.error === 'string' ? finalStage.payload.error : 'The homeserver did not finish account creation.');
+    session = registrationSession(attempt.payload, baseUrl);
+    if (!session && attempt.response.status !== 401) {
+      throw new Error(typeof attempt.payload.error === 'string' ? attempt.payload.error : 'The homeserver rejected account creation.');
+    }
+    const nowCompleted = Array.isArray(attempt.payload.completed)
+      ? attempt.payload.completed.filter((candidate): candidate is string => typeof candidate === 'string')
+      : [];
+    if (!session && !nowCompleted.includes(stage)) {
+      throw new Error(typeof attempt.payload.error === 'string' ? attempt.payload.error : 'Matrix did not accept that verification step.');
     }
   }
-
-  saveSession(session);
-  await connectSession(ui, session);
-};
-
-const updateCreateProvider = (ui: ClientUi): void => {
-  let native = false;
-  try {
-    native = NATIVE_REGISTRATION_SERVERS.has(normalizeHomeserverDomain(ui.createDomainInput.value));
-  } catch {
-    // The normal submit path presents invalid-domain errors.
-  }
-  ui.nativeRegister.hidden = !native;
-  for (const input of [
-    ui.createUsernameInput,
-    ui.createTokenInput,
-    ui.createPasswordInput,
-    ui.createConfirmInput,
-  ]) input.required = native;
-  ui.createButton.textContent = native ? 'CREATE EMAIL-FREE MATRIX ACCOUNT' : 'OPEN PROVIDER SIGN-UP';
+  if (!session) throw new Error('The homeserver did not finish account creation.');
+  preparedWindow?.close();
+  await finishRegistration(ui, session);
 };
 
 const consumeSsoCallback = async (ui: ClientUi): Promise<boolean> => {
@@ -810,11 +892,11 @@ export const mountMatrixGc = (): void => {
     passwordInput: required(root, '#matrix-password'),
     loginButton: required(root, '#matrix-login'),
     loginToggle: required(root, '#gc-login-toggle'),
+    createToggle: required(root, '#gc-create-toggle'),
     ssoLoginButton: required(root, '#matrix-sso-login'),
     createForm: required(root, '#matrix-create-form'),
-    createDomainInput: required(root, '#matrix-create-domain'),
-    nativeRegister: required(root, '#matrix-native-register'),
     createUsernameInput: required(root, '#matrix-create-username'),
+    createIdOutput: required(root, '#matrix-create-id'),
     createTokenInput: required(root, '#matrix-create-token'),
     createPasswordInput: required(root, '#matrix-create-password'),
     createConfirmInput: required(root, '#matrix-create-confirm'),
@@ -837,11 +919,15 @@ export const mountMatrixGc = (): void => {
 
   ui.loginTab.addEventListener('click', () => showEntryMode(ui, 'login'));
   ui.createTab.addEventListener('click', () => showEntryMode(ui, 'create'));
-  ui.createDomainInput.addEventListener('input', () => updateCreateProvider(ui));
+  const updateCreateId = (): void => {
+    const username = ui.createUsernameInput.value.trim() || 'your_matrix_name';
+    ui.createIdOutput.value = `@${username}:${NEAL_HOMESERVER_DOMAIN}`;
+  };
+  ui.createUsernameInput.addEventListener('input', updateCreateId);
   ui.userInput.addEventListener('focus', () => {
     void loadSdk().catch((error: unknown) => setStatus(ui, errorMessage(error), 'bad'));
   }, { once: true });
-  updateCreateProvider(ui);
+  updateCreateId();
 
   ui.loginForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -900,40 +986,33 @@ export const mountMatrixGc = (): void => {
     let password = '';
     let confirmation = '';
     let token = '';
+    let verificationWindow: Window | null = null;
     try {
-      const domain = normalizeHomeserverDomain(ui.createDomainInput.value);
-      if (NATIVE_REGISTRATION_SERVERS.has(domain)) {
-        const username = ui.createUsernameInput.value.trim();
-        password = ui.createPasswordInput.value;
-        confirmation = ui.createConfirmInput.value;
-        token = ui.createTokenInput.value.trim();
-        if (!/^[a-z0-9._=\/-]+$/.test(username)) {
-          throw new Error('Use a lowercase Matrix username with no spaces.');
-        }
-        if (password.length < 12) throw new Error('Use a password of at least 12 characters.');
-        if (password !== confirmation) throw new Error('The two passwords do not match.');
-        if (!token) {
-          throw new Error(domain === 'matrix.nealtheseal.org'
-            ? 'Enter a one-use NEAL invite token.'
-            : 'Get a one-use registration token from Salix first.');
-        }
-        const sdk = await loadSdk();
-        setStatus(ui, `Creating an email-free account directly with ${domain}…`, 'working');
-        const baseUrl = await discoverHomeserver(sdk, domain);
-        await completeNativeRegistration(ui, baseUrl, username, password, token);
-        ui.createPasswordInput.value = '';
-        ui.createConfirmInput.value = '';
-        ui.createTokenInput.value = '';
-      } else {
-        await beginSso(ui, domain, 'register');
+      const username = ui.createUsernameInput.value.trim();
+      password = ui.createPasswordInput.value;
+      confirmation = ui.createConfirmInput.value;
+      token = ui.createTokenInput.value.trim();
+      if (!/^[a-z0-9._=\/-]+$/.test(username)) {
+        throw new Error('Use a lowercase Matrix username with no spaces.');
       }
+      if (password.length < 12) throw new Error('Use a password of at least 12 characters.');
+      if (password !== confirmation) throw new Error('The two passwords do not match.');
+      verificationWindow = window.open('about:blank', 'neal-matrix-registration', 'popup,width=520,height=720');
+      const sdk = await loadSdk();
+      setStatus(ui, `Checking account creation with ${NEAL_HOMESERVER_DOMAIN}…`, 'working');
+      const baseUrl = await discoverHomeserver(sdk, NEAL_HOMESERVER_DOMAIN);
+      await completeNativeRegistration(ui, baseUrl, username, password, token, verificationWindow);
+      ui.createTokenInput.value = '';
     } catch (error) {
+      verificationWindow?.close();
       setStatus(ui, errorMessage(error), 'bad');
-      ui.createButton.disabled = false;
     } finally {
       password = '';
       confirmation = '';
       token = '';
+      ui.createPasswordInput.value = '';
+      ui.createConfirmInput.value = '';
+      ui.createButton.disabled = false;
     }
   });
 
@@ -1004,6 +1083,8 @@ export const mountMatrixGc = (): void => {
       ui.loginForm.hidden = false;
       ui.loginToggle.hidden = false;
       ui.loginToggle.setAttribute('aria-expanded', 'false');
+      ui.createToggle.hidden = false;
+      ui.createToggle.setAttribute('aria-expanded', 'false');
       ui.root.closest('#gc')?.classList.remove('gc-login-open');
       ui.publicMessages.hidden = false;
       ui.sessionPanel.hidden = true;
@@ -1027,6 +1108,8 @@ export const mountMatrixGc = (): void => {
       showEntryMode(ui, 'login');
       ui.loginToggle.hidden = false;
       ui.loginToggle.setAttribute('aria-expanded', 'false');
+      ui.createToggle.hidden = false;
+      ui.createToggle.setAttribute('aria-expanded', 'false');
       ui.root.closest('#gc')?.classList.remove('gc-login-open');
       ui.publicMessages.hidden = false;
       startPublicTimeline(ui);

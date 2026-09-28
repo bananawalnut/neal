@@ -13,7 +13,8 @@ Linux; the migration uses a portable logical dump.
 - PostgreSQL 16
 - Caddy TLS on ports 80/443
 - no public Synapse admin API
-- no-email account creation, guarded by short-lived registration tokens
+- no-email self-service account creation, guarded by Google reCAPTCHA v2 and
+  fail-closed to short-lived registration tokens until CAPTCHA is configured
 - public, plaintext GC reads through a fixed Caddy route; sign-in and room
   membership remain required to post
 - `nealtheseal.org` remains on Vercel
@@ -56,23 +57,66 @@ Linux; the migration uses a portable logical dump.
    `docker compose up -d caddy`.
 8. Run `python3 /srv/neal-matrix/configure_public_neal_gc.py` to apply the
    public-read/write-gated room policy and create the root-only Caddy reader
-credential. Then run `verify_public.sh`, update NEAL's native registration
+   credential. Then run `verify_public.sh`, activate CAPTCHA registration as
+   described below, update NEAL's native registration
    provider to `matrix.nealtheseal.org`, and deploy the site.
 9. Keep the local service frozen but intact for rollback until the VPS has passed
    a 24-hour soak. Do not run both copies publicly at once.
 
 ## Registration
 
-The server accepts no-email registrations only when the user presents a
-short-lived registration token. Generate one on the VPS:
+Synapse starts in invite-only mode. It permits registration, but requires a
+short-lived token and explicitly refuses unverified open registration. The
+same policy enforces a 12-character minimum password on the server, independent
+of the browser UI.
+
+For public self-service registration, create Google reCAPTCHA v2 Checkbox keys
+for `matrix.nealtheseal.org`. Put the two values in separate root-only files on
+the VPS, then apply the managed policy:
+
+```bash
+python3 /srv/neal-matrix/configure_registration.py apply captcha \
+  --public-key-file /root/recaptcha-site-key \
+  --private-key-file /root/recaptcha-secret-key
+```
+
+The command copies the keys into Synapse's root-owned runtime directory,
+rewrites only the managed registration block, validates the complete Synapse
+configuration in the pinned container, restarts Synapse, and waits for the
+local Client API. If validation or startup fails, it restores the previous
+config and key files before restarting. It also leaves a timestamped config
+backup in `runtime/synapse/`; that file contains secrets and must never leave
+the VPS.
+
+To fail closed during abuse or maintenance:
+
+```bash
+python3 /srv/neal-matrix/configure_registration.py apply invite-only
+```
+
+Invite-only mode remains a supported fallback. Generate a one-use token on the
+VPS:
 
 ```bash
 python3 /srv/neal-matrix/create_registration_token.py --uses 1 --minutes 15
 ```
 
 The token is the only intentional secret printed by this command. NEAL's client
-sends the selected username, password, and token directly to Synapse. Vercel
-does not receive them.
+sends the username, password, and either the Matrix CAPTCHA result or optional
+token directly to Synapse. Vercel does not receive them. CAPTCHA uses Matrix's
+standard interactive-auth fallback window; the NEAL client accepts completion
+messages only from the exact homeserver origin and originating popup.
+
+The deployment intentionally does not require email or phone numbers. This
+keeps onboarding private, but it also means a forgotten password cannot be
+reset by email. The account form requires users to acknowledge that tradeoff.
+
+After enabling CAPTCHA, run one manual production smoke test in a private
+browser window: create a uniquely named account, complete the CAPTCHA, confirm
+the client signs in, confirm a knock reaches the canonical GC, admit it from a
+moderator account, send one harmless message, sign out, and then deactivate the
+test account through the loopback-only admin surface. Do not automate around
+the CAPTCHA or expose the admin API publicly.
 
 ## Public GC feed
 

@@ -25,6 +25,7 @@ fi
 for required_path in \
   "$project_root/compose.yaml" \
   "$project_root/Caddyfile" \
+  "$project_root/configure_registration.py" \
   "$project_root/.neal-migration-target" \
   "$import_root/manifest.json" \
   "$import_root/SHA256SUMS" \
@@ -67,6 +68,20 @@ registration_shared_secret="$(sed -n '1p' "$synapse_root/registration-shared-sec
 macaroon_secret="$(sed -n '1p' "$synapse_root/macaroon-secret")"
 form_secret="$(sed -n '1p' "$synapse_root/form-secret")"
 
+recaptcha_public_key="$synapse_root/recaptcha-public-key"
+recaptcha_private_key="$synapse_root/recaptcha-private-key"
+if [[ -e "$recaptcha_public_key" || -e "$recaptcha_private_key" ]]; then
+  if [[ ! -s "$recaptcha_public_key" || ! -s "$recaptcha_private_key" ]]; then
+    printf 'Both reCAPTCHA key files must exist and be non-empty. Registration remains unchanged.\n' >&2
+    exit 1
+  fi
+  registration_mode="captcha"
+  registration_policy="$(python3 "$project_root/configure_registration.py" render captcha)"
+else
+  registration_mode="invite-only"
+  registration_policy="$(python3 "$project_root/configure_registration.py" render invite-only)"
+fi
+
 cat >"$synapse_root/homeserver.yaml" <<EOF
 server_name: matrix.nealtheseal.org
 public_baseurl: https://matrix.nealtheseal.org/
@@ -96,9 +111,7 @@ signing_key_path: /data/matrix.nealtheseal.org.signing.key
 registration_shared_secret: '$registration_shared_secret'
 macaroon_secret_key: '$macaroon_secret'
 form_secret: '$form_secret'
-enable_registration: true
-enable_registration_without_verification: true
-registration_requires_token: true
+$registration_policy
 allow_guest_access: true
 allow_public_rooms_without_auth: false
 allow_public_rooms_over_federation: false
@@ -112,6 +125,9 @@ suppress_key_server_warning: true
 report_stats: false
 rc_registration:
   per_second: 0.01
+  burst_count: 3
+rc_registration_token_validity:
+  per_second: 0.05
   burst_count: 3
 EOF
 
@@ -136,6 +152,8 @@ EOF
 chmod 600 "$synapse_root/homeserver.yaml" "$synapse_root/log.config"
 chown -R 999:999 "$postgres_root"
 chown -R 991:991 "$synapse_root"
+
+printf 'Synapse registration mode: %s\n' "$registration_mode"
 
 cd "$project_root"
 docker compose down

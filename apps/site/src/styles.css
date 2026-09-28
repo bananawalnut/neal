@@ -637,7 +637,14 @@ footer { max-width: 1380px; margin: 0 auto; padding: 25px 0 45px; display: flex;
 .matrix-messages p,.matrix-public-messages p { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; font-weight: 750; line-height: 1.42; }
 .matrix-messages .matrix-empty,.matrix-public-messages .matrix-empty { color: #5d5a52; background: var(--yellow); font: 900 9px/1.45 ui-monospace,monospace; }
 .gc-login-prompt { display: none; }
-.gc-login-toggle { display: none; }
+.gc-login-toggle,.gc-create-toggle { display: none; }
+.matrix-create output { min-height: 47px; padding: 14px; display: block; overflow-wrap: anywhere; border: 3px solid var(--ink); color: var(--blue); background: #f4f4ef; font: 900 11px/1.4 ui-monospace,monospace; }
+.matrix-invite-token { border: 2px dashed var(--ink); background: white; }
+.matrix-invite-token summary { padding: 11px 12px; font: 900 8px/1.3 ui-monospace,monospace; letter-spacing: .06em; cursor: pointer; }
+.matrix-invite-token label { padding: 0 12px 12px; }
+.matrix-recovery-warning { padding: 11px 12px; grid-template-columns: auto 1fr !important; align-items: start; border: 2px solid var(--ink); background: #fff1ed; }
+.matrix-recovery-warning input { width: 17px; height: 17px; padding: 0; border: 0; accent-color: var(--blue); }
+.matrix-recovery-warning span { font-size: 8px !important; line-height: 1.45 !important; }
 .matrix-composer { margin-top: 13px; }
 .matrix-composer textarea { min-height: 105px; resize: vertical; }
 .matrix-composer button { background: var(--coral); box-shadow: 6px 6px 0 var(--blue); }
@@ -953,18 +960,39 @@ footer { max-width: none; margin: 0; padding: 28px clamp(24px,6vw,92px); border-
   .gc-portal.gc-portal--drawer { width: calc(100vw - 16px); height: min(580px,calc(100dvh - 16px)); inset: auto 8px 8px auto; }
 }
 
-.gc-portal--drawer .gc-login-toggle { width: 100%; min-height: 58px; padding: 10px 11px; flex: 0 0 auto; display: grid; gap: 3px; border: 0; border-top: 2px solid var(--lime); border-radius: 0; color: var(--ink); background: var(--paper); text-align: left; }
-.gc-portal--drawer .gc-login-toggle strong { font: 900 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing: .03em; }
-.gc-portal--drawer .gc-login-toggle span { color: #62645d; font: 650 9px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
-.gc-portal--drawer .gc-login-toggle:hover,.gc-portal--drawer .gc-login-toggle:focus-visible { background: var(--lime); outline: 0; }
-.gc-portal--drawer:not(.gc-login-open) .matrix-login { display: none; }
-.gc-portal--drawer.gc-login-open .gc-login-toggle { display: none; }
+.gc-portal--drawer .gc-login-toggle,.gc-portal--drawer .gc-create-toggle { width: 100%; min-height: 58px; padding: 10px 11px; flex: 0 0 auto; display: grid; gap: 3px; border: 0; border-top: 2px solid var(--lime); border-radius: 0; color: var(--ink); background: var(--paper); text-align: left; }
+.gc-portal--drawer .gc-create-toggle { border-top-color: var(--ink); background: var(--lime); }
+.gc-portal--drawer .gc-login-toggle strong,.gc-portal--drawer .gc-create-toggle strong { font: 900 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing: .03em; }
+.gc-portal--drawer .gc-login-toggle span,.gc-portal--drawer .gc-create-toggle span { color: #62645d; font: 650 9px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.gc-portal--drawer .gc-login-toggle:hover,.gc-portal--drawer .gc-login-toggle:focus-visible,.gc-portal--drawer .gc-create-toggle:hover,.gc-portal--drawer .gc-create-toggle:focus-visible { background: var(--aqua); outline: 0; }
+.gc-portal--drawer:not(.gc-login-open) .matrix-login,.gc-portal--drawer:not(.gc-login-open) .matrix-create { display: none; }
+.gc-portal--drawer.gc-login-open .gc-login-toggle,.gc-portal--drawer.gc-login-open .gc-create-toggle { display: none; }
+.gc-portal--drawer.gc-login-open .matrix-public-messages { display: none; }
+.gc-portal--drawer.gc-login-open .matrix-entry-tabs { margin: 0; flex: 0 0 auto; display: grid; border-width: 0 0 2px; border-color: var(--lime); }
+.gc-portal--drawer.gc-login-open .matrix-entry-tabs button { min-height: 36px; padding: 8px; font-size: 7px; }
+.gc-portal--drawer.gc-login-open .matrix-entry-tabs button + button { border-left-width: 2px; }
 .gc-portal--drawer.gc-login-open .matrix-login:not([hidden]) { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 7px; border-top: 2px solid var(--lime); }
 .gc-portal--drawer.gc-login-open .matrix-login label { min-width: 0; }
 .gc-portal--drawer.gc-login-open .matrix-login input { min-width: 0; max-width: 100%; }
 .gc-portal--drawer.gc-login-open .matrix-login-actions { grid-column: 1 / -1; }
+.gc-portal--drawer.gc-login-open .matrix-create:not([hidden]) { width: 100%; min-height: 0; margin: 0; padding: 10px 11px 14px; flex: 1 1 auto; display: grid; gap: 9px; overflow-y: auto; border-top: 0; background: var(--paper); }
+.gc-portal--drawer .matrix-create label > span { color: #555850; font: 800 8px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing: .05em; }
+.gc-portal--drawer .matrix-create input,.gc-portal--drawer .matrix-create output { min-width: 0; max-width: 100%; min-height: 0; padding: 8px 9px; border: 1px solid var(--ink); font: 650 11px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.gc-portal--drawer .matrix-create input:focus { border-color: var(--blue); box-shadow: 3px 3px 0 var(--blue); }
+.gc-portal--drawer .matrix-provider-default { padding: 9px; border-width: 1px; }
+.gc-portal--drawer .matrix-native-register { gap: 8px; }
+.gc-portal--drawer .matrix-native-grid { gap: 7px; }
+.gc-portal--drawer .matrix-invite-token { border-width: 1px; }
+.gc-portal--drawer .matrix-invite-token summary { padding: 9px; }
+.gc-portal--drawer .matrix-invite-token label { padding: 0 9px 9px; }
+.gc-portal--drawer .matrix-recovery-warning { padding: 9px; border-width: 1px; }
+.gc-portal--drawer .matrix-recovery-warning input { width: 15px; height: 15px; padding: 0; border: 0; }
+.gc-portal--drawer .matrix-create button { min-height: 40px; padding: 9px 10px; border: 1px solid var(--ink); box-shadow: 3px 3px 0 var(--blue); font-size: 9px; }
+.gc-portal--drawer .matrix-create small { font-size: 7px; }
 
 @media (max-width: 480px) {
   .gc-portal--drawer.gc-login-open .matrix-login:not([hidden]) { grid-template-columns: minmax(0,1fr); }
   .gc-portal--drawer.gc-login-open .matrix-login-actions { grid-column: auto; }
+  .gc-portal--drawer.gc-login-open .matrix-entry-tabs button + button { border-top: 0; border-left: 2px solid var(--ink); }
+  .gc-portal--drawer .matrix-native-grid { grid-template-columns: minmax(0,1fr); }
 }
