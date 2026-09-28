@@ -55,9 +55,15 @@
   so posting requires a signed-in room member. The client has no NEAL/Vercel
   credential backend and renders remote text as text, never HTML.
 - New-account onboarding defaults to `matrix.nealtheseal.org`. The provider
-  domain remains editable. NEAL uses
-  the homeserver's advertised SSO/CAS registration action and validates a
-  tab-scoped state value before exchanging the returned one-time login token.
+  is fixed for creation: the button creates a real federated account on NEAL's
+  Synapse, while login remains open to discoverable federated homeservers. The
+  client implements Matrix interactive authentication, completes CAPTCHA in
+  the homeserver's fallback window, and accepts completion only from the exact
+  homeserver origin and popup. Synapse requires CAPTCHA or a one-use token,
+  rejects unverified open registration, rate-limits registration, and enforces
+  a 12-character minimum password. Successful creation signs the new account
+  into the current tab and knocks on the canonical GC; it does not grant room
+  membership automatically.
 - Public Matrix traffic passes through a gateway which exposes Matrix client,
   federation, and Synapse client paths but returns `404` for
   `/_synapse/admin/*`. Administrative APIs stay on loopback.

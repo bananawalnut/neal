@@ -39,6 +39,7 @@ scp \
   "$script_root/Caddyfile" \
   "$script_root/prepare_ubuntu_host.sh" \
   "$script_root/restore_snapshot.sh" \
+  "$script_root/configure_registration.py" \
   "$script_root/create_registration_token.py" \
   "$script_root/verify_public.sh" \
   "$remote_target:/srv/neal-matrix/"

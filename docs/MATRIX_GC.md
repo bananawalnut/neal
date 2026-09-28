@@ -31,13 +31,16 @@ user supplies a full Matrix ID; the browser discovers that identity's homeserver
 through `/.well-known/matrix/client`. Credentials go directly from the browser
 to the selected homeserver. NEAL and Vercel expose no login backend.
 
-The current beta client supports:
+The current client supports:
 
 - password login using a short NEAL username or a full federated Matrix ID;
-- email-free NEAL and Salix account creation through one-use
-  registration-token flows, completed directly inside NEAL;
-- Matrix.org and other compatible providers through their advertised SSO
-  registration flows when selected;
+- email-free NEAL account creation directly on `matrix.nealtheseal.org`, using
+  the homeserver's standard Matrix interactive-auth flow;
+- Google reCAPTCHA v2 through Synapse's standard browser fallback, with an
+  optional one-use registration token when the server is in invite-only mode;
+- account availability checks, password confirmation, a server-enforced
+  12-character minimum, automatic sign-in, and an automatic knock on the
+  canonical NEAL GC after successful creation;
 - SSO login through any homeserver advertising `m.login.sso` or `m.login.cas`;
 - a state-bound, single-use `m.login.token` callback which returns the user to
   the NEAL client without an Element redirect;
@@ -62,17 +65,19 @@ timestamp recorded in the event; this makes the complete current conversation
 visible without retaining a privileged member token. Message bodies are
 rendered as text, never HTML.
 
-`matrix.nealtheseal.org` is the default account provider. It requires no email
-or phone number and accepts only short-lived, one-use registration tokens.
-Tokens are issued by a NEAL moderator during the initial invite-only phase; the
-user supplies that token, username, and password directly to the NEAL
-homeserver from the browser client. Salix remains the self-service, no-email
-federated fallback. NEAL and Vercel receive and store none of those values.
-Other providers remain selectable when they expose a standard browser
-registration flow. Existing accounts from any discoverable homeserver remain
-supported. As verified on 2026-09-02, Matrix.org's current registration page
-and Unredacted.org's Client API registration flow require email verification;
-NEAL must not describe either as email-optional.
+The create-account button always creates a genuine federated account on
+`matrix.nealtheseal.org`; it is not a NEAL-only profile and it does not call a
+Vercel credential service. The username and password go from the browser
+directly to Synapse. Synapse is configured to reject open registration unless
+either CAPTCHA or a registration token is required. The browser completes
+advertised Matrix UIA stages generically and validates both the exact
+homeserver origin and popup window before accepting an `authDone` message.
+Existing accounts from any discoverable homeserver remain supported for login.
+
+No email or phone number is required. Consequently, there is no email password
+reset path; the UI makes users acknowledge that before submission. The account
+is signed in only in the current browser tab, and its Matrix access token is
+cleared on sign-out.
 
 Room entry uses the immutable room ID instead of depending on the origin alias.
 The client supplies `matrix.nealtheseal.org` and `salix.host` as federation
@@ -81,9 +86,10 @@ fallback after a joined user on that homeserver has caused it to replicate the
 room; listing a server as `via` does not itself copy room state there.
 
 Passwords are cleared from the form immediately after the login request. The
-client never asks for a Matrix recovery key, wallet seed phrase, or wallet
-signature. Attachments and push notifications are explicitly not part of this
-beta.
+client also clears both account-creation password fields after every attempt.
+It never asks for a Matrix recovery key, wallet seed phrase, or wallet
+signature. Attachments, email recovery, and push notifications are explicitly
+not part of this client.
 
 ## Current host layout
 
@@ -117,6 +123,12 @@ As of 2026-09-04:
 6. The public read-only feed returns only `m.room.message` events.
 7. The public Synapse admin path returns `404`.
 8. External federation discovery, TLS, server name, and signing-key checks pass.
+
+The self-service registration rollout has a separate deployment gate: install
+valid reCAPTCHA v2 keys, apply the managed `captcha` policy, then complete the
+manual create/sign-in/knock/admit/message/sign-out smoke test in the VPS
+runbook. Until that gate is completed on the live host, the server safely
+remains in one-use-token mode.
 
 ## Remaining durability gates
 
