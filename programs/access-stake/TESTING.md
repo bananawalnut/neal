@@ -8,7 +8,7 @@ cargo test -p neal-access-stake --offline
 
 The contract tests cover wire sizes, term bounds, one-time claim and release
 transitions, deterministic instruction encoding, PDA uniqueness, Token-2022
-pinning, and signer/destination placement.
+pinning, signer/destination placement, and pre-funded PDA recovery.
 
 The validator-backed test executes the lifecycle against the real Token-2022
 processor: config initialization, escrow deposit, on-chain claim, locked early
@@ -23,3 +23,7 @@ Before any mainnet deployment, additionally record:
 - issuer disaster-recovery and SQLite backup/restore drill;
 - end-to-end one-use token test against a non-production Synapse instance;
 - pause and user-unstake incident drills.
+
+The executable sequence and fail-closed policy staging command are documented
+in [DEPLOYMENT.md](DEPLOYMENT.md). The production amount and lock must be
+approved explicitly; test fixture values are not deployment defaults.

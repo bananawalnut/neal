@@ -10,7 +10,9 @@ import hmac
 import json
 import os
 import secrets
+import socketserver
 import sqlite3
+import stat
 import struct
 import sys
 import time
@@ -158,6 +160,7 @@ class Settings:
     matrix_secret_file: Path
     bind: str = "127.0.0.1"
     port: int = 8792
+    socket_path: Path | None = None
     challenge_ttl_seconds: int = 300
     session_ttl_seconds: int = 600
     token_ttl_minutes: int = 15
@@ -170,6 +173,7 @@ class Settings:
                 raise IssuerError(f"Missing {name}", HTTPStatus.INTERNAL_SERVER_ERROR)
             return value
 
+        socket_value = os.environ.get("NEAL_ACCESS_SOCKET", "").strip()
         settings = cls(
             database=Path(required("NEAL_ACCESS_DATABASE")),
             rpc_url=required("NEAL_ACCESS_SOLANA_RPC"),
@@ -181,11 +185,25 @@ class Settings:
             matrix_secret_file=Path(required("NEAL_ACCESS_MATRIX_SECRET_FILE")),
             bind=os.environ.get("NEAL_ACCESS_BIND", "127.0.0.1"),
             port=int(os.environ.get("NEAL_ACCESS_PORT", "8792")),
+            socket_path=Path(socket_value) if socket_value else None,
         )
         for value in (settings.program_id, settings.config_address, settings.mint):
             public_key(value)
-        if settings.bind not in {"127.0.0.1", "::1"}:
+        origin = urllib.parse.urlsplit(settings.public_origin)
+        if origin.scheme != "https" or not origin.netloc or origin.path not in {"", "/"} or origin.query or origin.fragment:
+            raise IssuerError("NEAL_ACCESS_PUBLIC_ORIGIN must be an HTTPS origin", HTTPStatus.INTERNAL_SERVER_ERROR)
+        rpc = urllib.parse.urlsplit(settings.rpc_url)
+        if rpc.scheme != "https" or not rpc.netloc:
+            raise IssuerError("NEAL_ACCESS_SOLANA_RPC must use HTTPS", HTTPStatus.INTERNAL_SERVER_ERROR)
+        matrix = urllib.parse.urlsplit(settings.matrix_url)
+        if matrix.scheme != "http" or matrix.hostname not in {"127.0.0.1", "::1", "localhost"}:
+            raise IssuerError("NEAL_ACCESS_MATRIX_URL must use loopback HTTP", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if not settings.database.is_absolute() or (settings.socket_path and not settings.socket_path.is_absolute()):
+            raise IssuerError("Database and socket paths must be absolute", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if settings.socket_path is None and settings.bind not in {"127.0.0.1", "::1"}:
             raise IssuerError("Issuer must bind to loopback", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if not settings.matrix_secret_file.is_file() or not os.access(settings.matrix_secret_file, os.R_OK):
+            raise IssuerError("Matrix registration secret is unavailable", HTTPStatus.INTERNAL_SERVER_ERROR)
         if settings.token_ttl_minutes > 15:
             raise IssuerError("Registration token TTL exceeds 15 minutes", HTTPStatus.INTERNAL_SERVER_ERROR)
         return settings
@@ -367,8 +385,7 @@ class SolanaVerifier:
         except (KeyError, ValueError) as error:
             raise IssuerError("Stake account encoding is invalid", HTTPStatus.SERVICE_UNAVAILABLE) from error
 
-    def verify(self, address: str) -> str:
-        wallet = public_key(address)
+    def config(self) -> dict[str, Any]:
         config_owner, config_data = self.account(self.settings.config_address)
         if config_owner != self.settings.program_id:
             raise IssuerError("Configured stake config has the wrong owner", HTTPStatus.SERVICE_UNAVAILABLE)
@@ -388,6 +405,11 @@ class SolanaVerifier:
         )
         if expected_config != self.config_key:
             raise IssuerError("Configured stake config PDA is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
+        return config
+
+    def verify(self, address: str) -> str:
+        wallet = public_key(address)
+        self.config()
 
         receipt_key, _ = pda([b"access-stake", self.config_key, wallet], self.program)
         receipt_address = base58_encode(receipt_key)
@@ -483,6 +505,13 @@ class MatrixIssuer:
         )
         return result["user_id"], result["access_token"]
 
+    def ready(self) -> None:
+        if not self.settings.matrix_secret_file.read_text().strip():
+            raise IssuerError("Matrix registration secret is empty", HTTPStatus.SERVICE_UNAVAILABLE)
+        versions = self.request_json("GET", "/_matrix/client/versions")
+        if not isinstance(versions.get("versions"), list):
+            raise IssuerError("Matrix client API readiness check failed", HTTPStatus.SERVICE_UNAVAILABLE)
+
     def issue(self) -> tuple[str, int]:
         admin_id = ""
         admin_token = ""
@@ -518,6 +547,17 @@ class Application:
         self.store = Store(settings.database)
         self.matrix = matrix or MatrixIssuer(settings)
         self.solana = solana or SolanaVerifier(settings)
+
+    def ready(self) -> dict[str, Any]:
+        with self.store.connection() as database:
+            database.execute("SELECT 1").fetchone()
+        config = self.solana.config()
+        self.matrix.ready()
+        return {
+            "status": "ready",
+            "requiredAtomicAmount": str(config["required_amount"]),
+            "minimumLockSeconds": config["minimum_lock_seconds"],
+        }
 
     def sign_in_input(self, address: str, nonce: str, request_id: str, issued: int, expires: int) -> dict[str, Any]:
         origin = urllib.parse.urlsplit(self.settings.public_origin)
@@ -606,11 +646,16 @@ class Handler(BaseHTTPRequestHandler):
     app: Application
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"{self.log_date_time_string()} {self.client_address[0]} {format % args}", file=sys.stderr)
+        print(f"{self.log_date_time_string()} {self.peer_address()} {format % args}", file=sys.stderr)
+
+    def peer_address(self) -> str:
+        if isinstance(self.client_address, tuple) and self.client_address:
+            return str(self.client_address[0])[:128]
+        return "local"
 
     def client_key(self) -> str:
         forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
-        value = forwarded or self.client_address[0]
+        value = forwarded or self.peer_address()
         return value[:128]
 
     def origin_allowed(self) -> bool:
@@ -671,6 +716,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/healthz":
             self.send_json(HTTPStatus.OK, {"status": "ok"})
+        elif self.path == "/readyz":
+            try:
+                self.send_json(HTTPStatus.OK, self.app.ready())
+            except IssuerError as error:
+                self.send_json(error.status, {"status": "unavailable", "error": str(error)})
+            except Exception as error:
+                print(f"issuer readiness failed: {type(error).__name__}", file=sys.stderr)
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"status": "unavailable"})
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -698,12 +751,41 @@ class Handler(BaseHTTPRequestHandler):
             raise
 
 
+class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+def unix_server(settings: Settings) -> ThreadingUnixHTTPServer:
+    assert settings.socket_path is not None
+    path = settings.socket_path
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        mode = path.lstat().st_mode
+        if not stat.S_ISSOCK(mode):
+            raise IssuerError("Refusing to replace a non-socket issuer path", HTTPStatus.INTERNAL_SERVER_ERROR)
+        path.unlink()
+    server = ThreadingUnixHTTPServer(str(path), Handler)
+    os.chmod(path, 0o660)
+    return server
+
+
 def main() -> int:
     settings = Settings.from_environment()
     Handler.app = Application(settings)
-    server = ThreadingHTTPServer((settings.bind, settings.port), Handler)
-    print(f"NEAL access issuer listening on {settings.bind}:{settings.port}", file=sys.stderr)
-    server.serve_forever()
+    server: ThreadingHTTPServer | ThreadingUnixHTTPServer
+    if settings.socket_path:
+        server = unix_server(settings)
+        location = str(settings.socket_path)
+    else:
+        server = ThreadingHTTPServer((settings.bind, settings.port), Handler)
+        location = f"{settings.bind}:{settings.port}"
+    print(f"NEAL access issuer listening on {location}", file=sys.stderr)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        if settings.socket_path and settings.socket_path.exists() and stat.S_ISSOCK(settings.socket_path.lstat().st_mode):
+            settings.socket_path.unlink()
     return 0
 
 

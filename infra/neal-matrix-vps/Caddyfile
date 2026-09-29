@@ -90,6 +90,31 @@ matrix.nealtheseal.org {
         }
     }
 
+    @neal_access_preflight {
+        method OPTIONS
+        path /v1/challenge /v1/verify /v1/access-token
+        header Origin https://nealtheseal.org
+    }
+    handle @neal_access_preflight {
+        reverse_proxy unix//run/neal-access-issuer/issuer.sock
+    }
+
+    @neal_access_post {
+        method POST
+        path /v1/challenge /v1/verify /v1/access-token
+        header Origin https://nealtheseal.org
+    }
+    handle @neal_access_post {
+        reverse_proxy unix//run/neal-access-issuer/issuer.sock
+    }
+
+    @neal_access_hidden path /v1/challenge /v1/verify /v1/access-token /healthz /readyz
+    handle @neal_access_hidden {
+        header Content-Type "application/json; charset=utf-8"
+        header Cache-Control "no-store"
+        respond `{"error":"Not found"}` 404
+    }
+
     handle {
         reverse_proxy synapse:8008
     }

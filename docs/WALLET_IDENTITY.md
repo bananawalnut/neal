@@ -80,6 +80,12 @@ entire vault after the minimum lock, even if the authority pauses new activity.
 The receipt stays on-chain and cannot issue another token. The Matrix account
 continues to exist after the stake is released.
 
+Deployment is not authorized by policy fields alone. The reviewed SBF artifact,
+finalized config, issuer Unix-socket service, exact Caddy routes, non-production
+end-to-end rehearsal, backup/restore drill, and independent review must pass the
+sequence in `programs/access-stake/DEPLOYMENT.md`. The policy staging command
+rechecks the chain and issuer preflights before it can write `active`.
+
 ## Holder proof
 
 The canonical mint comes only from `neal.public-record/v1`. Before that record is launched and contains both mint and creation transaction, holder proof is disabled.

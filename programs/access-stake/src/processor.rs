@@ -377,13 +377,25 @@ fn create_pda_account<'a>(
     space: usize,
     signer_seeds: &[&[u8]],
 ) -> ProgramResult {
-    if !account.data_is_empty() || account.lamports() != 0 {
+    if !account.data_is_empty() || account.owner != &system_program::id() {
         return Err(AccessStakeError::InvalidState.into());
     }
-    let lamports = Rent::get()?.minimum_balance(space);
+    let required_lamports = Rent::get()?.minimum_balance(space);
+    let top_up = required_lamports.saturating_sub(account.lamports());
+    if top_up > 0 {
+        invoke(
+            &system_instruction::transfer(payer.key, account.key, top_up),
+            &[payer.clone(), account.clone(), system_program_info.clone()],
+        )?;
+    }
     invoke_signed(
-        &system_instruction::create_account(payer.key, account.key, lamports, space as u64, owner),
-        &[payer.clone(), account.clone(), system_program_info.clone()],
+        &system_instruction::allocate(account.key, space as u64),
+        &[account.clone(), system_program_info.clone()],
+        &[signer_seeds],
+    )?;
+    invoke_signed(
+        &system_instruction::assign(account.key, owner),
+        &[account.clone(), system_program_info.clone()],
         &[signer_seeds],
     )
 }
@@ -440,11 +452,7 @@ fn validate_mint(
 ) -> ProgramResult {
     require_owner(mint, token_program.key)?;
     let data = mint.try_borrow_data()?;
-    if data.len() < 82
-        || data[45] != 1
-        || data[0..4] != [0; 4]
-        || data[46..50] != [0; 4]
-    {
+    if data.len() < 82 || data[45] != 1 || data[0..4] != [0; 4] || data[46..50] != [0; 4] {
         return Err(AccessStakeError::InvalidMint.into());
     }
     if expected_decimals.is_some_and(|decimals| decimals != data[44]) {

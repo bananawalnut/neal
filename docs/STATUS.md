@@ -40,7 +40,7 @@ The Rust guard currently reports one blocker:
 
 Warnings remain for the open-source-developer eligibility policy, suggestion registry, deliberately deferred on-chain YAHOO program, and unconfirmed treasury inventory.
 
-Separate web-app blocker: wallet signatures are cryptographically verified in the current tab, but durable authentication is intentionally not claimed until the single-use nonce challenge and server verification endpoints are deployed.
+Separate access-stake blockers: wallet signatures are cryptographically verified in the current tab, but durable authentication is intentionally not claimed until the single-use nonce challenge and server verification endpoints are deployed. The program/config IDs, explicitly approved stake amount and lock, issuer deployment, devnet rehearsal, backup/restore drill, and independent security review are still required before `accessStake.status` can become `active`.
 
 The image gate is cleared by user attestation: the approved master is `assets/final/neal-token.png`, recorded in `launch-config.json`, and copied into the public site's static assets. See `assets/source/SOURCES.md` for the provenance record.
 

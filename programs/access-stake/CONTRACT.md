@@ -27,6 +27,11 @@ Receipts are deliberately never closed. A released receipt therefore remains
 an auditable, one-use record and prevents stake recycling under the same
 config.
 
+Config and receipt creation accepts a system-owned, data-empty PDA that was
+pre-funded before initialization. The program tops it up to rent exemption,
+allocates it, and assigns it with PDA signing. This prevents a small system
+transfer from becoming an account-creation denial of service.
+
 ## Instructions
 
 | Instruction | Signer | Effect |

@@ -17,7 +17,7 @@
 | NEAL Matrix client | Vanilla TypeScript + official `matrix-js-sdk` | Show the public GC transcript, discover a user's homeserver, initiate account creation or login, knock, moderate, and exchange GC messages without an Element redirect | Session access token only when signed in |
 | NEAL Matrix homeserver | Synapse + Postgres + filtered local gateway | Serve `matrix.nealtheseal.org`, the public unencrypted GC, and a fixed read-only message feed | Server signing keys and a server-held guest reader token |
 | Access stake program | Solana Token-2022 program | Hold refundable NEAL stakes in receipt-owned vaults and record a one-time access claim | User wallets sign stake, claim, and release instructions |
-| Matrix access issuer | Loopback Python service + SQLite | Verify SIWS and finalized stake receipts, then create one 15-minute/one-use Synapse registration token per receipt | Ephemeral Synapse admin only; no wallet or Matrix user keys |
+| Matrix access issuer | Unprivileged Python service + Unix socket + SQLite | Verify SIWS and finalized stake receipts, then create one 15-minute/one-use Synapse registration token per receipt | Ephemeral Synapse admin only; no wallet or Matrix user keys |
 | Future NEAL Nostr relay | strfry + isolated LMDB volume | Reserved plan for `nostr.nealtheseal.org`; not deployed | No user or wallet keys |
 | NEAL agent runner | Custom Nostr bridge + Goose ACP | Connect a separately keyed NEAL agent to reviewed event threads | Agent Nostr key only |
 | Quest ledger | Append-only signed records | Record eligibility inputs and decisions | Service signing key only |
@@ -43,6 +43,10 @@
   reserves the receipt before calling Synapse. It never receives the desired
   Matrix username or password. Matrix account continuity does not depend on a
   later unstake.
+- The issuer listens on a host Unix socket shared read-only into Caddy. Only the
+  three exact challenge, verify, and token POST/OPTIONS paths accept the exact
+  NEAL site origin; issuer health/readiness and Synapse administration remain
+  private.
 - Staking stays fail-closed in the site while `accessStake.status` is `planned`
   or any program, config, terms, identity endpoint, or issuer endpoint is null
   or inconsistent with finalized chain state.

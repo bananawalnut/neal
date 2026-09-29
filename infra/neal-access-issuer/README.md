@@ -27,6 +27,35 @@ does not retry automatically. An operator must determine whether Synapse
 created an orphan token before resetting anything. This is intentionally
 fail-closed.
 
+## Production packaging
+
+The supported VPS deployment runs as the unprivileged `neal-access` system
+user. It listens on `/run/neal-access-issuer/issuer.sock`; that directory is
+mounted read-only into the Caddy container. Caddy exposes only exact-path
+`POST`/`OPTIONS` requests for `/v1/challenge`, `/v1/verify`, and
+`/v1/access-token` from `https://nealtheseal.org`. `/healthz` and `/readyz`
+remain host-internal.
+
+Copy this directory to `/srv/neal-matrix/access-issuer`, then stage the service
+without starting it:
+
+```bash
+sudo /srv/neal-matrix/access-issuer/install.sh
+```
+
+Fill `/etc/neal-access-issuer.env` only after the reviewed program and config
+exist. Starting is a separate, fail-closed step:
+
+```bash
+sudo /srv/neal-matrix/access-issuer/install.sh --start
+sudo /srv/neal-matrix/verify_public.sh https://matrix.nealtheseal.org --with-access-issuer
+```
+
+The installer changes the existing Synapse registration secret to mode `0640`,
+owned by Synapse's UID and the `neal-access` group. It does not print that
+secret. The SQLite state lives under `/var/lib/neal-access-issuer`; include it
+in encrypted off-host backups and test a restore before activation.
+
 ## Required environment
 
 ```text
@@ -38,14 +67,12 @@ NEAL_ACCESS_MINT=8JBYSxrFRMf1Y4NcbjyEsxGPFe4AXzHXELmXh4WYDCBE
 NEAL_ACCESS_PUBLIC_ORIGIN=https://nealtheseal.org
 NEAL_ACCESS_MATRIX_URL=http://127.0.0.1:8008
 NEAL_ACCESS_MATRIX_SECRET_FILE=/srv/neal-matrix/runtime/synapse/registration-shared-secret
-NEAL_ACCESS_BIND=127.0.0.1
-NEAL_ACCESS_PORT=8792
+NEAL_ACCESS_SOCKET=/run/neal-access-issuer/issuer.sock
 ```
 
-Install the pinned Python dependency in a dedicated virtual environment, then
-run `issuer.py` as an unprivileged user. The process rejects non-loopback bind
-addresses. Put only the three `/v1/*` routes behind an exact-path HTTPS reverse
-proxy; do not expose Synapse's admin API or the issuer health route publicly.
+For isolated local testing, omit `NEAL_ACCESS_SOCKET` and use the loopback-only
+`NEAL_ACCESS_BIND`/`NEAL_ACCESS_PORT` fallback. The process rejects non-loopback
+TCP binds.
 
 The SQLite directory and file are created as `0700` and `0600`. Back up the
 database because it is the one-receipt/one-token ledger. Keep the Synapse shared
@@ -58,4 +85,7 @@ python3 -m unittest -v test_issuer.py
 ```
 
 Before activation, also run the end-to-end checklist in
-`programs/access-stake/TESTING.md` against a non-production Synapse instance.
+`programs/access-stake/TESTING.md` against a non-production Synapse instance
+and follow `programs/access-stake/DEPLOYMENT.md`. Passing `/readyz` is necessary
+but not sufficient: it proves the database, finalized config, Matrix client API,
+and secret are available, not that the independent security review occurred.

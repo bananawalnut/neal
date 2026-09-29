@@ -54,6 +54,7 @@ services:
       - "443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /run/neal-access-issuer:/run/neal-access-issuer:ro
       - caddy-data:/data
       - caddy-config:/config
     read_only: true
