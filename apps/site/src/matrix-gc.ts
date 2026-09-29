@@ -61,6 +61,7 @@ type ClientUi = {
   createDomainInput: HTMLInputElement;
   nativeRegister: HTMLElement;
   createUsernameInput: HTMLInputElement;
+  createTokenField: HTMLElement;
   createTokenInput: HTMLInputElement;
   createPasswordInput: HTMLInputElement;
   createConfirmInput: HTMLInputElement;
@@ -744,21 +745,44 @@ const completeNativeRegistration = async (
   await connectSession(ui, session);
 };
 
+const syncNealCreateButton = (ui: ClientUi): void => {
+  try {
+    if (normalizeHomeserverDomain(ui.createDomainInput.value) !== NEAL_HOMESERVER_DOMAIN) return;
+  } catch {
+    return;
+  }
+  const accessReady = Boolean(ui.createTokenInput.value.trim());
+  ui.createButton.disabled = !accessReady;
+  ui.createButton.textContent = accessReady
+    ? 'CREATE EMAIL-FREE MATRIX ACCOUNT'
+    : 'GET ACCOUNT ACCESS FIRST';
+};
+
 const updateCreateProvider = (ui: ClientUi): void => {
   let native = false;
+  let domain: string | null = null;
   try {
-    native = NATIVE_REGISTRATION_SERVERS.has(normalizeHomeserverDomain(ui.createDomainInput.value));
+    domain = normalizeHomeserverDomain(ui.createDomainInput.value);
+    native = NATIVE_REGISTRATION_SERVERS.has(domain);
   } catch {
     // The normal submit path presents invalid-domain errors.
   }
+  const previousDomain = ui.createDomainInput.dataset.normalizedProvider;
+  if (domain && previousDomain && previousDomain !== domain) ui.createTokenInput.value = '';
+  if (domain) ui.createDomainInput.dataset.normalizedProvider = domain;
+
+  const neal = domain === NEAL_HOMESERVER_DOMAIN;
   ui.nativeRegister.hidden = !native;
   for (const input of [
     ui.createUsernameInput,
-    ui.createTokenInput,
     ui.createPasswordInput,
     ui.createConfirmInput,
   ]) input.required = native;
+  ui.createTokenField.hidden = neal;
+  ui.createTokenInput.required = native && !neal;
+  ui.createButton.disabled = false;
   ui.createButton.textContent = native ? 'CREATE EMAIL-FREE MATRIX ACCOUNT' : 'OPEN PROVIDER SIGN-UP';
+  if (neal) syncNealCreateButton(ui);
 };
 
 const consumeSsoCallback = async (ui: ClientUi): Promise<boolean> => {
@@ -819,6 +843,7 @@ export const mountMatrixGc = (): void => {
     createDomainInput: required(root, '#matrix-create-domain'),
     nativeRegister: required(root, '#matrix-native-register'),
     createUsernameInput: required(root, '#matrix-create-username'),
+    createTokenField: required(root, '#matrix-token-field'),
     createTokenInput: required(root, '#matrix-create-token'),
     createPasswordInput: required(root, '#matrix-create-password'),
     createConfirmInput: required(root, '#matrix-create-confirm'),
@@ -842,6 +867,7 @@ export const mountMatrixGc = (): void => {
   ui.loginTab.addEventListener('click', () => showEntryMode(ui, 'login'));
   ui.createTab.addEventListener('click', () => showEntryMode(ui, 'create'));
   ui.createDomainInput.addEventListener('input', () => updateCreateProvider(ui));
+  ui.createTokenInput.addEventListener('input', () => syncNealCreateButton(ui));
   ui.userInput.addEventListener('focus', () => {
     void loadSdk().catch((error: unknown) => setStatus(ui, errorMessage(error), 'bad'));
   }, { once: true });
@@ -918,7 +944,7 @@ export const mountMatrixGc = (): void => {
         if (password !== confirmation) throw new Error('The two passwords do not match.');
         if (!token) {
           throw new Error(domain === 'matrix.nealtheseal.org'
-            ? 'Enter a one-use NEAL access token.'
+            ? 'Complete the NEAL account-access step above first.'
             : 'Get a one-use registration token from Salix first.');
         }
         const sdk = await loadSdk();
@@ -934,6 +960,7 @@ export const mountMatrixGc = (): void => {
     } catch (error) {
       setStatus(ui, errorMessage(error), 'bad');
       ui.createButton.disabled = false;
+      syncNealCreateButton(ui);
     } finally {
       password = '';
       confirmation = '';

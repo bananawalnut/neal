@@ -71,9 +71,13 @@ enable staking only when status is `active`, every value is populated, the
 canonical launch mint matches, server-backed identity endpoints are populated,
 and the finalized on-chain config exactly matches the policy. Older consumers
 that ignore this member continue to support manually supplied registration
-tokens. A `planned` consumer may show non-signing rollout status. A `paused`
-consumer must block new stake and claim actions without hiding an eligible
-receipt's `Unstake` path.
+tokens. The first-party consumer makes acquisition part of account creation:
+it enables submission only after claim supplies a token, while retaining an
+explicit manual-token fallback for compatibility. A `planned` consumer may
+show non-signing rollout status but must not imply that public token acquisition
+is available. A `paused` consumer must block new stake and claim actions without
+hiding an eligible receipt's `Unstake` path or rejecting an already issued,
+unexpired token supplied through the compatibility fallback.
 
 `neal.matrix-access-token-request/v1` contains no Matrix username or password.
 It is authenticated by the opaque SIWS session cookie. A successful response

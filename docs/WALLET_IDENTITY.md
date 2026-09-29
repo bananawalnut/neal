@@ -57,7 +57,12 @@ claim signatures but still permits an existing unlocked receipt to be released.
 The account form enables stake and claim controls only when the policy is
 `active`, the launch record's canonical mint matches, both SIWS endpoints and
 the access-token endpoint exist, and the finalized program config matches every
-published term.
+published term. NEAL account submission stays disabled until this flow has
+placed an access token into the form. `planned`, invalid, and paused states
+therefore fail closed by default without presenting the token as an unexplained
+user prerequisite. A deliberately selected existing-token fallback remains
+for operator and compatibility use, including an already issued token during a
+pause.
 
 The connected wallet creates one config/wallet receipt, moves the configured
 atomic NEAL amount into a Token-2022 vault controlled by that receipt PDA, and
@@ -65,8 +70,10 @@ submits a one-time `ClaimAccess` instruction. The issuer authenticates the same
 wallet, derives that receipt, and verifies its active claimed state and funded
 vault at `finalized`. A SQLite reservation is committed before Synapse is
 called. The resulting registration token allows one use and expires after 15
-minutes. The browser places it into the existing Matrix registration flow; the
-issuer never sees the selected Matrix username or password.
+minutes. The browser places it into the Matrix registration flow and unlocks
+account submission; the normal flow never requires the user to copy or paste
+it. The issuer never sees the selected Matrix username or password. Changing
+providers clears the held token before another homeserver can receive it.
 
 The receipt snapshots its amount and unlock time. The wallet can return the
 entire vault after the minimum lock, even if the authority pauses new activity.
