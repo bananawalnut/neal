@@ -24,6 +24,7 @@ program ID and must not be treated as a mainnet deployment artifact.
 - Release remains available after the minimum lock even while the config is
   paused.
 - Each config/wallet pair has exactly one persistent receipt PDA.
+- Pre-funding a predictable config or receipt PDA cannot block its creation.
 - Transfer postconditions reject fee-on-transfer behavior.
 
 See [CONTRACT.md](CONTRACT.md) for the wire contract and

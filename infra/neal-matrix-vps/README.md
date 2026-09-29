@@ -74,6 +74,22 @@ The token is the only intentional secret printed by this command. NEAL's client
 sends the selected username, password, and token directly to Synapse. Vercel
 does not receive them.
 
+### Stake-gated issuance
+
+The production candidate in `infra/neal-access-issuer` replaces manual token
+distribution only after the reviewed Solana program/config exists. Caddy shares
+the issuer's Unix socket and exposes exactly three POST/OPTIONS routes from the
+NEAL site origin. The issuer's liveness/readiness endpoints and Synapse admin
+surface remain private.
+
+For an existing VPS, copy the updated `Caddyfile`, `compose.yaml`,
+`verify_public.sh`, and the complete `infra/neal-access-issuer` directory before
+running its installer. Do not set the public wallet policy to `active` until the
+installer's internal readiness check and `verify_public.sh
+https://matrix.nealtheseal.org --with-access-issuer` both pass. The complete
+program, rehearsal, activation, and pause sequence is in
+`programs/access-stake/DEPLOYMENT.md`.
+
 ## Public GC feed
 
 `https://matrix.nealtheseal.org/_neal/gc/messages` returns the canonical room's

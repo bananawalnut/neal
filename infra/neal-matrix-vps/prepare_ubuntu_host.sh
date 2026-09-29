@@ -20,6 +20,8 @@ apt-get install -y --no-install-recommends \
   docker-compose-v2 \
   fail2ban \
   openssl \
+  python3 \
+  python3-venv \
   unattended-upgrades \
   ufw
 

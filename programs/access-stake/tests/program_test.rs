@@ -157,6 +157,16 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
     let authority = context.payer.pubkey();
     let (config, _) = client::config_address(&program_id, &authority, 0);
     let (receipt_address, _) = client::stake_address(&program_id, &config, &authority);
+    let prefunded_system_balance = Rent::default().minimum_balance(0);
+    send(
+        &mut context,
+        &[
+            system_instruction::transfer(&authority, &config, prefunded_system_balance),
+            system_instruction::transfer(&authority, &receipt_address, prefunded_system_balance),
+        ],
+        &[],
+    )
+    .await;
     let source = create_token_account(&mut context, &mint.pubkey(), &authority).await;
     let vault = create_token_account(&mut context, &mint.pubkey(), &receipt_address).await;
     let destination = create_token_account(&mut context, &mint.pubkey(), &authority).await;

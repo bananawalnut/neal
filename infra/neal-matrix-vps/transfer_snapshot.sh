@@ -33,6 +33,7 @@ if [[ -n "$ssh_identity_file" ]]; then
 fi
 
 ssh "${ssh_options[@]}" "$remote_target" 'install -d -m 700 /srv/neal-matrix /srv/neal-matrix/import'
+ssh "${ssh_options[@]}" "$remote_target" 'install -d -m 700 /srv/neal-matrix/access-issuer'
 scp \
   "${ssh_options[@]}" \
   "$script_root/compose.yaml" \
@@ -42,6 +43,15 @@ scp \
   "$script_root/create_registration_token.py" \
   "$script_root/verify_public.sh" \
   "$remote_target:/srv/neal-matrix/"
+scp \
+  "${ssh_options[@]}" \
+  "$script_root/../neal-access-issuer/issuer.py" \
+  "$script_root/../neal-access-issuer/requirements.txt" \
+  "$script_root/../neal-access-issuer/access-issuer.env.example" \
+  "$script_root/../neal-access-issuer/neal-access-issuer.service" \
+  "$script_root/../neal-access-issuer/install.sh" \
+  "$remote_target:/srv/neal-matrix/access-issuer/"
+ssh "${ssh_options[@]}" "$remote_target" 'chmod 700 /srv/neal-matrix/access-issuer/install.sh'
 
 age --decrypt --identity "$identity_file" "$snapshot_path" | \
   ssh "${ssh_options[@]}" "$remote_target" 'install -d -m 700 /srv/neal-matrix/import && tar -xf - -C /srv/neal-matrix/import'

@@ -79,6 +79,12 @@ is available. A `paused` consumer must block new stake and claim actions without
 hiding an eligible receipt's `Unstake` path or rejecting an already issued,
 unexpired token supplied through the compatibility fallback.
 
+The reviewed producer path for an `active` value is
+`scripts/stage-access-stake-policy.mjs`. It refuses to write until the canonical
+mint, executable program, config PDA, decoded finalized terms, revoked mint and
+freeze authorities, and credentialed issuer preflights all match. Directly
+changing the lifecycle string is not an activation procedure.
+
 `neal.matrix-access-token-request/v1` contains no Matrix username or password.
 It is authenticated by the opaque SIWS session cookie. A successful response
 uses `neal.matrix-access-token/v1` and returns one Synapse registration token,

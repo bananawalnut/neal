@@ -1,0 +1,39 @@
+[Unit]
+Description=NEAL stake-gated Matrix access-token issuer
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neal-access
+Group=neal-access
+EnvironmentFile=/etc/neal-access-issuer.env
+ExecStart=/opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/issuer.py
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=neal-access-issuer
+RuntimeDirectoryMode=0755
+StateDirectory=neal-access-issuer
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

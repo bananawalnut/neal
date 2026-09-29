@@ -101,6 +101,22 @@ fn instruction_encoding_is_deterministic_and_round_trips() {
 }
 
 #[test]
+fn initialize_config_wire_matches_deployment_tooling() {
+    let instruction = AccessStakeInstruction::InitializeConfig {
+        config_id: 7,
+        required_amount: 25_000_000,
+        minimum_lock_seconds: 604_800,
+    };
+    let bytes = borsh::to_vec(&instruction).unwrap();
+    let mut expected = vec![0];
+    expected.extend_from_slice(&7_u64.to_le_bytes());
+    expected.extend_from_slice(&25_000_000_u64.to_le_bytes());
+    expected.extend_from_slice(&604_800_i64.to_le_bytes());
+    assert_eq!(bytes, expected);
+    assert_eq!(bytes.len(), 25);
+}
+
+#[test]
 fn client_builders_pin_token_2022_and_expected_receipt() {
     assert_eq!(
         client::TOKEN_2022_PROGRAM_ID.to_string(),
