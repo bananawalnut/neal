@@ -16,6 +16,8 @@
 | Future YAHOO program/indexer | Undecided | Only exists if a later product decision approves wallet-linked, global, or on-chain YAHOOS | Undecided |
 | NEAL Matrix client | Vanilla TypeScript + official `matrix-js-sdk` | Show the public GC transcript, discover a user's homeserver, initiate account creation or login, knock, moderate, and exchange GC messages without an Element redirect | Session access token only when signed in |
 | NEAL Matrix homeserver | Synapse + Postgres + filtered local gateway | Serve `matrix.nealtheseal.org`, the public unencrypted GC, and a fixed read-only message feed | Server signing keys and a server-held guest reader token |
+| Access stake program | Solana Token-2022 program | Hold refundable NEAL stakes in receipt-owned vaults and record a one-time access claim | User wallets sign stake, claim, and release instructions |
+| Matrix access issuer | Loopback Python service + SQLite | Verify SIWS and finalized stake receipts, then create one 15-minute/one-use Synapse registration token per receipt | Ephemeral Synapse admin only; no wallet or Matrix user keys |
 | Future NEAL Nostr relay | strfry + isolated LMDB volume | Reserved plan for `nostr.nealtheseal.org`; not deployed | No user or wallet keys |
 | NEAL agent runner | Custom Nostr bridge + Goose ACP | Connect a separately keyed NEAL agent to reviewed event threads | Agent Nostr key only |
 | Quest ledger | Append-only signed records | Record eligibility inputs and decisions | Service signing key only |
@@ -31,6 +33,19 @@
 - Connected, signed, authenticated, and holder-verified are separate states. The UI must never collapse them into one label.
 - A browser-verified signature is not a durable authenticated session. Durable auth requires a server-issued, single-use SIWS nonce and server-side verification.
 - Holder proof combines a verified wallet-control proof with a finalized RPC read for the canonical mint at a recorded slot. Connection alone is not holder proof.
+- Matrix access staking is a separate authorization flow from holder proof. The
+  program escrows the configured canonical NEAL amount in a receipt PDA vault;
+  the authority can update future terms or pause new stake/claim actions but
+  has no withdrawal instruction. A user may release the full vault after the
+  snapshotted minimum lock, including while paused.
+- The access issuer accepts only server-authenticated wallets, derives the
+  expected receipt, reads config/receipt/vault at `finalized`, and durably
+  reserves the receipt before calling Synapse. It never receives the desired
+  Matrix username or password. Matrix account continuity does not depend on a
+  later unstake.
+- Staking stays fail-closed in the site while `accessStake.status` is `planned`
+  or any program, config, terms, identity endpoint, or issuer endpoint is null
+  or inconsistent with finalized chain state.
 - The site stores wallet identity state in memory only. It never writes addresses, signatures, or holder balances to `localStorage` or `sessionStorage`.
 - The dev buys NEAL through the Pump.fun market with no fixed supply-percentage target; the site publishes the actual wallet, spend, fill, and transaction.
 - Pump's V2 fee-sharing configuration is planned with two final recipients: 58% to the disclosed dev recipient and 42% to the treasury. The final split is not represented as active until the sharing-config address and both setup receipts are public.
@@ -55,9 +70,11 @@
   so posting requires a signed-in room member. The client has no NEAL/Vercel
   credential backend and renders remote text as text, never HTML.
 - New-account onboarding defaults to `matrix.nealtheseal.org`. The provider
-  domain remains editable. NEAL uses
-  the homeserver's advertised SSO/CAS registration action and validates a
-  tab-scoped state value before exchanging the returned one-time login token.
+  domain remains editable. NEAL accounts use Synapse's standard registration
+  token UIA stage. When access staking is active, the browser gets that token
+  only after server-backed SIWS and a finalized one-time stake claim; it then
+  sends the username, password, and token directly to the homeserver. Other
+  providers may use their advertised registration or SSO/CAS actions.
 - Public Matrix traffic passes through a gateway which exposes Matrix client,
   federation, and Synapse client paths but returns `404` for
   `/_synapse/admin/*`. Administrative APIs stay on loopback.

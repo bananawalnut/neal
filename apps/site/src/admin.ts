@@ -10,6 +10,11 @@ const HERMES_HEALTH_KEY = 'primary';
 const HERMES_FRESH_MS = 150_000;
 const REFRESH_MS = 30_000;
 const SESSION_KEY = 'neal.admin.matrix-session.v1';
+const LOCAL_ADMIN_MONITOR_PATHS = new Set([
+  '/_neal/admin/users',
+  '/_neal/admin/server',
+]);
+const USE_LOCAL_ADMIN_MONITOR_PROXY = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname);
 
 type MatrixSession = {
   accessToken: string;
@@ -33,6 +38,7 @@ type SynapseUsersResponse = {
 type MatrixStateEvent = {
   type?: unknown;
   state_key?: unknown;
+  origin_server_ts?: unknown;
   content?: unknown;
 };
 
@@ -79,7 +85,7 @@ app.innerHTML = `
       <form class="admin-login" id="admin-login">
         <h2>Administrator sign in</h2>
         <p>Credentials go directly to the Neal Matrix homeserver. The session stays in this browser tab.</p>
-        <label><span>NEAL USERNAME</span><input id="admin-username" name="username" autocomplete="username" placeholder="bever" required /></label>
+        <label><span>NEAL USERNAME</span><input id="admin-username" name="username" autocomplete="username" placeholder="beaver" required /></label>
         <label><span>PASSWORD</span><input id="admin-password" name="password" type="password" autocomplete="current-password" required /></label>
         <button id="admin-login-button" type="submit">SIGN IN AND LOAD STATUS</button>
       </form>
@@ -109,6 +115,11 @@ app.innerHTML = `
               <div class="admin-panel__head"><div><h2 id="accounts-title">Local accounts</h2><p>Matrix IDs, roles, and account state only.</p></div><span class="admin-badge admin-badge--neutral" id="accounts-count">—</span></div>
               <div id="accounts-content"><p class="admin-empty">Waiting for status.</p></div>
               <details class="admin-details" id="deactivated-details"><summary id="deactivated-summary">Deactivated service accounts</summary><ul id="deactivated-list"></ul></details>
+            </section>
+
+            <section class="admin-panel admin-panel--requests" aria-labelledby="requests-title">
+              <div class="admin-panel__head"><div><h2 id="requests-title">Membership requests</h2><p>Accounts waiting to enter the canonical Neal room.</p></div><span class="admin-badge admin-badge--neutral" id="requests-count">—</span></div>
+              <div id="requests-content" aria-live="polite"><p class="admin-empty">Waiting for status.</p></div>
             </section>
 
             <section class="admin-panel" aria-labelledby="members-title">
@@ -203,7 +214,10 @@ const requestJson = async <T>(path: string, session: MatrixSession, init: Reques
   headers.set('Accept', 'application/json');
   headers.set('Authorization', `Bearer ${session.accessToken}`);
   if (init.body) headers.set('Content-Type', 'application/json');
-  const response = await fetch(`${HOMESERVER}${path}`, { ...init, headers, cache: 'no-store' });
+  const requestUrl = USE_LOCAL_ADMIN_MONITOR_PROXY && LOCAL_ADMIN_MONITOR_PATHS.has(path)
+    ? path
+    : `${HOMESERVER}${path}`;
+  const response = await fetch(requestUrl, { ...init, headers, cache: 'no-store' });
   if (!response.ok) throw new RequestError(response.status, await readError(response));
   return await response.json() as T;
 };
@@ -306,7 +320,23 @@ const renderMembers = (events: MatrixStateEvent[]): { joined: number; federated:
   const joined = memberEvents.filter((event) => membership(event) === 'join');
   const federated = joined.filter((event) => !asString(event.state_key).endsWith(`:${SERVER_NAME}`));
   const invited = memberEvents.filter((event) => membership(event) === 'invite');
-  const knocking = memberEvents.filter((event) => membership(event) === 'knock');
+  const knocking = memberEvents
+    .filter((event) => membership(event) === 'knock')
+    .sort((left, right) => Number(right.origin_server_ts) - Number(left.origin_server_ts));
+  const requestRows = knocking.map((event) => {
+    const id = asString(event.state_key);
+    const server = id.slice(id.lastIndexOf(':') + 1) || 'Unknown';
+    const timestamp = Number(event.origin_server_ts);
+    const requestedAt = Number.isFinite(timestamp) && timestamp > 0
+      ? formatTime(new Date(timestamp).toISOString())
+      : 'Not reported';
+    return `<tr><td><code>${escapeHtml(id)}</code></td><td>${escapeHtml(server)}</td><td>${escapeHtml(requestedAt)}</td><td>${badge('Waiting', 'warn')}</td></tr>`;
+  }).join('');
+  required<HTMLElement>('#requests-content').innerHTML = requestRows
+    ? `<div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Matrix ID</th><th>Homeserver</th><th>Requested</th><th>Status</th></tr></thead><tbody>${requestRows}</tbody></table></div>`
+    : '<p class="admin-empty admin-empty--good">No pending membership requests.</p>';
+  required<HTMLElement>('#requests-count').textContent = `${knocking.length} WAITING`;
+  required<HTMLElement>('#requests-count').className = `admin-badge admin-badge--${knocking.length ? 'warn' : 'good'}`;
   const rows = federated.map((event) => {
     const id = asString(event.state_key);
     const server = id.slice(id.lastIndexOf(':') + 1);

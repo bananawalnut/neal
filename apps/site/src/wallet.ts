@@ -38,6 +38,17 @@ type WalletPolicy = {
     commitment: 'confirmed' | 'finalized';
     minimumAtomicBalance: string;
   };
+  accessStake?: {
+    status: 'planned' | 'active' | 'paused';
+    programId: string | null;
+    configAddress: string | null;
+    mint: string;
+    tokenProgram: string;
+    tokenDecimals: number;
+    requiredAtomicAmount: string | null;
+    minimumLockSeconds: number | null;
+    tokenEndpoint: string | null;
+  };
 };
 
 type WalletProof = {
@@ -77,6 +88,12 @@ export type WalletTransactionSession = {
   account: WalletAccount;
   rpcEndpoint: string;
   chain: 'solana:mainnet';
+};
+
+export type WalletAuthenticationState = {
+  connected: boolean;
+  address: string | null;
+  serverVerified: boolean;
 };
 
 type SignOutput = SolanaSignInOutput | (SolanaSignMessageOutput & { account: WalletAccount });
@@ -197,6 +214,24 @@ export class WalletIdentityController {
       rpcEndpoint: this.#policy.holderProof.rpcEndpoint,
       chain: this.#policy.chain,
     };
+  }
+
+  getAuthenticationState(): WalletAuthenticationState {
+    return {
+      connected: Boolean(this.#wallet && this.#account),
+      address: this.#account?.address ?? null,
+      serverVerified: this.#walletProof?.verification === 'server',
+    };
+  }
+
+  async authenticateForAccess(): Promise<boolean> {
+    if (!this.#wallet || !this.#account) {
+      this.#openDialog();
+      return false;
+    }
+    if (this.#walletProof?.verification === 'server') return true;
+    await this.#verifyWallet();
+    return this.getAuthenticationState().serverVerified;
   }
 
   async start(): Promise<void> {

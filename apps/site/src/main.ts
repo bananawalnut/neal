@@ -2,6 +2,7 @@ import './styles.css';
 import { mountWalletIdentity } from './wallet';
 import { mountNealPurchase } from './buy';
 import { mountMatrixGc } from './matrix-gc';
+import { mountMatrixAccessStake } from './access-stake';
 import { formatLocalStreak, getLocalYahooStats, onLocalYahooChange, recordLocalYahoo, type LocalYahooStats } from './local-yahoos';
 
 type PublicRecord = {
@@ -349,6 +350,7 @@ app.innerHTML = `
             <button id="matrix-tab-create" type="button" role="tab" aria-selected="false" aria-controls="matrix-create-form">CREATE AN ACCOUNT</button>
           </div>
           <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO SEND A MESSAGE</strong><span>Reading is public. Your credentials go directly to your Matrix homeserver.</span></button>
+          <button class="gc-create-toggle" id="gc-create-toggle" type="button" aria-expanded="false" aria-controls="matrix-create-form"><strong>CREATE A NEAL ACCOUNT</strong><span>No email or phone. Use a short-lived, one-use access token.</span></button>
           <form class="matrix-login" id="matrix-login-form">
             <label><span>USERNAME OR MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="neal or @you:matrix.org" required /></label>
             <label><span>PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="Your Matrix password" required /></label>
@@ -360,20 +362,31 @@ app.innerHTML = `
           </form>
           <form class="matrix-create" id="matrix-create-form" hidden>
             <label><span>ACCOUNT PROVIDER</span><input id="matrix-create-domain" type="text" inputmode="url" autocomplete="url" spellcheck="false" value="matrix.nealtheseal.org" list="matrix-provider-options" required /><datalist id="matrix-provider-options"><option value="matrix.nealtheseal.org"></option><option value="salix.host"></option><option value="matrix.org"></option><option value="unredacted.org"></option></datalist></label>
-            <div class="matrix-provider-default"><strong>DEFAULT · MATRIX.NEALTHESEAL.ORG</strong><span>No email or phone. NEAL accounts use a short-lived, one-use invite token and are created directly on our always-online homeserver.</span></div>
+            <div class="matrix-provider-default"><strong>DEFAULT · MATRIX.NEALTHESEAL.ORG</strong><span>No email or phone. NEAL accounts use a short-lived, one-use access token and are created directly on our always-online homeserver.</span></div>
             <div class="matrix-native-register" id="matrix-native-register">
+              <section class="matrix-stake-access" id="matrix-stake-access" hidden aria-labelledby="matrix-stake-title">
+                <div><strong id="matrix-stake-title">GET A ONE-USE ACCESS TOKEN</strong><span id="matrix-stake-terms">Stake terms load from the finalized on-chain config.</span></div>
+                <p id="matrix-stake-status" role="status">Connect and verify the wallet that will hold the stake.</p>
+                <div class="matrix-stake-actions">
+                  <button id="matrix-stake-wallet" type="button">CONNECT WALLET</button>
+                  <button id="matrix-stake-submit" type="button" hidden>STAKE NEAL</button>
+                  <button id="matrix-stake-claim" type="button" hidden>CLAIM ACCESS TOKEN</button>
+                  <button id="matrix-stake-release" type="button" hidden>UNSTAKE NEAL</button>
+                </div>
+                <small>The stake is refundable after the displayed lock. One wallet/config receipt can issue one token. Creating an account does not store your wallet in Matrix.</small>
+              </section>
               <div class="matrix-native-grid">
                 <label><span>NEW USERNAME</span><input id="matrix-create-username" type="text" autocomplete="username" spellcheck="false" placeholder="YOUR_MATRIX_NAME" /></label>
-                <label><span>ONE-USE TOKEN</span><input id="matrix-create-token" type="text" autocomplete="off" spellcheck="false" placeholder="NEAL OR PROVIDER INVITE TOKEN" /></label>
+                <label id="matrix-token-field"><span>ONE-USE ACCESS TOKEN</span><input id="matrix-create-token" type="text" autocomplete="off" spellcheck="false" placeholder="NEAL OR PROVIDER ACCESS TOKEN" /></label>
               </div>
               <div class="matrix-native-grid">
                 <label><span>NEW PASSWORD</span><input id="matrix-create-password" type="password" autocomplete="new-password" placeholder="12+ CHARACTERS" /></label>
                 <label><span>CONFIRM PASSWORD</span><input id="matrix-create-confirm" type="password" autocomplete="new-password" placeholder="SAME AGAIN" /></label>
               </div>
-              <a class="matrix-token-link" href="https://salix.host/#matrix" target="_blank" rel="noopener noreferrer"><strong>NO NEAL INVITE? USE SALIX ↗</strong><span>Independent federated account · no email or phone · self-serve token</span></a>
+              <a class="matrix-token-link" href="https://salix.host/#matrix" target="_blank" rel="noopener noreferrer"><strong>FEDERATED ALTERNATIVE · SALIX ↗</strong><span>Independent account provider · no email or phone · self-serve token</span></a>
             </div>
             <button id="matrix-create" type="submit">CREATE MATRIX ACCOUNT</button>
-            <small>For NEAL and Salix, the username, password, and token go straight from this browser to the selected homeserver. Vercel receives and stores none of them. Other providers may open their own secure sign-up screen.</small>
+            <small>For NEAL and Salix, the username, password, and access token go straight from this browser to the selected homeserver. Vercel receives and stores none of them. Other providers may open their own secure sign-up screen.</small>
           </form>
           <section class="matrix-session" id="matrix-session" hidden>
             <div class="matrix-session-head"><span>ACCOUNT <strong id="matrix-account">NOT SIGNED IN</strong></span><span>ROOM <strong id="matrix-membership">—</strong></span></div>
@@ -540,6 +553,7 @@ const gcPortal = byId<HTMLElement>('gc');
 const gcBackdrop = byId<HTMLButtonElement>('gc-drawer-backdrop');
 const gcClose = byId<HTMLButtonElement>('gc-drawer-close');
 const gcLoginToggle = byId<HTMLButtonElement>('gc-login-toggle');
+const gcCreateToggle = byId<HTMLButtonElement>('gc-create-toggle');
 const gcMinimizedKey = 'neal.gc.minimized.v1';
 let gcReturnFocus: HTMLElement | null = null;
 
@@ -572,6 +586,7 @@ const closeGcDrawer = (): void => {
   setGcDrawerOpen(false);
   gcPortal.classList.remove('gc-login-open');
   gcLoginToggle.setAttribute('aria-expanded', 'false');
+  gcCreateToggle.setAttribute('aria-expanded', 'false');
   gcReturnFocus?.focus();
   gcReturnFocus = null;
 };
@@ -584,11 +599,16 @@ document.querySelectorAll<HTMLAnchorElement>('a[href="#gc"]').forEach((link) => 
 });
 gcClose.addEventListener('click', closeGcDrawer);
 gcBackdrop.addEventListener('click', closeGcDrawer);
-gcLoginToggle.addEventListener('click', () => {
+const openGcAccountForm = (mode: 'login' | 'create'): void => {
   gcPortal.classList.add('gc-login-open');
-  gcLoginToggle.setAttribute('aria-expanded', 'true');
-  window.requestAnimationFrame(() => byId<HTMLInputElement>('matrix-user-id').focus());
-});
+  const login = mode === 'login';
+  gcLoginToggle.setAttribute('aria-expanded', String(login));
+  gcCreateToggle.setAttribute('aria-expanded', String(!login));
+  byId<HTMLButtonElement>(login ? 'matrix-tab-login' : 'matrix-tab-create').click();
+  window.requestAnimationFrame(() => byId<HTMLInputElement>(login ? 'matrix-user-id' : 'matrix-create-username').focus());
+};
+gcLoginToggle.addEventListener('click', () => openGcAccountForm('login'));
+gcCreateToggle.addEventListener('click', () => openGcAccountForm('create'));
 window.addEventListener('popstate', () => setGcDrawerOpen(window.location.hash === '#gc'));
 window.addEventListener('hashchange', () => setGcDrawerOpen(window.location.hash === '#gc'));
 window.addEventListener('keydown', (event) => {
@@ -869,7 +889,10 @@ async function start() {
       }
     }
     const walletIdentity = await mountWalletIdentity(() => canonicalMintAddress);
-    if (walletIdentity) mountNealPurchase(() => canonicalMintAddress, walletIdentity);
+    if (walletIdentity) {
+      mountNealPurchase(() => canonicalMintAddress, walletIdentity);
+      await mountMatrixAccessStake(() => canonicalMintAddress, walletIdentity);
+    }
   }
 }
 
