@@ -601,6 +601,7 @@ footer { max-width: 1380px; margin: 0 auto; padding: 25px 0 45px; display: flex;
 .matrix-login,.matrix-create { margin-top: 15px; display: grid; gap: 13px; }
 .matrix-login[hidden],.matrix-create[hidden],.matrix-entry-tabs[hidden] { display: none; }
 .matrix-login label,.matrix-create label,.matrix-composer { display: grid; gap: 7px; }
+.matrix-create label[hidden] { display: none; }
 .matrix-login label > span,.matrix-create label > span,.matrix-composer label,.matrix-session-head span { font: 950 8px ui-monospace,monospace; letter-spacing: .08em; }
 .matrix-login input,.matrix-create input,.matrix-composer textarea { width: 100%; padding: 14px; border: 3px solid var(--ink); border-radius: 0; color: var(--ink); background: white; font: 800 11px/1.4 ui-monospace,monospace; outline: none; }
 .matrix-login input:focus,.matrix-create input:focus,.matrix-composer textarea:focus { box-shadow: 5px 5px 0 var(--blue); }
@@ -624,6 +625,7 @@ footer { max-width: 1380px; margin: 0 auto; padding: 25px 0 45px; display: flex;
 .matrix-stake-status--busy { background: var(--aqua); }.matrix-stake-status--good { background: var(--lime); }.matrix-stake-status--bad { color: #7a1717; background: #ffe1df; }
 .matrix-stake-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .matrix-stake-actions button { min-height: 42px; padding: 9px; box-shadow: 3px 3px 0 var(--ink); }
+.matrix-stake-actions .matrix-secondary { background: white; box-shadow: 3px 3px 0 var(--blue); }
 .matrix-token-link { padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 3px solid var(--ink); color: var(--ink); background: white; box-shadow: 5px 5px 0 var(--blue); font-family: ui-monospace,monospace; text-decoration: none; }
 .matrix-token-link strong { font-size: 9px; }.matrix-token-link span { font-size: 8px; font-weight: 750; text-align: right; }
 .matrix-session { margin-top: 24px; }

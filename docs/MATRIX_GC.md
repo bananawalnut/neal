@@ -87,22 +87,31 @@ production CORS allowlist unchanged while making local administrator sign-in
 testable.
 
 `matrix.nealtheseal.org` is the default account provider. It requires no email
-or phone number and accepts only short-lived, one-use access tokens. The user
-supplies that token, username, and password directly to the NEAL homeserver
-from the browser client. Salix remains the self-service, no-email federated
-fallback. NEAL and Vercel receive and store none of those values.
+or phone number and accepts only short-lived, one-use access tokens. For NEAL,
+token acquisition is part of the account form: the normal path guides the user
+through wallet verification, staking, and claiming, then inserts the issued
+token into the registration request without asking the user to copy it. The
+username, password, and token go directly from the browser to the NEAL
+homeserver. An explicit existing-token fallback remains available for operator
+or compatibility use. Salix remains the self-service, no-email federated
+alternative and continues to require its provider-issued token. The public
+site and Vercel receive and store none of those values.
 
 The additive `accessStake` wallet policy is currently `planned`. The NEAL
-provider panel shows that state and keeps the existing one-use-token field
-available, but it does not offer a wallet signature or construct a transaction.
-Once a reviewed program/config and issuer are deployed and the policy is
-explicitly set to `active`, the same panel can authenticate a wallet with
-server-issued SIWS, stake the published amount, record a one-time finalized
-claim, and place the resulting 15-minute/one-use token into the registration
-flow. A `paused` policy blocks new stakes and claims while continuing to expose
-eligible refunds for existing receipts. The stake is refundable after its
-snapshotted lock and the Matrix account remains valid after release. The issuer
-never receives the user's Matrix username or password.
+provider panel shows that state, does not offer a wallet signature or construct
+a transaction, and keeps account submission disabled instead of presenting an
+unexplained required-token field. Once a reviewed program/config and issuer are
+deployed and the policy is explicitly set to `active`, the same panel can
+authenticate a wallet with server-issued SIWS, stake the published amount,
+record a one-time finalized claim, and place the resulting 15-minute/one-use
+token into the registration flow. A `paused` policy blocks new stakes and
+claims while continuing to expose eligible refunds for existing receipts; an
+already issued, unexpired token can still use the explicit compatibility path.
+Switching account providers clears any token already held in the form,
+preventing a NEAL token from being sent to a federated provider. The stake is
+refundable after its snapshotted lock and the Matrix account remains valid
+after release. The issuer never receives the user's Matrix username or
+password.
 Other providers remain selectable when they expose a standard browser
 registration flow. Existing accounts from any discoverable homeserver remain
 supported. As verified on 2026-09-02, Matrix.org's current registration page

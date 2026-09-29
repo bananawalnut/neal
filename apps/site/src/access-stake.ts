@@ -77,6 +77,8 @@ type Ui = {
   stakeButton: HTMLButtonElement;
   claimButton: HTMLButtonElement;
   releaseButton: HTMLButtonElement;
+  manualTokenButton: HTMLButtonElement;
+  createButton: HTMLButtonElement;
   domainInput: HTMLInputElement;
   tokenField: HTMLElement;
   tokenInput: HTMLInputElement;
@@ -267,12 +269,43 @@ export async function mountMatrixAccessStake(
     stakeButton: required('matrix-stake-submit'),
     claimButton: required('matrix-stake-claim'),
     releaseButton: required('matrix-stake-release'),
+    manualTokenButton: required('matrix-stake-manual-token'),
+    createButton: required('matrix-create'),
     domainInput: required('matrix-create-domain'),
     tokenField: required('matrix-token-field'),
     tokenInput: required('matrix-create-token'),
   };
   const advertisedPolicy = walletPolicy.accessStake;
   if (!advertisedPolicy) return;
+  let manualTokenMode = false;
+  let registrationBlockLabel = 'GET ACCOUNT ACCESS FIRST';
+
+  const isNealProvider = (): boolean =>
+    ui.domainInput.value.trim().toLowerCase() === NEAL_SERVER;
+  const syncRegistrationGate = (): void => {
+    if (!isNealProvider()) {
+      manualTokenMode = false;
+      ui.manualTokenButton.hidden = true;
+      return;
+    }
+    const accessReady = Boolean(ui.tokenInput.value.trim());
+    ui.tokenField.hidden = !manualTokenMode;
+    ui.tokenInput.required = manualTokenMode;
+    ui.manualTokenButton.hidden = manualTokenMode || accessReady;
+    ui.createButton.disabled = !accessReady;
+    ui.createButton.textContent = accessReady
+      ? 'CREATE EMAIL-FREE MATRIX ACCOUNT'
+      : manualTokenMode
+        ? 'ENTER YOUR ONE-USE TOKEN'
+        : registrationBlockLabel;
+  };
+
+  ui.manualTokenButton.addEventListener('click', () => {
+    manualTokenMode = true;
+    syncRegistrationGate();
+    ui.tokenInput.focus();
+  });
+  ui.tokenInput.addEventListener('input', syncRegistrationGate);
 
   const hideTransactionActions = (): void => {
     ui.walletButton.hidden = true;
@@ -281,19 +314,26 @@ export async function mountMatrixAccessStake(
     ui.releaseButton.hidden = true;
   };
   const renderUnavailable = (): void => {
-    const isNeal = ui.domainInput.value.trim().toLowerCase() === NEAL_SERVER;
+    const isNeal = isNealProvider();
     ui.panel.hidden = !isNeal;
-    ui.tokenField.hidden = false;
-    ui.tokenInput.required = true;
     hideTransactionActions();
-    if (!isNeal) return;
-    if (advertisedPolicy.status === 'planned') {
-      ui.terms.textContent = 'REFUNDABLE NEAL STAKE · TERMS PUBLISH BEFORE ACTIVATION';
-      setStatus(ui, 'Stake access is not live yet. If you already have a one-use access token, enter it below.');
+    if (!isNeal) {
+      syncRegistrationGate();
       return;
     }
+    if (advertisedPolicy.status === 'planned') {
+      registrationBlockLabel = 'STAKING ACCESS NOT LIVE YET';
+      ui.terms.textContent = 'REFUNDABLE NEAL STAKE · TERMS PUBLISH BEFORE ACTIVATION';
+      setStatus(ui, 'Stake access is not live yet. NEAL account creation will unlock here after activation.');
+      syncRegistrationGate();
+      return;
+    }
+    registrationBlockLabel = advertisedPolicy.status === 'paused'
+      ? 'ACCOUNT ACCESS PAUSED'
+      : 'ACCOUNT ACCESS UNAVAILABLE';
     ui.terms.textContent = 'STAKE ACCESS UNAVAILABLE';
-    setStatus(ui, 'The published staking configuration did not pass browser verification. No transaction can be built. An existing one-use token can still be entered below.', 'bad');
+    setStatus(ui, 'The published staking configuration did not pass browser verification. No transaction can be built.', 'bad');
+    syncRegistrationGate();
   };
 
   const policy = parseConfiguredPolicy(walletPolicy, getCanonicalMint());
@@ -329,14 +369,15 @@ export async function mountMatrixAccessStake(
   const render = async (): Promise<void> => {
     if (rendering) return;
     rendering = true;
-    const isNeal = ui.domainInput.value.trim().toLowerCase() === NEAL_SERVER;
+    const isNeal = isNealProvider();
     ui.panel.hidden = !isNeal;
-    ui.tokenField.hidden = isNeal && !accessPaused;
-    ui.tokenInput.required = !isNeal || accessPaused;
     if (!isNeal) {
+      syncRegistrationGate();
       rendering = false;
       return;
     }
+    registrationBlockLabel = accessPaused ? 'ACCOUNT ACCESS PAUSED' : 'COMPLETE STAKE ACCESS FIRST';
+    syncRegistrationGate();
     ui.terms.textContent = `STAKE ${formatAtomic(requiredAmount, policy.tokenDecimals)} NEAL · REFUNDABLE AFTER ${formatDuration(policy.minimumLockSeconds)}`;
     const authentication = walletController.getAuthenticationState();
     ui.walletButton.hidden = authentication.serverVerified;
@@ -348,33 +389,37 @@ export async function mountMatrixAccessStake(
       receipt = null;
       ui.walletButton.hidden = false;
       ui.walletButton.textContent = 'CONNECT WALLET';
+      registrationBlockLabel = accessPaused ? 'ACCOUNT ACCESS PAUSED' : 'CONNECT WALLET TO CONTINUE';
       setStatus(
         ui,
         accessPaused
           ? 'New staking and token claims are paused. Connect only to check or recover an existing stake.'
           : 'Connect the wallet that will own and recover the stake.',
       );
+      syncRegistrationGate();
       rendering = false;
       return;
     }
     try {
       const configState = await assertConfig(true);
       accessPaused = policy.status === 'paused' || configState.paused;
-      ui.tokenField.hidden = !accessPaused;
-      ui.tokenInput.required = accessPaused;
       ui.walletButton.hidden = accessPaused ? authentication.connected : authentication.serverVerified;
       ui.walletButton.textContent = accessPaused ? 'CONNECT WALLET' : 'VERIFY WALLET';
       receipt = await readReceipt(connection, program, configAddress, new PublicKey(authentication.address));
       if (!authentication.serverVerified && !accessPaused) {
+        registrationBlockLabel = 'VERIFY WALLET TO CONTINUE';
         setStatus(ui, 'Verify this wallet with the server-issued message before staking.');
       } else if (!receipt) {
         if (accessPaused) {
+          registrationBlockLabel = 'ACCOUNT ACCESS PAUSED';
           setStatus(ui, 'New staking and token claims are paused. No active stake receipt was found for this wallet.');
         } else {
+          registrationBlockLabel = 'STAKE NEAL TO CONTINUE';
           ui.stakeButton.hidden = false;
           setStatus(ui, 'No receipt exists for this wallet. Review the terms, then stake.', 'idle');
         }
       } else if (receipt.released) {
+        registrationBlockLabel = 'RECEIPT ALREADY USED';
         setStatus(ui, 'This wallet already used and released its receipt. A receipt cannot be reused.', 'bad');
       } else {
         ui.claimButton.hidden = accessPaused || Boolean(ui.tokenInput.value);
@@ -396,12 +441,13 @@ export async function mountMatrixAccessStake(
                 : 'Stake finalized. Claim once to request the one-use access token.',
           ui.tokenInput.value ? 'good' : 'idle',
         );
+        registrationBlockLabel = accessPaused ? 'ACCOUNT ACCESS PAUSED' : 'CLAIM ACCESS TOKEN FIRST';
       }
     } catch (error) {
-      ui.tokenField.hidden = false;
-      ui.tokenInput.required = true;
+      registrationBlockLabel = 'ACCOUNT ACCESS UNAVAILABLE';
       setStatus(ui, error instanceof Error ? error.message : 'Could not read the finalized stake state.', 'bad');
     } finally {
+      syncRegistrationGate();
       rendering = false;
     }
   };

@@ -372,12 +372,13 @@ app.innerHTML = `
                   <button id="matrix-stake-submit" type="button" hidden>STAKE NEAL</button>
                   <button id="matrix-stake-claim" type="button" hidden>CLAIM ACCESS TOKEN</button>
                   <button id="matrix-stake-release" type="button" hidden>UNSTAKE NEAL</button>
+                  <button class="matrix-secondary" id="matrix-stake-manual-token" type="button" hidden>USE AN EXISTING TOKEN</button>
                 </div>
                 <small>When active, the stake is refundable after the displayed lock. One wallet/config receipt can issue one token. Creating an account does not store your wallet in Matrix.</small>
               </section>
               <div class="matrix-native-grid">
                 <label><span>NEW USERNAME</span><input id="matrix-create-username" type="text" autocomplete="username" spellcheck="false" placeholder="YOUR_MATRIX_NAME" /></label>
-                <label id="matrix-token-field"><span>ONE-USE ACCESS TOKEN</span><input id="matrix-create-token" type="text" autocomplete="off" spellcheck="false" placeholder="NEAL OR PROVIDER ACCESS TOKEN" /></label>
+                <label id="matrix-token-field" hidden><span>ONE-USE ACCESS TOKEN</span><input id="matrix-create-token" type="text" autocomplete="off" spellcheck="false" placeholder="PROVIDER ACCESS TOKEN" /></label>
               </div>
               <div class="matrix-native-grid">
                 <label><span>NEW PASSWORD</span><input id="matrix-create-password" type="password" autocomplete="new-password" placeholder="12+ CHARACTERS" /></label>
@@ -385,8 +386,8 @@ app.innerHTML = `
               </div>
               <a class="matrix-token-link" href="https://salix.host/#matrix" target="_blank" rel="noopener noreferrer"><strong>FEDERATED ALTERNATIVE · SALIX ↗</strong><span>Independent account provider · no email or phone · self-serve token</span></a>
             </div>
-            <button id="matrix-create" type="submit">CREATE MATRIX ACCOUNT</button>
-            <small>For NEAL and Salix, the username, password, and access token go straight from this browser to the selected homeserver. Vercel receives and stores none of them. Other providers may open their own secure sign-up screen.</small>
+            <button id="matrix-create" type="submit" disabled>GET ACCOUNT ACCESS FIRST</button>
+            <small>For NEAL, the access step supplies the token inside this form. The username, password, and token go straight from this browser to the selected homeserver; Vercel receives and stores none of them. Other providers may open their own secure sign-up screen.</small>
           </form>
           <section class="matrix-session" id="matrix-session" hidden>
             <div class="matrix-session-head"><span>ACCOUNT <strong id="matrix-account">NOT SIGNED IN</strong></span><span>ROOM <strong id="matrix-membership">—</strong></span></div>
