@@ -44,13 +44,12 @@ type WalletPolicy = {
   accessStake?: AccessStakePolicy;
 };
 
-type ActivePolicy = AccessStakePolicy & {
-  status: 'active';
+type ConfiguredPolicy = AccessStakePolicy & {
+  status: 'active' | 'paused';
   programId: string;
   configAddress: string;
   requiredAtomicAmount: string;
   minimumLockSeconds: number;
-  tokenEndpoint: string;
 };
 
 type ConfigState = {
@@ -89,23 +88,32 @@ const required = <T extends HTMLElement>(id: string): T => {
   return element;
 };
 
-const parseActivePolicy = (walletPolicy: WalletPolicy, canonicalMint: string | null): ActivePolicy | null => {
+const parseConfiguredPolicy = (walletPolicy: WalletPolicy, canonicalMint: string | null): ConfiguredPolicy | null => {
   const policy = walletPolicy.accessStake;
-  if (!policy || policy.status !== 'active') return null;
-  if (
-    !policy.programId
-    || !policy.configAddress
-    || !policy.requiredAtomicAmount
-    || !policy.minimumLockSeconds
-    || !policy.tokenEndpoint
-    || !walletPolicy.identity.challengeEndpoint
-    || !walletPolicy.identity.verifyEndpoint
-    || policy.tokenProgram !== TOKEN_2022_PROGRAM_ID.toBase58()
-    || policy.tokenDecimals !== 6
-    || canonicalMint !== policy.mint
-    || BigInt(policy.requiredAtomicAmount) <= 0n
-  ) return null;
-  return policy as ActivePolicy;
+  if (!policy || policy.status === 'planned') return null;
+  try {
+    if (
+      !policy.programId
+      || !policy.configAddress
+      || !policy.requiredAtomicAmount
+      || policy.minimumLockSeconds === null
+      || !Number.isSafeInteger(policy.minimumLockSeconds)
+      || policy.minimumLockSeconds <= 0
+      || policy.minimumLockSeconds > 365 * 24 * 60 * 60
+      || policy.tokenProgram !== TOKEN_2022_PROGRAM_ID.toBase58()
+      || policy.tokenDecimals !== 6
+      || canonicalMint !== policy.mint
+      || BigInt(policy.requiredAtomicAmount) <= 0n
+      || (policy.status === 'active' && (
+        !policy.tokenEndpoint
+        || !walletPolicy.identity.challengeEndpoint
+        || !walletPolicy.identity.verifyEndpoint
+      ))
+    ) return null;
+  } catch {
+    return null;
+  }
+  return policy as ConfiguredPolicy;
 };
 
 const formatAtomic = (amount: bigint, decimals: number): string => {
@@ -251,9 +259,6 @@ export async function mountMatrixAccessStake(
   const response = await fetch('/wallet-policy.json', { cache: 'no-store' });
   if (!response.ok) return;
   const walletPolicy = await response.json() as WalletPolicy;
-  const policy = parseActivePolicy(walletPolicy, getCanonicalMint());
-  if (!policy) return;
-
   const ui: Ui = {
     panel: required('matrix-stake-access'),
     terms: required('matrix-stake-terms'),
@@ -266,6 +271,38 @@ export async function mountMatrixAccessStake(
     tokenField: required('matrix-token-field'),
     tokenInput: required('matrix-create-token'),
   };
+  const advertisedPolicy = walletPolicy.accessStake;
+  if (!advertisedPolicy) return;
+
+  const hideTransactionActions = (): void => {
+    ui.walletButton.hidden = true;
+    ui.stakeButton.hidden = true;
+    ui.claimButton.hidden = true;
+    ui.releaseButton.hidden = true;
+  };
+  const renderUnavailable = (): void => {
+    const isNeal = ui.domainInput.value.trim().toLowerCase() === NEAL_SERVER;
+    ui.panel.hidden = !isNeal;
+    ui.tokenField.hidden = false;
+    ui.tokenInput.required = true;
+    hideTransactionActions();
+    if (!isNeal) return;
+    if (advertisedPolicy.status === 'planned') {
+      ui.terms.textContent = 'REFUNDABLE NEAL STAKE · TERMS PUBLISH BEFORE ACTIVATION';
+      setStatus(ui, 'Stake access is not live yet. If you already have a one-use access token, enter it below.');
+      return;
+    }
+    ui.terms.textContent = 'STAKE ACCESS UNAVAILABLE';
+    setStatus(ui, 'The published staking configuration did not pass browser verification. No transaction can be built. An existing one-use token can still be entered below.', 'bad');
+  };
+
+  const policy = parseConfiguredPolicy(walletPolicy, getCanonicalMint());
+  if (!policy) {
+    ui.domainInput.addEventListener('input', renderUnavailable);
+    renderUnavailable();
+    return;
+  }
+
   const program = new PublicKey(policy.programId);
   const configAddress = new PublicKey(policy.configAddress);
   const mint = new PublicKey(policy.mint);
@@ -273,8 +310,9 @@ export async function mountMatrixAccessStake(
   const connection = new Connection(walletPolicy.holderProof.rpcEndpoint, 'finalized');
   let receipt: ReceiptState | null = null;
   let rendering = false;
+  let accessPaused = policy.status === 'paused';
 
-  const assertConfig = async (): Promise<ConfigState> => {
+  const assertConfig = async (allowPaused = false): Promise<ConfigState> => {
     const state = await readConfig(connection, program, configAddress);
     if (
       !state.mint.equals(mint)
@@ -282,7 +320,9 @@ export async function mountMatrixAccessStake(
       || state.requiredAmount !== requiredAmount
       || state.minimumLockSeconds !== policy.minimumLockSeconds
     ) throw new Error('Published stake terms do not match the finalized on-chain config.');
-    if (state.paused) throw new Error('New access staking is paused. Existing unlocked stakes can still be released.');
+    if (!allowPaused && (policy.status === 'paused' || state.paused)) {
+      throw new Error('New access staking is paused. Existing unlocked stakes can still be released.');
+    }
     return state;
   };
 
@@ -291,8 +331,8 @@ export async function mountMatrixAccessStake(
     rendering = true;
     const isNeal = ui.domainInput.value.trim().toLowerCase() === NEAL_SERVER;
     ui.panel.hidden = !isNeal;
-    ui.tokenField.hidden = isNeal;
-    ui.tokenInput.required = !isNeal;
+    ui.tokenField.hidden = isNeal && !accessPaused;
+    ui.tokenInput.required = !isNeal || accessPaused;
     if (!isNeal) {
       rendering = false;
       return;
@@ -306,21 +346,38 @@ export async function mountMatrixAccessStake(
     ui.releaseButton.hidden = true;
     if (!authentication.address) {
       receipt = null;
-      setStatus(ui, 'Connect the wallet that will own and recover the stake.');
+      ui.walletButton.hidden = false;
+      ui.walletButton.textContent = 'CONNECT WALLET';
+      setStatus(
+        ui,
+        accessPaused
+          ? 'New staking and token claims are paused. Connect only to check or recover an existing stake.'
+          : 'Connect the wallet that will own and recover the stake.',
+      );
       rendering = false;
       return;
     }
     try {
+      const configState = await assertConfig(true);
+      accessPaused = policy.status === 'paused' || configState.paused;
+      ui.tokenField.hidden = !accessPaused;
+      ui.tokenInput.required = accessPaused;
+      ui.walletButton.hidden = accessPaused ? authentication.connected : authentication.serverVerified;
+      ui.walletButton.textContent = accessPaused ? 'CONNECT WALLET' : 'VERIFY WALLET';
       receipt = await readReceipt(connection, program, configAddress, new PublicKey(authentication.address));
-      if (!authentication.serverVerified) {
+      if (!authentication.serverVerified && !accessPaused) {
         setStatus(ui, 'Verify this wallet with the server-issued message before staking.');
       } else if (!receipt) {
-        ui.stakeButton.hidden = false;
-        setStatus(ui, 'No receipt exists for this wallet. Review the terms, then stake.', 'idle');
+        if (accessPaused) {
+          setStatus(ui, 'New staking and token claims are paused. No active stake receipt was found for this wallet.');
+        } else {
+          ui.stakeButton.hidden = false;
+          setStatus(ui, 'No receipt exists for this wallet. Review the terms, then stake.', 'idle');
+        }
       } else if (receipt.released) {
         setStatus(ui, 'This wallet already used and released its receipt. A receipt cannot be reused.', 'bad');
       } else {
-        ui.claimButton.hidden = Boolean(ui.tokenInput.value);
+        ui.claimButton.hidden = accessPaused || Boolean(ui.tokenInput.value);
         ui.claimButton.textContent = receipt.claimedAt > 0 ? 'GET ACCESS TOKEN' : 'CLAIM ACCESS TOKEN';
         ui.releaseButton.hidden = false;
         const secondsLeft = Math.max(0, receipt.unlockAt - Math.floor(Date.now() / 1000));
@@ -330,15 +387,19 @@ export async function mountMatrixAccessStake(
           : 'UNSTAKE NEAL';
         setStatus(
           ui,
-          ui.tokenInput.value
-            ? 'One-use access token ready. Choose a username and password to create the account.'
-            : receipt.claimedAt > 0
-              ? 'Finalized claim found. Request its one-use access token.'
-              : 'Stake finalized. Claim once to request the one-use access token.',
+          accessPaused
+            ? 'New token claims are paused. This stake can still be refunded when its displayed lock ends.'
+            : ui.tokenInput.value
+              ? 'One-use access token ready. Choose a username and password to create the account.'
+              : receipt.claimedAt > 0
+                ? 'Finalized claim found. Request its one-use access token.'
+                : 'Stake finalized. Claim once to request the one-use access token.',
           ui.tokenInput.value ? 'good' : 'idle',
         );
       }
     } catch (error) {
+      ui.tokenField.hidden = false;
+      ui.tokenInput.required = true;
       setStatus(ui, error instanceof Error ? error.message : 'Could not read the finalized stake state.', 'bad');
     } finally {
       rendering = false;
@@ -347,6 +408,10 @@ export async function mountMatrixAccessStake(
 
   ui.walletButton.addEventListener('click', () => {
     void (async () => {
+      if (accessPaused && !walletController.getAuthenticationState().connected) {
+        walletController.openWalletPicker();
+        return;
+      }
       ui.walletButton.disabled = true;
       setStatus(ui, 'Waiting for wallet verification…', 'busy');
       try {
@@ -413,6 +478,10 @@ export async function mountMatrixAccessStake(
 
   ui.claimButton.addEventListener('click', () => {
     void (async () => {
+      if (policy.status !== 'active' || !policy.tokenEndpoint) {
+        setStatus(ui, 'New access-token claims are paused. Existing unlocked stakes can still be released.', 'bad');
+        return;
+      }
       const session = walletController.getTransactionSession();
       if (!session || !walletController.getAuthenticationState().serverVerified) {
         setStatus(ui, 'Connect and server-verify the staking wallet first.', 'bad');

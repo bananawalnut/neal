@@ -92,12 +92,15 @@ supplies that token, username, and password directly to the NEAL homeserver
 from the browser client. Salix remains the self-service, no-email federated
 fallback. NEAL and Vercel receive and store none of those values.
 
-The additive `accessStake` wallet policy is currently `planned`, so the site
-does not show a staking control or prompt for a transaction. Once a reviewed
-program/config and issuer are deployed and the policy is explicitly set to
-`active`, the NEAL provider panel can authenticate a wallet with server-issued
-SIWS, stake the published amount, record a one-time finalized claim, and fetch
-the resulting 15-minute/one-use token. The stake is refundable after its
+The additive `accessStake` wallet policy is currently `planned`. The NEAL
+provider panel shows that state and keeps the existing one-use-token field
+available, but it does not offer a wallet signature or construct a transaction.
+Once a reviewed program/config and issuer are deployed and the policy is
+explicitly set to `active`, the same panel can authenticate a wallet with
+server-issued SIWS, stake the published amount, record a one-time finalized
+claim, and place the resulting 15-minute/one-use token into the registration
+flow. A `paused` policy blocks new stakes and claims while continuing to expose
+eligible refunds for existing receipts. The stake is refundable after its
 snapshotted lock and the Matrix account remains valid after release. The issuer
 never receives the user's Matrix username or password.
 Other providers remain selectable when they expose a standard browser
