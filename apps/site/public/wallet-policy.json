@@ -22,5 +22,16 @@
     "commitment": "finalized",
     "mintSource": "/launch-record.json",
     "minimumAtomicBalance": "1"
+  },
+  "accessStake": {
+    "status": "planned",
+    "programId": null,
+    "configAddress": null,
+    "mint": "8JBYSxrFRMf1Y4NcbjyEsxGPFe4AXzHXELmXh4WYDCBE",
+    "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "tokenDecimals": 6,
+    "requiredAtomicAmount": null,
+    "minimumLockSeconds": null,
+    "tokenEndpoint": null
   }
 }

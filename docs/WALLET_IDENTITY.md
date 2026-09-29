@@ -49,6 +49,28 @@ Until `identity.challengeEndpoint` and `identity.verifyEndpoint` are populated i
 
 No address, signature, or holder balance is written to browser storage. The Mobile Wallet Adapter authorization cache is also memory-only. An HTTP-only session cookie may later hold an opaque session capability; it must not contain profile data or private keys.
 
+## Matrix access stake
+
+`accessStake` is optional and inactive by default. `planned` and `paused` are
+non-signing states. The account form enables its transaction controls only when
+the policy is `active`, the launch record's canonical mint matches, both SIWS
+endpoints and the access-token endpoint exist, and the finalized program config
+matches every published term.
+
+The connected wallet creates one config/wallet receipt, moves the configured
+atomic NEAL amount into a Token-2022 vault controlled by that receipt PDA, and
+submits a one-time `ClaimAccess` instruction. The issuer authenticates the same
+wallet, derives that receipt, and verifies its active claimed state and funded
+vault at `finalized`. A SQLite reservation is committed before Synapse is
+called. The resulting registration token allows one use and expires after 15
+minutes. The browser places it into the existing Matrix registration flow; the
+issuer never sees the selected Matrix username or password.
+
+The receipt snapshots its amount and unlock time. The wallet can return the
+entire vault after the minimum lock, even if the authority pauses new activity.
+The receipt stays on-chain and cannot issue another token. The Matrix account
+continues to exist after the stake is released.
+
 ## Holder proof
 
 The canonical mint comes only from `neal.public-record/v1`. Before that record is launched and contains both mint and creation transaction, holder proof is disabled.

@@ -32,4 +32,5 @@ infra/nostr-relay/*.receipt.json
 infra/neal-matrix-vps/runtime/
 infra/neal-matrix-vps/*.age
 infra/neal-matrix-vps/*.dump
+infra/neal-access-issuer/data/
 .vercel

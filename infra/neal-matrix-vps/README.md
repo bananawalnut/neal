@@ -13,7 +13,7 @@ Linux; the migration uses a portable logical dump.
 - PostgreSQL 16
 - Caddy TLS on ports 80/443
 - no public Synapse admin API
-- no-email account creation, guarded by short-lived registration tokens
+- no-email account creation, guarded by short-lived access tokens
 - public, plaintext GC reads through a fixed Caddy route; sign-in and room
   membership remain required to post
 - `nealtheseal.org` remains on Vercel
@@ -64,7 +64,7 @@ credential. Then run `verify_public.sh`, update NEAL's native registration
 ## Registration
 
 The server accepts no-email registrations only when the user presents a
-short-lived registration token. Generate one on the VPS:
+short-lived access token. Generate one on the VPS:
 
 ```bash
 python3 /srv/neal-matrix/create_registration_token.py --uses 1 --minutes 15
@@ -99,8 +99,9 @@ Both paths require the exact `https://nealtheseal.org` browser origin and a
 valid Synapse administrator access token. They return `no-store`, expose no
 write method, and do not weaken the existing `/_synapse/admin/*` public block.
 The portal reads room policy and membership through ordinary authenticated
-Matrix Client API routes. Never add a generic admin proxy or a credential to
-the public site bundle.
+Matrix Client API routes. It shows pending knock requests without exposing an
+approval or rejection control. Never add a generic admin proxy or a credential
+to the public site bundle.
 
 ## Backups and rollback
 

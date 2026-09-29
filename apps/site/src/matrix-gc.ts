@@ -55,6 +55,7 @@ type ClientUi = {
   passwordInput: HTMLInputElement;
   loginButton: HTMLButtonElement;
   loginToggle: HTMLButtonElement;
+  createToggle: HTMLButtonElement;
   ssoLoginButton: HTMLButtonElement;
   createForm: HTMLFormElement;
   createDomainInput: HTMLInputElement;
@@ -532,6 +533,7 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
   ui.entryTabs.hidden = true;
   ui.loginForm.hidden = true;
   ui.loginToggle.hidden = true;
+  ui.createToggle.hidden = true;
   ui.createForm.hidden = true;
   ui.sessionPanel.hidden = false;
   ui.logoutButton.hidden = false;
@@ -567,6 +569,7 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
     sessionStorage.removeItem(SESSION_KEY);
     ui.loginForm.hidden = false;
     ui.loginToggle.hidden = false;
+    ui.createToggle.hidden = false;
     ui.publicMessages.hidden = false;
     ui.sessionPanel.hidden = true;
     ui.logoutButton.hidden = true;
@@ -707,25 +710,25 @@ const completeNativeRegistration = async (
     && flow.stages.includes('m.login.dummy')
   ));
   if (!supportsTokenFlow) {
-    throw new Error('That homeserver does not offer NEAL\'s email-free token registration flow.');
+    throw new Error('That homeserver does not offer NEAL\'s access-token registration flow.');
   }
 
   const tokenStage = await registrationRequest(baseUrl, {
-    ...registrationBody,
-    auth: {
-      type: 'm.login.registration_token',
-      token,
-      session: uiaSession,
-    },
-  });
+      ...registrationBody,
+      auth: {
+        type: 'm.login.registration_token',
+        token,
+        session: uiaSession,
+      },
+    });
   session = registrationSession(tokenStage.payload, baseUrl);
   if (!session) {
     if (tokenStage.response.status !== 401) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The homeserver rejected that registration token.');
+      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The homeserver rejected that access token.');
     }
     const completed = Array.isArray(tokenStage.payload.completed) ? tokenStage.payload.completed : [];
     if (!completed.includes('m.login.registration_token')) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The one-use registration token was not accepted.');
+      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The one-use access token was not accepted.');
     }
     const finalStage = await registrationRequest(baseUrl, {
       ...registrationBody,
@@ -810,6 +813,7 @@ export const mountMatrixGc = (): void => {
     passwordInput: required(root, '#matrix-password'),
     loginButton: required(root, '#matrix-login'),
     loginToggle: required(root, '#gc-login-toggle'),
+    createToggle: required(root, '#gc-create-toggle'),
     ssoLoginButton: required(root, '#matrix-sso-login'),
     createForm: required(root, '#matrix-create-form'),
     createDomainInput: required(root, '#matrix-create-domain'),
@@ -914,7 +918,7 @@ export const mountMatrixGc = (): void => {
         if (password !== confirmation) throw new Error('The two passwords do not match.');
         if (!token) {
           throw new Error(domain === 'matrix.nealtheseal.org'
-            ? 'Enter a one-use NEAL invite token.'
+            ? 'Enter a one-use NEAL access token.'
             : 'Get a one-use registration token from Salix first.');
         }
         const sdk = await loadSdk();
@@ -1003,7 +1007,9 @@ export const mountMatrixGc = (): void => {
       showEntryMode(ui, 'login');
       ui.loginForm.hidden = false;
       ui.loginToggle.hidden = false;
+      ui.createToggle.hidden = false;
       ui.loginToggle.setAttribute('aria-expanded', 'false');
+      ui.createToggle.setAttribute('aria-expanded', 'false');
       ui.root.closest('#gc')?.classList.remove('gc-login-open');
       ui.publicMessages.hidden = false;
       ui.sessionPanel.hidden = true;
@@ -1026,7 +1032,9 @@ export const mountMatrixGc = (): void => {
       ui.entryTabs.hidden = false;
       showEntryMode(ui, 'login');
       ui.loginToggle.hidden = false;
+      ui.createToggle.hidden = false;
       ui.loginToggle.setAttribute('aria-expanded', 'false');
+      ui.createToggle.setAttribute('aria-expanded', 'false');
       ui.root.closest('#gc')?.classList.remove('gc-login-open');
       ui.publicMessages.hidden = false;
       startPublicTimeline(ui);

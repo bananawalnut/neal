@@ -54,4 +54,28 @@ A status string never overrides the readiness report. The final signing UI must 
 
 `neal.yahoo-leaderboard/v1` remains an empty compatibility artifact for a possible future indexed mode. In local mode it publishes `mode: local_free`, `scope: this_browser`, and `futureOnChainPolicyStatus: undecided`; site consumers derive current records from local storage rather than seeding the public artifact with local clicks.
 
-`neal.wallet-challenge-request/v1` and `neal.wallet-verification/v1` are the future server boundary. The challenge producer must issue a single-use, address-bound SIWS nonce. The verifier must validate the domain, URI, chain, address, nonce, issue time, expiry, Ed25519 signature, and nonce consumption before creating a session. See `WALLET_IDENTITY.md` for exact flow and compatibility rules.
+`neal.wallet-challenge-request/v1` and `neal.wallet-verification/v1` are the
+server authentication boundary. The challenge producer must issue a
+single-use, address-bound SIWS nonce. The verifier must validate the domain,
+URI, chain, address, nonce, issue time, expiry, Ed25519 signature, and nonce
+consumption before creating a session. The implementation remains inactive
+until its public endpoints are populated in policy. See `WALLET_IDENTITY.md`
+for exact flow and compatibility rules.
+
+`wallet-policy.json.accessStake` is an additive optional member of
+`neal.wallet-policy/v1`. Its lifecycle is `planned | active | paused`. It
+publishes the exact program, config PDA, canonical mint, Token-2022 program,
+decimals, integer atomic amount, minimum lock seconds, and token endpoint. All
+deployment-dependent values remain nullable while `planned`. A consumer may
+enable staking only when status is `active`, every value is populated, the
+canonical launch mint matches, server-backed identity endpoints are populated,
+and the finalized on-chain config exactly matches the policy. Older consumers
+that ignore this member continue to support manually supplied registration
+tokens.
+
+`neal.matrix-access-token-request/v1` contains no Matrix username or password.
+It is authenticated by the opaque SIWS session cookie. A successful response
+uses `neal.matrix-access-token/v1` and returns one Synapse registration token,
+its millisecond expiry, and the finalized receipt address. The issuer ledger
+enforces one token per receipt and may return the same unexpired token after a
+safe retry; it must never mint a second token for that receipt.

@@ -34,8 +34,8 @@ to the selected homeserver. NEAL and Vercel expose no login backend.
 The current beta client supports:
 
 - password login using a short NEAL username or a full federated Matrix ID;
-- email-free NEAL and Salix account creation through one-use
-  registration-token flows, completed directly inside NEAL;
+- email-free NEAL and Salix account creation through one-use access-token
+  flows, completed directly inside NEAL;
 - Matrix.org and other compatible providers through their advertised SSO
   registration flows when selected;
 - SSO login through any homeserver advertising `m.login.sso` or `m.login.cas`;
@@ -75,15 +75,31 @@ requires a valid Synapse administrator token, returns `no-store`, and maps to
 one fixed read-only Synapse endpoint. Other origins, write methods, and the raw
 `/_synapse/admin/*` surface remain blocked. The monitor reads canonical-room
 policy and membership through ordinary authenticated Matrix Client API routes.
+Pending knock requests are listed with only their Matrix ID, homeserver,
+request time, and waiting state; the monitor cannot approve or reject them.
 Hermes publishes a credential-free `org.neal.hermes.health` room state event;
 the monitor treats it as stale after 150 seconds.
 
+For local development, Vite proxies only the two fixed monitor paths through
+the loopback-bound dev server and supplies the production origin upstream.
+Other Matrix client calls still go directly to the homeserver. This keeps the
+production CORS allowlist unchanged while making local administrator sign-in
+testable.
+
 `matrix.nealtheseal.org` is the default account provider. It requires no email
-or phone number and accepts only short-lived, one-use registration tokens.
-Tokens are issued by a NEAL moderator during the initial invite-only phase; the
-user supplies that token, username, and password directly to the NEAL
-homeserver from the browser client. Salix remains the self-service, no-email
-federated fallback. NEAL and Vercel receive and store none of those values.
+or phone number and accepts only short-lived, one-use access tokens. The user
+supplies that token, username, and password directly to the NEAL homeserver
+from the browser client. Salix remains the self-service, no-email federated
+fallback. NEAL and Vercel receive and store none of those values.
+
+The additive `accessStake` wallet policy is currently `planned`, so the site
+does not show a staking control or prompt for a transaction. Once a reviewed
+program/config and issuer are deployed and the policy is explicitly set to
+`active`, the NEAL provider panel can authenticate a wallet with server-issued
+SIWS, stake the published amount, record a one-time finalized claim, and fetch
+the resulting 15-minute/one-use token. The stake is refundable after its
+snapshotted lock and the Matrix account remains valid after release. The issuer
+never receives the user's Matrix username or password.
 Other providers remain selectable when they expose a standard browser
 registration flow. Existing accounts from any discoverable homeserver remain
 supported. As verified on 2026-09-02, Matrix.org's current registration page

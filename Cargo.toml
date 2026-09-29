@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/launch-guard", "crates/launch-wasm", "programs/bounty-factory"]
+members = ["crates/launch-guard", "crates/launch-wasm", "programs/access-stake", "programs/bounty-factory"]
 resolver = "2"
 
 [workspace.package]
