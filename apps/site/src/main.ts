@@ -350,7 +350,7 @@ app.innerHTML = `
             <button id="matrix-tab-create" type="button" role="tab" aria-selected="false" aria-controls="matrix-create-form">CREATE AN ACCOUNT</button>
           </div>
           <button class="gc-login-toggle" id="gc-login-toggle" type="button" aria-expanded="false" aria-controls="matrix-login-form"><strong>SIGN IN TO SEND A MESSAGE</strong><span>Reading is public. Your credentials go directly to your Matrix homeserver.</span></button>
-          <button class="gc-create-toggle" id="gc-create-toggle" type="button" aria-expanded="false" aria-controls="matrix-create-form"><strong>CREATE A NEAL ACCOUNT</strong><span>No email or phone. Use a short-lived, one-use access token.</span></button>
+          <button class="gc-create-toggle" id="gc-create-toggle" type="button" aria-expanded="false" aria-controls="matrix-create-form"><strong>CREATE A NEAL ACCOUNT</strong><span>No email or phone. Stake NEAL to claim a short-lived, one-use access token.</span></button>
           <form class="matrix-login" id="matrix-login-form">
             <label><span>USERNAME OR MATRIX ID</span><input id="matrix-user-id" type="text" inputmode="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="neal or @you:matrix.org" required /></label>
             <label><span>PASSWORD</span><input id="matrix-password" type="password" autocomplete="current-password" placeholder="Your Matrix password" required /></label>
@@ -362,10 +362,10 @@ app.innerHTML = `
           </form>
           <form class="matrix-create" id="matrix-create-form" hidden>
             <label><span>ACCOUNT PROVIDER</span><input id="matrix-create-domain" type="text" inputmode="url" autocomplete="url" spellcheck="false" value="matrix.nealtheseal.org" list="matrix-provider-options" required /><datalist id="matrix-provider-options"><option value="matrix.nealtheseal.org"></option><option value="salix.host"></option><option value="matrix.org"></option><option value="unredacted.org"></option></datalist></label>
-            <div class="matrix-provider-default"><strong>DEFAULT · MATRIX.NEALTHESEAL.ORG</strong><span>No email or phone. NEAL accounts use a short-lived, one-use access token and are created directly on our always-online homeserver.</span></div>
+            <div class="matrix-provider-default"><strong>DEFAULT · MATRIX.NEALTHESEAL.ORG</strong><span>No email or phone. Account access uses a refundable NEAL stake and a short-lived, one-use token.</span></div>
             <div class="matrix-native-register" id="matrix-native-register">
               <section class="matrix-stake-access" id="matrix-stake-access" hidden aria-labelledby="matrix-stake-title">
-                <div><strong id="matrix-stake-title">GET A ONE-USE ACCESS TOKEN</strong><span id="matrix-stake-terms">Stake terms load from the finalized on-chain config.</span></div>
+                <div><strong id="matrix-stake-title">STAKE NEAL FOR ACCOUNT ACCESS</strong><span id="matrix-stake-terms">Stake terms load from the finalized on-chain config.</span></div>
                 <p id="matrix-stake-status" role="status">Connect and verify the wallet that will hold the stake.</p>
                 <div class="matrix-stake-actions">
                   <button id="matrix-stake-wallet" type="button">CONNECT WALLET</button>
@@ -373,7 +373,7 @@ app.innerHTML = `
                   <button id="matrix-stake-claim" type="button" hidden>CLAIM ACCESS TOKEN</button>
                   <button id="matrix-stake-release" type="button" hidden>UNSTAKE NEAL</button>
                 </div>
-                <small>The stake is refundable after the displayed lock. One wallet/config receipt can issue one token. Creating an account does not store your wallet in Matrix.</small>
+                <small>When active, the stake is refundable after the displayed lock. One wallet/config receipt can issue one token. Creating an account does not store your wallet in Matrix.</small>
               </section>
               <div class="matrix-native-grid">
                 <label><span>NEW USERNAME</span><input id="matrix-create-username" type="text" autocomplete="username" spellcheck="false" placeholder="YOUR_MATRIX_NAME" /></label>

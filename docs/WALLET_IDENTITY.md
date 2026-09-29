@@ -51,11 +51,13 @@ No address, signature, or holder balance is written to browser storage. The Mobi
 
 ## Matrix access stake
 
-`accessStake` is optional and inactive by default. `planned` and `paused` are
-non-signing states. The account form enables its transaction controls only when
-the policy is `active`, the launch record's canonical mint matches, both SIWS
-endpoints and the access-token endpoint exist, and the finalized program config
-matches every published term.
+`accessStake` is optional and inactive by default. `planned` is a non-signing
+state that remains visible in the account form. `paused` blocks new stake and
+claim signatures but still permits an existing unlocked receipt to be released.
+The account form enables stake and claim controls only when the policy is
+`active`, the launch record's canonical mint matches, both SIWS endpoints and
+the access-token endpoint exist, and the finalized program config matches every
+published term.
 
 The connected wallet creates one config/wallet receipt, moves the configured
 atomic NEAL amount into a Token-2022 vault controlled by that receipt PDA, and
