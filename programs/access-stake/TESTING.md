@@ -25,5 +25,5 @@ Before any mainnet deployment, additionally record:
 - pause and user-unstake incident drills.
 
 The executable sequence and fail-closed policy staging command are documented
-in [DEPLOYMENT.md](DEPLOYMENT.md). The production amount and lock must be
-approved explicitly; test fixture values are not deployment defaults.
+in [DEPLOYMENT.md](DEPLOYMENT.md). The approved production amount and lock are
+recorded there; test fixture values remain non-authoritative.

@@ -1,8 +1,11 @@
 # Access stake deployment and activation
 
-There are no production defaults for the stake amount or lock duration. Values
-used by tests are fixtures, not approved economics. Record the selected atomic
-amount, human-readable NEAL amount, and minimum lock before creating a config.
+The approved production terms are **69,000 NEAL**, represented as
+`69000000000` atomic units at six decimals, with a fixed **90-day** minimum
+lock, represented as `7776000` seconds. “Three months” is deliberately encoded
+as a fixed 90-day interval because the on-chain config stores seconds rather
+than calendar dates. Deployment commands still require these values explicitly;
+test fixtures and script invocations are not implicit production defaults.
 
 Activation is intentionally split into independently verifiable stages.
 

@@ -30,8 +30,8 @@
     "mint": "8JBYSxrFRMf1Y4NcbjyEsxGPFe4AXzHXELmXh4WYDCBE",
     "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
     "tokenDecimals": 6,
-    "requiredAtomicAmount": null,
-    "minimumLockSeconds": null,
+    "requiredAtomicAmount": "69000000000",
+    "minimumLockSeconds": 7776000,
     "tokenEndpoint": null
   }
 }
