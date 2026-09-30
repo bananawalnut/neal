@@ -79,6 +79,10 @@ is available. A `paused` consumer must block new stake and claim actions without
 hiding an eligible receipt's `Unstake` path or rejecting an already issued,
 unexpired token supplied through the compatibility fallback.
 
+Approved amount and lock values may be published while `planned` so users can
+review the intended terms. Their presence does not authorize transactions or
+relax any program, config, identity, issuer, or finalized-chain activation gate.
+
 The reviewed producer path for an `active` value is
 `scripts/stage-access-stake-policy.mjs`. It refuses to write until the canonical
 mint, executable program, config PDA, decoded finalized terms, revoked mint and

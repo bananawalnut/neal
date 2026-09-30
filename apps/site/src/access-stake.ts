@@ -131,6 +131,22 @@ const formatDuration = (seconds: number): string => {
   return `${seconds.toLocaleString()} SECONDS`;
 };
 
+const formatPlannedTerms = (policy: AccessStakePolicy): string | null => {
+  try {
+    if (
+      policy.requiredAtomicAmount === null
+      || policy.minimumLockSeconds === null
+      || !Number.isSafeInteger(policy.minimumLockSeconds)
+      || policy.minimumLockSeconds <= 0
+    ) return null;
+    const amount = BigInt(policy.requiredAtomicAmount);
+    if (amount <= 0n) return null;
+    return `${formatAtomic(amount, policy.tokenDecimals)} NEAL · ${formatDuration(policy.minimumLockSeconds)} MINIMUM LOCK · NOT LIVE`;
+  } catch {
+    return null;
+  }
+};
+
 const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 
@@ -322,9 +338,15 @@ export async function mountMatrixAccessStake(
       return;
     }
     if (advertisedPolicy.status === 'planned') {
+      const plannedTerms = formatPlannedTerms(advertisedPolicy);
       registrationBlockLabel = 'STAKING ACCESS NOT LIVE YET';
-      ui.terms.textContent = 'REFUNDABLE NEAL STAKE · TERMS PUBLISH BEFORE ACTIVATION';
-      setStatus(ui, 'Stake access is not live yet. NEAL account creation will unlock here after activation.');
+      ui.terms.textContent = plannedTerms ?? 'REFUNDABLE NEAL STAKE · TERMS PUBLISH BEFORE ACTIVATION';
+      setStatus(
+        ui,
+        plannedTerms
+          ? 'Stake terms are approved, but access is not live until the reviewed program and issuer are deployed.'
+          : 'Stake access is not live yet. NEAL account creation will unlock here after activation.',
+      );
       syncRegistrationGate();
       return;
     }
