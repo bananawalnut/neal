@@ -302,12 +302,18 @@ export async function mountMatrixAccessStake(
     if (!isNealProvider()) {
       manualTokenMode = false;
       ui.manualTokenButton.hidden = true;
+      ui.manualTokenButton.textContent = 'USE AN EXISTING TOKEN';
+      ui.manualTokenButton.setAttribute('aria-expanded', 'false');
       return;
     }
     const accessReady = Boolean(ui.tokenInput.value.trim());
     ui.tokenField.hidden = !manualTokenMode;
     ui.tokenInput.required = manualTokenMode;
-    ui.manualTokenButton.hidden = manualTokenMode || accessReady;
+    ui.manualTokenButton.hidden = !manualTokenMode && accessReady;
+    ui.manualTokenButton.textContent = manualTokenMode
+      ? 'BACK TO STAKE ACCESS'
+      : 'USE AN EXISTING TOKEN';
+    ui.manualTokenButton.setAttribute('aria-expanded', String(manualTokenMode));
     ui.createButton.disabled = !accessReady;
     ui.createButton.textContent = accessReady
       ? 'CREATE EMAIL-FREE MATRIX ACCOUNT'
@@ -317,6 +323,13 @@ export async function mountMatrixAccessStake(
   };
 
   ui.manualTokenButton.addEventListener('click', () => {
+    if (manualTokenMode) {
+      manualTokenMode = false;
+      ui.tokenInput.value = '';
+      syncRegistrationGate();
+      ui.manualTokenButton.focus();
+      return;
+    }
     manualTokenMode = true;
     syncRegistrationGate();
     ui.tokenInput.focus();
