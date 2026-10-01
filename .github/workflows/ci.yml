@@ -110,7 +110,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install issuer dependencies
-        run: python -m pip install --only-binary=:all: --require-hashes --requirement requirements-deploy.txt
+        run: "python -m pip install --only-binary=:all: --require-hashes --requirement requirements-deploy.txt"
         working-directory: infra/neal-access-issuer
 
       - name: Run issuer tests
