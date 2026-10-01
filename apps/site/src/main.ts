@@ -372,7 +372,7 @@ app.innerHTML = `
                   <button id="matrix-stake-submit" type="button" hidden>STAKE NEAL</button>
                   <button id="matrix-stake-claim" type="button" hidden>CLAIM ACCESS TOKEN</button>
                   <button id="matrix-stake-release" type="button" hidden>UNSTAKE NEAL</button>
-                  <button class="matrix-secondary" id="matrix-stake-manual-token" type="button" hidden>USE AN EXISTING TOKEN</button>
+                  <button class="matrix-secondary" id="matrix-stake-manual-token" type="button" aria-controls="matrix-token-field" aria-expanded="false" hidden>USE AN EXISTING TOKEN</button>
                 </div>
                 <small>When active, the stake is refundable after the displayed lock. One wallet/config receipt can issue one token. Creating an account does not store your wallet in Matrix.</small>
               </section>
