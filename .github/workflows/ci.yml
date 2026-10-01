@@ -83,7 +83,7 @@ jobs:
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
       - name: Build access-stake SBF
-        run: cargo build-sbf --manifest-path programs/access-stake/Cargo.toml --locked
+        run: cargo build-sbf --manifest-path programs/access-stake/Cargo.toml -- --locked
 
       - name: Record reviewed artifact hash
         run: sha256sum target/deploy/neal_access_stake.so | tee target/deploy/neal_access_stake.sha256
