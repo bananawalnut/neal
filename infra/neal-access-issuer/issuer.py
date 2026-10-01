@@ -15,26 +15,33 @@ import sqlite3
 import stat
 import struct
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from http import HTTPStatus
 from http.cookies import SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+CHAIN_GENESIS = {
+    "solana:mainnet": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "solana:devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+}
 CONFIG_DISCRIMINATOR = b"NEALACFG"
 STAKE_DISCRIMINATOR = b"NEALSTAK"
 PDA_MARKER = b"ProgramDerivedAddress"
 COOKIE_NAME = "neal_access_session"
 MAX_BODY = 32_768
+MAX_DATABASE_BYTES = 128 * 1024 * 1024
 B58_ALPHABET = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 B58_INDEX = {character: index for index, character in enumerate(B58_ALPHABET)}
 
@@ -151,10 +158,18 @@ def siws_message(sign_in: dict[str, Any]) -> bytes:
 @dataclasses.dataclass(frozen=True)
 class Settings:
     database: Path
-    rpc_url: str
+    rpc_urls: tuple[str, ...]
+    chain_id: str
+    genesis_hash: str
     program_id: str
+    program_data_address: str
+    program_sha256: str
     config_address: str
     mint: str
+    expected_revision: int
+    expected_amount: int
+    expected_lock_seconds: int
+    issuer_keypair_file: Path
     public_origin: str
     matrix_url: str
     matrix_secret_file: Path
@@ -176,10 +191,18 @@ class Settings:
         socket_value = os.environ.get("NEAL_ACCESS_SOCKET", "").strip()
         settings = cls(
             database=Path(required("NEAL_ACCESS_DATABASE")),
-            rpc_url=required("NEAL_ACCESS_SOLANA_RPC"),
+            rpc_urls=tuple(part.strip() for part in required("NEAL_ACCESS_SOLANA_RPCS").split(",") if part.strip()),
+            chain_id=required("NEAL_ACCESS_CHAIN_ID"),
+            genesis_hash=required("NEAL_ACCESS_SOLANA_GENESIS_HASH"),
             program_id=required("NEAL_ACCESS_PROGRAM_ID"),
+            program_data_address=required("NEAL_ACCESS_PROGRAM_DATA_ADDRESS"),
+            program_sha256=required("NEAL_ACCESS_PROGRAM_SHA256").lower(),
             config_address=required("NEAL_ACCESS_CONFIG_ADDRESS"),
             mint=required("NEAL_ACCESS_MINT"),
+            expected_revision=int(required("NEAL_ACCESS_EXPECTED_REVISION")),
+            expected_amount=int(required("NEAL_ACCESS_EXPECTED_AMOUNT")),
+            expected_lock_seconds=int(required("NEAL_ACCESS_EXPECTED_LOCK_SECONDS")),
+            issuer_keypair_file=Path(required("NEAL_ACCESS_ISSUER_KEYPAIR_FILE")),
             public_origin=required("NEAL_ACCESS_PUBLIC_ORIGIN").rstrip("/"),
             matrix_url=os.environ.get("NEAL_ACCESS_MATRIX_URL", "http://127.0.0.1:8008").rstrip("/"),
             matrix_secret_file=Path(required("NEAL_ACCESS_MATRIX_SECRET_FILE")),
@@ -187,23 +210,42 @@ class Settings:
             port=int(os.environ.get("NEAL_ACCESS_PORT", "8792")),
             socket_path=Path(socket_value) if socket_value else None,
         )
-        for value in (settings.program_id, settings.config_address, settings.mint):
+        for value in (settings.program_id, settings.program_data_address, settings.config_address, settings.mint):
             public_key(value)
+        if settings.chain_id not in CHAIN_GENESIS or settings.genesis_hash != CHAIN_GENESIS[settings.chain_id]:
+            raise IssuerError("Chain ID and genesis hash are not an approved pair", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if len(settings.program_sha256) != 64 or any(character not in "0123456789abcdef" for character in settings.program_sha256):
+            raise IssuerError("NEAL_ACCESS_PROGRAM_SHA256 must be a lowercase SHA-256", HTTPStatus.INTERNAL_SERVER_ERROR)
         origin = urllib.parse.urlsplit(settings.public_origin)
         if origin.scheme != "https" or not origin.netloc or origin.path not in {"", "/"} or origin.query or origin.fragment:
             raise IssuerError("NEAL_ACCESS_PUBLIC_ORIGIN must be an HTTPS origin", HTTPStatus.INTERNAL_SERVER_ERROR)
-        rpc = urllib.parse.urlsplit(settings.rpc_url)
-        if rpc.scheme != "https" or not rpc.netloc:
-            raise IssuerError("NEAL_ACCESS_SOLANA_RPC must use HTTPS", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if len(settings.rpc_urls) < 2:
+            raise IssuerError("At least two independent Solana RPCs are required", HTTPStatus.INTERNAL_SERVER_ERROR)
+        for rpc_url in settings.rpc_urls:
+            rpc = urllib.parse.urlsplit(rpc_url)
+            if rpc.scheme != "https" or not rpc.netloc:
+                raise IssuerError("NEAL_ACCESS_SOLANA_RPCS must use HTTPS", HTTPStatus.INTERNAL_SERVER_ERROR)
         matrix = urllib.parse.urlsplit(settings.matrix_url)
         if matrix.scheme != "http" or matrix.hostname not in {"127.0.0.1", "::1", "localhost"}:
             raise IssuerError("NEAL_ACCESS_MATRIX_URL must use loopback HTTP", HTTPStatus.INTERNAL_SERVER_ERROR)
-        if not settings.database.is_absolute() or (settings.socket_path and not settings.socket_path.is_absolute()):
-            raise IssuerError("Database and socket paths must be absolute", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if (
+            not settings.database.is_absolute()
+            or not settings.issuer_keypair_file.is_absolute()
+            or (settings.socket_path and not settings.socket_path.is_absolute())
+        ):
+            raise IssuerError("Database, keypair, and socket paths must be absolute", HTTPStatus.INTERNAL_SERVER_ERROR)
         if settings.socket_path is None and settings.bind not in {"127.0.0.1", "::1"}:
             raise IssuerError("Issuer must bind to loopback", HTTPStatus.INTERNAL_SERVER_ERROR)
         if not settings.matrix_secret_file.is_file() or not os.access(settings.matrix_secret_file, os.R_OK):
             raise IssuerError("Matrix registration secret is unavailable", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if not settings.issuer_keypair_file.is_file() or not os.access(settings.issuer_keypair_file, os.R_OK):
+            raise IssuerError("Issuer keypair is unavailable", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if (
+            settings.expected_revision < 0
+            or settings.expected_amount <= 0
+            or not 1 <= settings.expected_lock_seconds <= 365 * 24 * 60 * 60
+        ):
+            raise IssuerError("Approved stake terms are invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
         if settings.token_ttl_minutes > 15:
             raise IssuerError("Registration token TTL exceeds 15 minutes", HTTPStatus.INTERNAL_SERVER_ERROR)
         return settings
@@ -243,12 +285,38 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS rate_events (key TEXT NOT NULL, occurred_at INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS rate_events_lookup ON rate_events(key, occurred_at);
+                CREATE INDEX IF NOT EXISTS challenges_expiry ON challenges(expires_at, used_at);
+                CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+                CREATE TABLE IF NOT EXISTS admin_cleanups (
+                  user_id TEXT PRIMARY KEY, registration_token TEXT,
+                  created_at INTEGER NOT NULL, resolved_at INTEGER, error TEXT
+                );
                 """
             )
+            columns = {
+                row[1] for row in database.execute("PRAGMA table_info(claims)").fetchall()
+            }
+            if "chain_consumed_at" not in columns:
+                database.execute("ALTER TABLE claims ADD COLUMN chain_consumed_at INTEGER")
+
+    def enforce_storage_limit(self) -> None:
+        total = sum(
+            candidate.stat().st_size
+            for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm"))
+            if candidate.exists()
+        )
+        if total >= MAX_DATABASE_BYTES:
+            raise IssuerError("Issuer storage limit reached", HTTPStatus.SERVICE_UNAVAILABLE)
+
+    def prune_ephemeral(self, database: sqlite3.Connection, now: int) -> None:
+        database.execute("DELETE FROM challenges WHERE expires_at < ? OR used_at IS NOT NULL", (now,))
+        database.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
 
     def rate_limit(self, key: str, limit: int, window_seconds: int) -> None:
+        self.enforce_storage_limit()
         now = int(time.time())
         with self.connection() as database:
+            self.prune_ephemeral(database, now)
             database.execute("DELETE FROM rate_events WHERE occurred_at < ?", (now - 86_400,))
             count = database.execute(
                 "SELECT COUNT(*) FROM rate_events WHERE key = ? AND occurred_at >= ?",
@@ -259,6 +327,7 @@ class Store:
             database.execute("INSERT INTO rate_events VALUES (?, ?)", (key, now))
 
     def create_challenge(self, address: str, message_factory: Callable[[str, str, int, int], bytes], ttl: int) -> tuple[dict[str, Any], bytes]:
+        self.enforce_storage_limit()
         now = int(time.time())
         expires = now + ttl
         nonce = secrets.token_hex(16)
@@ -326,10 +395,75 @@ class Store:
                     raise IssuerError("Token issuance is already pending", HTTPStatus.CONFLICT)
                 raise IssuerError("This stake receipt has already been consumed", HTTPStatus.CONFLICT)
             database.execute(
-                "INSERT INTO claims VALUES (?, ?, 'pending', NULL, NULL, ?, ?, NULL)",
+                """INSERT INTO claims(
+                     receipt, address, state, registration_token, expires_at_ms,
+                     created_at, updated_at, error, chain_consumed_at
+                   ) VALUES (?, ?, 'pending', NULL, NULL, ?, ?, NULL, NULL)""",
                 (receipt, address, now, now),
             )
         return None
+
+    def existing_claim(self, receipt: str, address: str) -> str | None:
+        now_ms = int(time.time()) * 1000
+        with self.connection() as database:
+            row = database.execute("SELECT * FROM claims WHERE receipt = ?", (receipt,)).fetchone()
+        if not row:
+            return None
+        if row["address"] != address:
+            raise IssuerError("Stake receipt belongs to another wallet", HTTPStatus.FORBIDDEN)
+        if row["state"] == "issued" and row["expires_at_ms"] > now_ms:
+            return row["registration_token"]
+        if row["state"] == "pending":
+            raise IssuerError("Token issuance is already pending", HTTPStatus.CONFLICT)
+        raise IssuerError("This stake receipt has already been consumed", HTTPStatus.CONFLICT)
+
+    def mark_chain_consumed(self, receipt: str) -> None:
+        with self.connection() as database:
+            changed = database.execute(
+                "UPDATE claims SET chain_consumed_at = ?, updated_at = ? WHERE receipt = ? AND state = 'pending' AND chain_consumed_at IS NULL",
+                (int(time.time()), int(time.time()), receipt),
+            ).rowcount
+            if changed != 1:
+                raise IssuerError("Claim consumption reservation was lost", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def add_admin_cleanup(self, user_id: str, registration_token: str | None, error: str) -> None:
+        with self.connection() as database:
+            database.execute(
+                "INSERT OR REPLACE INTO admin_cleanups(user_id, registration_token, created_at, resolved_at, error) VALUES (?, ?, ?, NULL, ?)",
+                (user_id, registration_token, int(time.time()), error[:500]),
+            )
+
+    def unresolved_admin_cleanups(self) -> int:
+        with self.connection() as database:
+            return database.execute(
+                "SELECT COUNT(*) FROM admin_cleanups WHERE resolved_at IS NULL"
+            ).fetchone()[0]
+
+    def pending_admin_cleanups(self) -> list[dict[str, Any]]:
+        with self.connection() as database:
+            rows = database.execute(
+                "SELECT user_id, created_at, error FROM admin_cleanups WHERE resolved_at IS NULL ORDER BY created_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def admin_cleanup(self, user_id: str) -> sqlite3.Row:
+        with self.connection() as database:
+            row = database.execute(
+                "SELECT * FROM admin_cleanups WHERE user_id = ? AND resolved_at IS NULL",
+                (user_id,),
+            ).fetchone()
+        if not row:
+            raise IssuerError("Unknown or already-resolved administrator cleanup", HTTPStatus.NOT_FOUND)
+        return row
+
+    def resolve_admin_cleanup(self, user_id: str) -> None:
+        with self.connection() as database:
+            changed = database.execute(
+                "UPDATE admin_cleanups SET resolved_at = ?, error = NULL WHERE user_id = ? AND resolved_at IS NULL",
+                (int(time.time()), user_id),
+            ).rowcount
+        if changed != 1:
+            raise IssuerError("Administrator cleanup state changed", HTTPStatus.CONFLICT)
 
     def finish_claim(self, receipt: str, token: str, expires_at_ms: int) -> None:
         now = int(time.time())
@@ -353,13 +487,27 @@ class SolanaVerifier:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.program = public_key(settings.program_id)
+        self.program_data = public_key(settings.program_data_address)
         self.config_key = public_key(settings.config_address)
         self.mint = public_key(settings.mint)
         self.token_program = public_key(TOKEN_2022_PROGRAM)
+        try:
+            secret = json.loads(settings.issuer_keypair_file.read_text())
+            if not isinstance(secret, list) or len(secret) != 64:
+                raise ValueError("wrong keypair length")
+            raw = bytes(secret)
+        except (OSError, ValueError, TypeError) as error:
+            raise IssuerError("Issuer keypair is invalid", HTTPStatus.INTERNAL_SERVER_ERROR) from error
+        self.issuer_private = Ed25519PrivateKey.from_private_bytes(raw[:32])
+        self.issuer_public = self.issuer_private.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        if not hmac.compare_digest(self.issuer_public, raw[32:]):
+            raise IssuerError("Issuer keypair public key does not match its private seed", HTTPStatus.INTERNAL_SERVER_ERROR)
 
-    def rpc(self, method: str, params: list[Any]) -> Any:
+    def rpc_endpoint(self, url: str, method: str, params: list[Any]) -> Any:
         request = urllib.request.Request(
-            self.settings.rpc_url,
+            url,
             data=json.dumps({"jsonrpc": "2.0", "id": secrets.token_hex(4), "method": method, "params": params}).encode(),
             headers={"Content-Type": "application/json", "Accept": "application/json"},
         )
@@ -371,6 +519,25 @@ class SolanaVerifier:
         if body.get("error") or "result" not in body:
             raise IssuerError("Solana RPC rejected the finalized proof", HTTPStatus.SERVICE_UNAVAILABLE)
         return body["result"]
+
+    @staticmethod
+    def comparable_result(result: Any) -> Any:
+        if isinstance(result, dict) and "context" in result and "value" in result:
+            return result["value"]
+        return result
+
+    def rpc(self, method: str, params: list[Any]) -> Any:
+        results = [self.rpc_endpoint(url, method, params) for url in self.settings.rpc_urls]
+        expected = json.dumps(self.comparable_result(results[0]), sort_keys=True, separators=(",", ":"))
+        if any(
+            json.dumps(self.comparable_result(result), sort_keys=True, separators=(",", ":")) != expected
+            for result in results[1:]
+        ):
+            raise IssuerError("Independent Solana RPCs disagree", HTTPStatus.SERVICE_UNAVAILABLE)
+        return results[0]
+
+    def rpc_primary(self, method: str, params: list[Any]) -> Any:
+        return self.rpc_endpoint(self.settings.rpc_urls[0], method, params)
 
     def account(self, address: str) -> tuple[str, bytes]:
         result = self.rpc("getAccountInfo", [address, {"encoding": "base64", "commitment": "finalized"}])
@@ -385,7 +552,36 @@ class SolanaVerifier:
         except (KeyError, ValueError) as error:
             raise IssuerError("Stake account encoding is invalid", HTTPStatus.SERVICE_UNAVAILABLE) from error
 
+    def program_attestation(self) -> None:
+        program_result = self.rpc("getAccountInfo", [self.settings.program_id, {"encoding": "base64", "commitment": "finalized"}])
+        program_value = program_result.get("value") if isinstance(program_result, dict) else None
+        if not isinstance(program_value, dict) or not program_value.get("executable"):
+            raise IssuerError("Reviewed stake program is not executable", HTTPStatus.SERVICE_UNAVAILABLE)
+        try:
+            program_data = base64.b64decode(program_value["data"][0], validate=True)
+        except (KeyError, ValueError, TypeError) as error:
+            raise IssuerError("Stake program account is invalid", HTTPStatus.SERVICE_UNAVAILABLE) from error
+        if (
+            program_value.get("owner") != "BPFLoaderUpgradeab1e11111111111111111111111"
+            or len(program_data) < 36
+            or struct.unpack_from("<I", program_data, 0)[0] != 2
+            or program_data[4:36] != self.program_data
+        ):
+            raise IssuerError("Stake program does not match reviewed ProgramData", HTTPStatus.SERVICE_UNAVAILABLE)
+        owner, data = self.account(self.settings.program_data_address)
+        if (
+            owner != "BPFLoaderUpgradeab1e11111111111111111111111"
+            or len(data) <= 45
+            or struct.unpack_from("<I", data, 0)[0] != 3
+            or data[12] != 0
+            or hashlib.sha256(data[45:]).hexdigest() != self.settings.program_sha256
+        ):
+            raise IssuerError("Deployed program bytes or immutable authority do not match review", HTTPStatus.SERVICE_UNAVAILABLE)
+
     def config(self) -> dict[str, Any]:
+        if self.rpc("getGenesisHash", []) != self.settings.genesis_hash:
+            raise IssuerError("Solana RPC genesis does not match the approved cluster", HTTPStatus.SERVICE_UNAVAILABLE)
+        self.program_attestation()
         config_owner, config_data = self.account(self.settings.config_address)
         if config_owner != self.settings.program_id:
             raise IssuerError("Configured stake config has the wrong owner", HTTPStatus.SERVICE_UNAVAILABLE)
@@ -395,6 +591,10 @@ class SolanaVerifier:
             or config["token_program"] != self.token_program
             or config["required_amount"] <= 0
             or not 1 <= config["minimum_lock_seconds"] <= 365 * 24 * 60 * 60
+            or config["required_amount"] != self.settings.expected_amount
+            or config["minimum_lock_seconds"] != self.settings.expected_lock_seconds
+            or config["revision"] != self.settings.expected_revision
+            or config["issuer_authority"] != self.issuer_public
             or config["paused"]
         ):
             raise IssuerError("Access staking is unavailable", HTTPStatus.SERVICE_UNAVAILABLE)
@@ -423,6 +623,7 @@ class SolanaVerifier:
             or receipt["status"] != 0
             or receipt["amount"] <= 0
             or receipt["claimed_at"] <= 0
+            or receipt["issued_at"] != 0
             or receipt["released_at"] != 0
         ):
             raise IssuerError("Finalized stake receipt is not eligible", HTTPStatus.UNPROCESSABLE_ENTITY)
@@ -439,44 +640,121 @@ class SolanaVerifier:
             raise IssuerError("Finalized stake vault is not funded", HTTPStatus.UNPROCESSABLE_ENTITY)
         return receipt_address
 
+    def receipt_address(self, address: str) -> str:
+        wallet = public_key(address)
+        receipt_key, _ = pda([b"access-stake", self.config_key, wallet], self.program)
+        return base58_encode(receipt_key)
+
+    @staticmethod
+    def shortvec(value: int) -> bytes:
+        encoded = bytearray()
+        while True:
+            element = value & 0x7F
+            value >>= 7
+            if value:
+                element |= 0x80
+            encoded.append(element)
+            if not value:
+                return bytes(encoded)
+
+    def consume(self, address: str, receipt_address: str) -> str:
+        expected = self.receipt_address(address)
+        if receipt_address != expected:
+            raise IssuerError("Stake receipt address changed", HTTPStatus.CONFLICT)
+        latest = self.rpc_primary("getLatestBlockhash", [{"commitment": "finalized"}])
+        blockhash = latest.get("value", {}).get("blockhash") if isinstance(latest, dict) else None
+        if not isinstance(blockhash, str) or len(base58_decode(blockhash)) != 32:
+            raise IssuerError("Solana RPC returned no usable blockhash", HTTPStatus.SERVICE_UNAVAILABLE)
+        receipt_key = public_key(receipt_address)
+        clock_key = public_key("SysvarC1ock11111111111111111111111111111111")
+        keys = [self.issuer_public, receipt_key, self.config_key, clock_key, self.program]
+        message = bytearray((1, 0, 3))
+        message.extend(self.shortvec(len(keys)))
+        for key in keys:
+            message.extend(key)
+        message.extend(base58_decode(blockhash))
+        message.extend(self.shortvec(1))
+        message.append(4)
+        message.extend(self.shortvec(4))
+        message.extend((0, 2, 1, 3))
+        message.extend(self.shortvec(1))
+        message.append(5)
+        signature = self.issuer_private.sign(bytes(message))
+        transaction = self.shortvec(1) + signature + bytes(message)
+        tx_signature = self.rpc_primary(
+            "sendTransaction",
+            [
+                base64.b64encode(transaction).decode(),
+                {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "finalized", "maxRetries": 3},
+            ],
+        )
+        if not isinstance(tx_signature, str):
+            raise IssuerError("Solana RPC returned no transaction signature", HTTPStatus.SERVICE_UNAVAILABLE)
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            result = self.rpc_primary("getSignatureStatuses", [[tx_signature], {"searchTransactionHistory": True}])
+            values = result.get("value") if isinstance(result, dict) else None
+            status = values[0] if isinstance(values, list) and values else None
+            if isinstance(status, dict) and status.get("err") is not None:
+                raise IssuerError("On-chain claim consumption failed", HTTPStatus.SERVICE_UNAVAILABLE)
+            if isinstance(status, dict) and status.get("confirmationStatus") == "finalized":
+                _, data = self.account(receipt_address)
+                if parse_receipt(data)["issued_at"] > 0:
+                    return tx_signature
+            time.sleep(0.5)
+        raise IssuerError("On-chain claim consumption did not finalize", HTTPStatus.SERVICE_UNAVAILABLE)
+
 
 def parse_config(data: bytes) -> dict[str, Any]:
-    if len(data) != 131 or data[:8] != CONFIG_DISCRIMINATOR or data[8] != 1:
+    if len(data) != 171 or data[:8] != CONFIG_DISCRIMINATOR or data[8] != 2:
         raise IssuerError("Stake config data is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
     return {
         "authority": data[9:41],
-        "config_id": struct.unpack_from("<Q", data, 41)[0],
-        "mint": data[49:81],
-        "token_program": data[81:113],
-        "required_amount": struct.unpack_from("<Q", data, 113)[0],
-        "minimum_lock_seconds": struct.unpack_from("<q", data, 121)[0],
-        "paused": bool(data[129]),
-        "bump": data[130],
+        "issuer_authority": data[41:73],
+        "config_id": struct.unpack_from("<Q", data, 73)[0],
+        "mint": data[81:113],
+        "token_program": data[113:145],
+        "revision": struct.unpack_from("<Q", data, 145)[0],
+        "required_amount": struct.unpack_from("<Q", data, 153)[0],
+        "minimum_lock_seconds": struct.unpack_from("<q", data, 161)[0],
+        "paused": bool(data[169]),
+        "bump": data[170],
     }
 
 
 def parse_receipt(data: bytes) -> dict[str, Any]:
-    if len(data) != 147 or data[:8] != STAKE_DISCRIMINATOR or data[8] != 1:
+    if len(data) != 163 or data[:8] != STAKE_DISCRIMINATOR or data[8] != 2:
         raise IssuerError("Stake receipt data is invalid", HTTPStatus.UNPROCESSABLE_ENTITY)
     return {
         "config": data[9:41],
         "staker": data[41:73],
         "vault": data[73:105],
         "amount": struct.unpack_from("<Q", data, 105)[0],
-        "staked_at": struct.unpack_from("<q", data, 113)[0],
-        "unlock_at": struct.unpack_from("<q", data, 121)[0],
-        "claimed_at": struct.unpack_from("<q", data, 129)[0],
-        "released_at": struct.unpack_from("<q", data, 137)[0],
-        "status": data[145],
-        "bump": data[146],
+        "config_revision": struct.unpack_from("<Q", data, 113)[0],
+        "staked_at": struct.unpack_from("<q", data, 121)[0],
+        "unlock_at": struct.unpack_from("<q", data, 129)[0],
+        "claimed_at": struct.unpack_from("<q", data, 137)[0],
+        "issued_at": struct.unpack_from("<q", data, 145)[0],
+        "released_at": struct.unpack_from("<q", data, 153)[0],
+        "status": data[161],
+        "bump": data[162],
     }
 
 
 class MatrixIssuer:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, store: Store | None = None):
         self.settings = settings
+        self.store = store
 
-    def request_json(self, method: str, path: str, *, body: Any = None, token: str | None = None) -> dict[str, Any]:
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: Any = None,
+        token: str | None = None,
+        allow_not_found: bool = False,
+    ) -> dict[str, Any]:
         headers = {"Accept": "application/json"}
         payload = None
         if body is not None:
@@ -487,7 +765,12 @@ class MatrixIssuer:
         request = urllib.request.Request(self.settings.matrix_url + path, data=payload, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
-                return json.loads(response.read())
+                raw = response.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as error:
+            if allow_not_found and error.code == HTTPStatus.NOT_FOUND:
+                return {}
+            raise IssuerError("Matrix token service rejected the request", HTTPStatus.SERVICE_UNAVAILABLE) from error
         except (OSError, json.JSONDecodeError) as error:
             raise IssuerError("Matrix token service is unavailable", HTTPStatus.SERVICE_UNAVAILABLE) from error
 
@@ -506,15 +789,57 @@ class MatrixIssuer:
         return result["user_id"], result["access_token"]
 
     def ready(self) -> None:
+        if self.store and self.store.unresolved_admin_cleanups():
+            raise IssuerError("Temporary administrator cleanup is required", HTTPStatus.SERVICE_UNAVAILABLE)
         if not self.settings.matrix_secret_file.read_text().strip():
             raise IssuerError("Matrix registration secret is empty", HTTPStatus.SERVICE_UNAVAILABLE)
         versions = self.request_json("GET", "/_matrix/client/versions")
         if not isinstance(versions.get("versions"), list):
             raise IssuerError("Matrix client API readiness check failed", HTTPStatus.SERVICE_UNAVAILABLE)
 
+    def deactivate(self, user_id: str, token: str) -> None:
+        self.request_json(
+            "POST",
+            f"/_synapse/admin/v1/deactivate/{urllib.parse.quote(user_id, safe='')}",
+            token=token,
+            body={"erase": True},
+        )
+
+    def reconcile_admin_cleanup(self, user_id: str) -> None:
+        if not self.store:
+            raise IssuerError("Reconciliation requires the issuer store", HTTPStatus.INTERNAL_SERVER_ERROR)
+        cleanup = self.store.admin_cleanup(user_id)
+        reconciler_id = ""
+        reconciler_token = ""
+        try:
+            reconciler_id, reconciler_token = self.temporary_admin()
+            registration_token = cleanup["registration_token"]
+            if registration_token:
+                self.request_json(
+                    "DELETE",
+                    f"/_synapse/admin/v1/registration_tokens/{urllib.parse.quote(registration_token, safe='')}",
+                    token=reconciler_token,
+                    allow_not_found=True,
+                )
+            self.deactivate(user_id, reconciler_token)
+            self.store.resolve_admin_cleanup(user_id)
+        finally:
+            if reconciler_id and reconciler_token:
+                try:
+                    self.deactivate(reconciler_id, reconciler_token)
+                except Exception as error:
+                    self.store.add_admin_cleanup(reconciler_id, None, str(error))
+                    raise IssuerError(
+                        "Reconciliation administrator cleanup failed; issuance remains halted",
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    ) from error
+
     def issue(self) -> tuple[str, int]:
+        if self.store and self.store.unresolved_admin_cleanups():
+            raise IssuerError("Issuance is halted pending administrator cleanup", HTTPStatus.SERVICE_UNAVAILABLE)
         admin_id = ""
         admin_token = ""
+        registration_token = ""
         try:
             admin_id, admin_token = self.temporary_admin()
             expires_at_ms = int(time.time() * 1000) + self.settings.token_ttl_minutes * 60 * 1000
@@ -527,25 +852,27 @@ class MatrixIssuer:
             token = result.get("token")
             if not isinstance(token, str) or not token:
                 raise IssuerError("Synapse returned no registration token", HTTPStatus.SERVICE_UNAVAILABLE)
+            registration_token = token
             return token, expires_at_ms
         finally:
             if admin_id and admin_token:
                 try:
-                    self.request_json(
-                        "POST",
-                        f"/_synapse/admin/v1/deactivate/{urllib.parse.quote(admin_id, safe='')}",
-                        token=admin_token,
-                        body={"erase": True},
-                    )
+                    self.deactivate(admin_id, admin_token)
                 except Exception as error:  # cleanup failure must be visible to operators
+                    if self.store:
+                        self.store.add_admin_cleanup(admin_id, registration_token or None, str(error))
                     print(f"temporary admin cleanup failed: {error}", file=sys.stderr)
+                    raise IssuerError(
+                        "Temporary administrator cleanup failed; issuance is halted for reconciliation",
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    ) from error
 
 
 class Application:
     def __init__(self, settings: Settings, matrix: MatrixIssuer | None = None, solana: SolanaVerifier | None = None):
         self.settings = settings
         self.store = Store(settings.database)
-        self.matrix = matrix or MatrixIssuer(settings)
+        self.matrix = matrix or MatrixIssuer(settings, self.store)
         self.solana = solana or SolanaVerifier(settings)
 
     def ready(self) -> dict[str, Any]:
@@ -557,6 +884,7 @@ class Application:
             "status": "ready",
             "requiredAtomicAmount": str(config["required_amount"]),
             "minimumLockSeconds": config["minimum_lock_seconds"],
+            "configRevision": str(config["revision"]),
         }
 
     def sign_in_input(self, address: str, nonce: str, request_id: str, issued: int, expires: int) -> dict[str, Any]:
@@ -567,7 +895,7 @@ class Application:
             "statement": "Sign in to request a NEAL Matrix access token.",
             "uri": self.settings.public_origin,
             "version": "1",
-            "chainId": "solana:mainnet",
+            "chainId": self.settings.chain_id,
             "nonce": nonce,
             "issuedAt": iso_millis(issued),
             "expirationTime": iso_millis(expires),
@@ -577,10 +905,12 @@ class Application:
 
     def challenge(self, body: dict[str, Any], client_key: str) -> dict[str, Any]:
         address = body.get("address")
-        if body.get("schema") != "neal.wallet-challenge-request/v1" or body.get("chain") != "solana:mainnet" or not isinstance(address, str):
+        if body.get("schema") != "neal.wallet-challenge-request/v1" or body.get("chain") != self.settings.chain_id or not isinstance(address, str):
             raise IssuerError("Invalid wallet challenge request")
         public_key(address)
         self.store.rate_limit(f"challenge:{client_key}:{address}", 10, 3600)
+        self.store.rate_limit(f"challenge-ip:{client_key}", 60, 3600)
+        self.store.rate_limit("challenge-global", 1_000, 60)
         result: dict[str, Any] = {}
 
         def factory(nonce: str, request_id: str, issued: int, expires: int) -> bytes:
@@ -619,18 +949,31 @@ class Application:
             raise IssuerError("Wallet signature is invalid", HTTPStatus.UNAUTHORIZED) from error
         self.store.consume_challenge(request_id, address, message)
         session = self.store.create_session(address, self.settings.session_ttl_seconds)
-        return {"schema": "neal.wallet-authentication/v1", "authenticated": True, "address": address}, session
+        return {
+            "schema": "neal.wallet-authentication/v1",
+            "authenticated": True,
+            "address": address,
+            "sessionExpiresAt": (int(time.time()) + self.settings.session_ttl_seconds) * 1000,
+        }, session
 
     def access_token(self, session: str, client_key: str) -> dict[str, Any]:
         address = self.store.session_address(session)
         self.store.rate_limit(f"token:{client_key}:{address}", 5, 3600)
-        receipt = self.solana.verify(address)
-        existing = self.store.reserve_claim(receipt, address)
+        receipt = self.solana.receipt_address(address)
+        existing = self.store.existing_claim(receipt, address)
         if existing:
             with self.store.connection() as database:
                 row = database.execute("SELECT expires_at_ms FROM claims WHERE receipt = ?", (receipt,)).fetchone()
             return {"schema": "neal.matrix-access-token/v1", "token": existing, "expiresAt": row["expires_at_ms"], "receipt": receipt}
+        verified_receipt = self.solana.verify(address)
+        if verified_receipt != receipt:
+            raise IssuerError("Stake receipt verification changed", HTTPStatus.CONFLICT)
+        existing = self.store.reserve_claim(receipt, address)
+        if existing:
+            raise IssuerError("Unexpected duplicate claim state", HTTPStatus.CONFLICT)
         try:
+            self.solana.consume(address, receipt)
+            self.store.mark_chain_consumed(receipt)
             token, expires_at_ms = self.matrix.issue()
             self.store.finish_claim(receipt, token, expires_at_ms)
         except Exception as error:
@@ -644,6 +987,10 @@ class Application:
 
 class Handler(BaseHTTPRequestHandler):
     app: Application
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(15)
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"{self.log_date_time_string()} {self.peer_address()} {format % args}", file=sys.stderr)
@@ -751,8 +1098,33 @@ class Handler(BaseHTTPRequestHandler):
             raise
 
 
-class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+class BoundedThreadingMixIn(socketserver.ThreadingMixIn):
     daemon_threads = True
+    worker_slots = threading.BoundedSemaphore(32)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self.worker_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.worker_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.worker_slots.release()
+
+
+class BoundedThreadingHTTPServer(BoundedThreadingMixIn, HTTPServer):
+    allow_reuse_address = True
+
+
+class ThreadingUnixHTTPServer(BoundedThreadingMixIn, socketserver.UnixStreamServer):
+    pass
 
 
 def unix_server(settings: Settings) -> ThreadingUnixHTTPServer:
@@ -772,12 +1144,12 @@ def unix_server(settings: Settings) -> ThreadingUnixHTTPServer:
 def main() -> int:
     settings = Settings.from_environment()
     Handler.app = Application(settings)
-    server: ThreadingHTTPServer | ThreadingUnixHTTPServer
+    server: BoundedThreadingHTTPServer | ThreadingUnixHTTPServer
     if settings.socket_path:
         server = unix_server(settings)
         location = str(settings.socket_path)
     else:
-        server = ThreadingHTTPServer((settings.bind, settings.port), Handler)
+        server = BoundedThreadingHTTPServer((settings.bind, settings.port), Handler)
         location = f"{settings.bind}:{settings.port}"
     print(f"NEAL access issuer listening on {location}", file=sys.stderr)
     try:

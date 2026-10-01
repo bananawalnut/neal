@@ -13,6 +13,10 @@ use solana_program::{
 };
 use solana_sdk_ids::system_program;
 use solana_system_interface::instruction as system_instruction;
+use spl_token_2022::{
+    extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
+    state::{Account as TokenAccount, Mint},
+};
 
 use crate::{
     client::TOKEN_2022_PROGRAM_ID,
@@ -35,30 +39,36 @@ pub fn process_instruction(
     match instruction {
         AccessStakeInstruction::InitializeConfig {
             config_id,
+            issuer_authority,
             required_amount,
             minimum_lock_seconds,
         } => initialize_config(
             program_id,
             accounts,
             config_id,
+            issuer_authority,
             required_amount,
             minimum_lock_seconds,
         ),
-        AccessStakeInstruction::UpdateConfig {
-            required_amount,
-            minimum_lock_seconds,
-            paused,
-        } => update_config(
+        AccessStakeInstruction::SetPaused { paused } => set_paused(program_id, accounts, paused),
+        AccessStakeInstruction::SetIssuerAuthority { issuer_authority } => {
+            set_issuer_authority(program_id, accounts, issuer_authority)
+        }
+        AccessStakeInstruction::Stake {
+            token_decimals,
+            expected_required_amount,
+            expected_minimum_lock_seconds,
+            expected_revision,
+        } => stake(
             program_id,
             accounts,
-            required_amount,
-            minimum_lock_seconds,
-            paused,
+            token_decimals,
+            expected_required_amount,
+            expected_minimum_lock_seconds,
+            expected_revision,
         ),
-        AccessStakeInstruction::Stake { token_decimals } => {
-            stake(program_id, accounts, token_decimals)
-        }
         AccessStakeInstruction::ClaimAccess => claim_access(program_id, accounts),
+        AccessStakeInstruction::ConsumeClaim => consume_claim(program_id, accounts),
         AccessStakeInstruction::Unstake { token_decimals } => {
             unstake(program_id, accounts, token_decimals)
         }
@@ -69,6 +79,7 @@ fn initialize_config(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     config_id: u64,
+    issuer_authority: Pubkey,
     required_amount: u64,
     minimum_lock_seconds: i64,
 ) -> ProgramResult {
@@ -110,11 +121,13 @@ fn initialize_config(
     encode(
         &AccessConfig {
             discriminator: CONFIG_DISCRIMINATOR,
-            version: 1,
+            version: 2,
             authority: *authority.key,
+            issuer_authority,
             config_id,
             mint: *mint.key,
             token_program: *token_program.key,
+            revision: 0,
             required_amount,
             minimum_lock_seconds,
             paused: false,
@@ -131,46 +144,74 @@ fn initialize_config(
     Ok(())
 }
 
-fn update_config(
+fn authorized_config<'a>(
     program_id: &Pubkey,
-    accounts: &[AccountInfo],
-    required_amount: Option<u64>,
-    minimum_lock_seconds: Option<i64>,
-    paused: Option<bool>,
-) -> ProgramResult {
-    let iter = &mut accounts.iter();
-    let authority = next_account_info(iter)?;
-    let config_info = next_account_info(iter)?;
-
+    authority: &AccountInfo<'a>,
+    config_info: &AccountInfo<'a>,
+) -> Result<AccessConfig, ProgramError> {
     require_signer(authority)?;
     require_owner(config_info, program_id)?;
-    let mut config: AccessConfig = decode(&config_info.try_borrow_data()?)?;
+    let config: AccessConfig = decode(&config_info.try_borrow_data()?)?;
     validate_config(&config)?;
     validate_config_address(program_id, config_info.key, &config)?;
     if config.authority != *authority.key {
         return Err(AccessStakeError::InvalidAuthority.into());
     }
+    Ok(config)
+}
 
-    let next_amount = required_amount.unwrap_or(config.required_amount);
-    let next_lock = minimum_lock_seconds.unwrap_or(config.minimum_lock_seconds);
-    AccessConfig::validate_terms(next_amount, next_lock)?;
-    config.required_amount = next_amount;
-    config.minimum_lock_seconds = next_lock;
-    if let Some(next_paused) = paused {
-        config.paused = next_paused;
-    }
+fn set_paused(program_id: &Pubkey, accounts: &[AccountInfo], paused: bool) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let authority = next_account_info(iter)?;
+    let config_info = next_account_info(iter)?;
+    let mut config = authorized_config(program_id, authority, config_info)?;
+    config.paused = paused;
+    config.revision = config
+        .revision
+        .checked_add(1)
+        .ok_or(AccessStakeError::ArithmeticOverflow)?;
     encode(&config, &mut config_info.try_borrow_mut_data()?)?;
     msg!(
-        "NEAL_ACCESS_CONFIG_UPDATED {} {} {} {}",
+        "NEAL_ACCESS_CONFIG_PAUSED {} {} {}",
         config_info.key,
-        config.required_amount,
-        config.minimum_lock_seconds,
-        config.paused
+        config.paused,
+        config.revision
     );
     Ok(())
 }
 
-fn stake(program_id: &Pubkey, accounts: &[AccountInfo], token_decimals: u8) -> ProgramResult {
+fn set_issuer_authority(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    issuer_authority: Pubkey,
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let authority = next_account_info(iter)?;
+    let config_info = next_account_info(iter)?;
+    let mut config = authorized_config(program_id, authority, config_info)?;
+    config.issuer_authority = issuer_authority;
+    config.revision = config
+        .revision
+        .checked_add(1)
+        .ok_or(AccessStakeError::ArithmeticOverflow)?;
+    encode(&config, &mut config_info.try_borrow_mut_data()?)?;
+    msg!(
+        "NEAL_ACCESS_ISSUER_UPDATED {} {} {}",
+        config_info.key,
+        config.issuer_authority,
+        config.revision
+    );
+    Ok(())
+}
+
+fn stake(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    token_decimals: u8,
+    expected_required_amount: u64,
+    expected_minimum_lock_seconds: i64,
+    expected_revision: u64,
+) -> ProgramResult {
     let iter = &mut accounts.iter();
     let staker = next_account_info(iter)?;
     let config_info = next_account_info(iter)?;
@@ -190,6 +231,12 @@ fn stake(program_id: &Pubkey, accounts: &[AccountInfo], token_decimals: u8) -> P
     validate_config(&config)?;
     validate_config_address(program_id, config_info.key, &config)?;
     require_not_paused(&config)?;
+    if config.required_amount != expected_required_amount
+        || config.minimum_lock_seconds != expected_minimum_lock_seconds
+        || config.revision != expected_revision
+    {
+        return Err(AccessStakeError::TermsChanged.into());
+    }
     require_key(mint, &config.mint)?;
     require_key(token_program, &config.token_program)?;
     validate_token_program(token_program)?;
@@ -215,9 +262,8 @@ fn stake(program_id: &Pubkey, accounts: &[AccountInfo], token_decimals: u8) -> P
     )?;
 
     validate_token_account(source, token_program, mint.key, Some(staker.key))?;
-    if validate_token_account(vault, token_program, mint.key, Some(receipt_info.key))? != 0 {
-        return Err(AccessStakeError::InvalidAmount.into());
-    }
+    let vault_before =
+        validate_token_account(vault, token_program, mint.key, Some(receipt_info.key))?;
     transfer_checked(
         token_program,
         source,
@@ -228,8 +274,11 @@ fn stake(program_id: &Pubkey, accounts: &[AccountInfo], token_decimals: u8) -> P
         token_decimals,
         None,
     )?;
+    let expected_vault = vault_before
+        .checked_add(config.required_amount)
+        .ok_or(AccessStakeError::ArithmeticOverflow)?;
     if validate_token_account(vault, token_program, mint.key, Some(receipt_info.key))?
-        != config.required_amount
+        != expected_vault
     {
         return Err(AccessStakeError::InvalidAmount.into());
     }
@@ -241,14 +290,16 @@ fn stake(program_id: &Pubkey, accounts: &[AccountInfo], token_decimals: u8) -> P
     encode(
         &StakeReceipt {
             discriminator: STAKE_DISCRIMINATOR,
-            version: 1,
+            version: 2,
             config: *config_info.key,
             staker: *staker.key,
             vault: *vault.key,
             amount: config.required_amount,
+            config_revision: config.revision,
             staked_at: clock.unix_timestamp,
             unlock_at,
             claimed_at: 0,
+            issued_at: 0,
             released_at: 0,
             status: StakeStatus::Active,
             bump,
@@ -261,6 +312,43 @@ fn stake(program_id: &Pubkey, accounts: &[AccountInfo], token_decimals: u8) -> P
         staker.key,
         config.required_amount,
         unlock_at
+    );
+    Ok(())
+}
+
+fn consume_claim(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let issuer = next_account_info(iter)?;
+    let config_info = next_account_info(iter)?;
+    let receipt_info = next_account_info(iter)?;
+    let clock_info = next_account_info(iter)?;
+
+    require_signer(issuer)?;
+    require_owner(config_info, program_id)?;
+    require_owner(receipt_info, program_id)?;
+    let clock = Clock::from_account_info(clock_info)?;
+    let config: AccessConfig = decode(&config_info.try_borrow_data()?)?;
+    validate_config(&config)?;
+    validate_config_address(program_id, config_info.key, &config)?;
+    require_not_paused(&config)?;
+    if config.issuer_authority != *issuer.key {
+        return Err(AccessStakeError::InvalidAuthority.into());
+    }
+    let mut receipt: StakeReceipt = decode(&receipt_info.try_borrow_data()?)?;
+    if receipt.discriminator != STAKE_DISCRIMINATOR
+        || receipt.version != 2
+        || receipt.config != *config_info.key
+    {
+        return Err(AccessStakeError::InvalidState.into());
+    }
+    validate_receipt_address(program_id, receipt_info.key, &receipt)?;
+    receipt.consume(clock.unix_timestamp)?;
+    encode(&receipt, &mut receipt_info.try_borrow_mut_data()?)?;
+    msg!(
+        "NEAL_ACCESS_CONSUMED {} {} {}",
+        receipt_info.key,
+        issuer.key,
+        receipt.issued_at
     );
     Ok(())
 }
@@ -458,6 +546,21 @@ fn validate_mint(
     if expected_decimals.is_some_and(|decimals| decimals != data[44]) {
         return Err(AccessStakeError::InvalidMint.into());
     }
+    let state =
+        StateWithExtensions::<Mint>::unpack(&data).map_err(|_| AccessStakeError::InvalidMint)?;
+    if state
+        .get_extension_types()
+        .map_err(|_| AccessStakeError::InvalidMint)?
+        .iter()
+        .any(|extension| {
+            !matches!(
+                extension,
+                ExtensionType::MetadataPointer | ExtensionType::TokenMetadata
+            )
+        })
+    {
+        return Err(AccessStakeError::InvalidMint.into());
+    }
     Ok(())
 }
 
@@ -470,6 +573,16 @@ fn validate_token_account(
     require_owner(account, token_program.key)?;
     let data = account.try_borrow_data()?;
     if data.len() < 165 || data[108] == 0 {
+        return Err(AccessStakeError::InvalidTokenAccount.into());
+    }
+    let state = StateWithExtensions::<TokenAccount>::unpack(&data)
+        .map_err(|_| AccessStakeError::InvalidTokenAccount)?;
+    if state
+        .get_extension_types()
+        .map_err(|_| AccessStakeError::InvalidTokenAccount)?
+        .iter()
+        .any(|extension| !matches!(extension, ExtensionType::ImmutableOwner))
+    {
         return Err(AccessStakeError::InvalidTokenAccount.into());
     }
     if &data[0..32] != expected_mint.as_ref()
@@ -487,7 +600,7 @@ fn validate_token_account(
 
 fn validate_config(config: &AccessConfig) -> ProgramResult {
     if config.discriminator != CONFIG_DISCRIMINATOR
-        || config.version != 1
+        || config.version != 2
         || config.token_program != TOKEN_2022_PROGRAM_ID
     {
         return Err(AccessStakeError::InvalidState.into());
@@ -516,7 +629,7 @@ fn validate_config_address(
 
 fn validate_receipt(receipt: &StakeReceipt, config: &Pubkey, staker: &Pubkey) -> ProgramResult {
     if receipt.discriminator != STAKE_DISCRIMINATOR
-        || receipt.version != 1
+        || receipt.version != 2
         || receipt.config != *config
         || receipt.staker != *staker
     {

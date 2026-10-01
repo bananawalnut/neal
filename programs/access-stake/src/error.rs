@@ -16,6 +16,8 @@ pub enum AccessStakeError {
     InvalidMint,
     InvalidTokenAccount,
     ArithmeticOverflow,
+    TermsChanged,
+    AlreadyConsumed,
 }
 
 impl From<AccessStakeError> for ProgramError {

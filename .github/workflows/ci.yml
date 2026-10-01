@@ -27,14 +27,17 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@1.90.0
 
       - name: Install dependencies
         run: npm ci
 
       - name: Type-check public site
         run: npm run site:typecheck
+
+      - name: Validate wallet policy
+        run: npm run site:validate-policy
 
       - name: Build public site
         run: npm run site:build
@@ -55,8 +58,61 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@1.90.0
 
       - name: Run workspace tests
         run: cargo test --workspace --locked
+
+  sbf:
+    name: Access-stake SBF build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install pinned Agave toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          agave_version="$(tr -d '\r\n' < .agave-version)"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://release.anza.xyz/${agave_version}/install" \
+            --output /tmp/agave-install.sh
+          sh /tmp/agave-install.sh
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Build access-stake SBF
+        run: cargo build-sbf --manifest-path programs/access-stake/Cargo.toml --locked
+
+      - name: Record reviewed artifact hash
+        run: sha256sum target/deploy/neal_access_stake.so | tee target/deploy/neal_access_stake.sha256
+
+      - name: Upload SBF review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neal-access-stake-sbf
+          path: |
+            target/deploy/neal_access_stake.so
+            target/deploy/neal_access_stake.sha256
+          if-no-files-found: error
+
+  issuer:
+    name: Issuer checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install issuer dependencies
+        run: python -m pip install --only-binary=:all: --require-hashes --requirement requirements-deploy.txt
+        working-directory: infra/neal-access-issuer
+
+      - name: Run issuer tests
+        run: python -m unittest -v test_issuer.py
+        working-directory: infra/neal-access-issuer

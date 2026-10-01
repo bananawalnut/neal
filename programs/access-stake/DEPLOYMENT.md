@@ -30,8 +30,11 @@ node scripts/initialize-access-stake-config.mjs \
   --cluster devnet \
   --rpc https://api.devnet.solana.com \
   --program-id REVIEWED_DEVNET_PROGRAM \
+  --program-data-address REVIEWED_DEVNET_PROGRAM_DATA \
+  --program-sha256 REVIEWED_SBF_SHA256 \
   --mint REVIEWED_DEVNET_TOKEN_2022_MINT \
   --authority-keypair /absolute/path/to/authority.json \
+  --issuer-authority REVIEWED_DEVNET_ISSUER \
   --config-id 0 \
   --required-atomic-amount REVIEWED_AMOUNT \
   --minimum-lock-seconds REVIEWED_LOCK
@@ -40,7 +43,21 @@ node scripts/initialize-access-stake-config.mjs \
 Repeat with `--send` only after reviewing the dry-run receipt. Exercise stake,
 claim, one-use Matrix registration, early-release rejection, timed release,
 pause, release-while-paused, issuer failure reconciliation, and an encrypted
-SQLite backup/restore against a non-production Synapse instance.
+SQLite backup/restore against a non-production Synapse instance. The rehearsal
+issuer must use `NEAL_ACCESS_CHAIN_ID=solana:devnet` with the devnet genesis;
+the service rejects an ID/genesis mismatch.
+
+Use the same first-party pause tool on devnet. It simulates by default:
+
+```bash
+node scripts/manage-access-stake-config.mjs \
+  --action pause \
+  --cluster devnet \
+  --rpc https://api.devnet.solana.com \
+  --program-id REVIEWED_DEVNET_PROGRAM \
+  --config-address REVIEWED_DEVNET_CONFIG \
+  --authority-keypair /absolute/path/to/authority.json
+```
 
 ## 3. Mainnet program and config
 
@@ -76,7 +93,11 @@ preflights before it will write `status: active`:
 ```bash
 node scripts/stage-access-stake-policy.mjs \
   --program-id REVIEWED_PROGRAM \
+  --program-data-address REVIEWED_PROGRAM_DATA \
+  --program-sha256 REVIEWED_SBF_SHA256 \
   --config-address REVIEWED_CONFIG_PDA \
+  --config-revision REVIEWED_CONFIG_REVISION \
+  --issuer-authority REVIEWED_ISSUER_AUTHORITY \
   --required-atomic-amount REVIEWED_AMOUNT \
   --minimum-lock-seconds REVIEWED_LOCK \
   --challenge-endpoint https://matrix.nealtheseal.org/v1/challenge \
@@ -89,10 +110,21 @@ policy change through the normal protected branch. Finally run
 `node scripts/verify-access-stake-readiness.mjs --require-active` against the
 deployed artifact and complete one real low-risk acceptance account.
 
+Readiness exits nonzero for `planned` unless the operator explicitly requests
+the reporting-only `--informational-planned` mode.
+
 ## Pause and recovery
 
-On incident, publish a `paused` site policy immediately, pause the on-chain
-config with the reviewed authority, and stop new issuance. Never remove the
-unstake UI or revoke a user's release path. Preserve the issuer database and
-logs; a `failed` reservation requires operator reconciliation because Synapse
-may hold an orphan token.
+On incident, stop the issuer, then use `manage-access-stake-config.mjs --action
+pause`. Mainnet submission requires `--send --acknowledge-mainnet`; adding
+`--write-policy` updates the policy to the finalized revision only after the
+chain transition is verified. Never remove the unstake UI or revoke a user's
+release path. Before restarting an unpaused issuer, update
+`NEAL_ACCESS_EXPECTED_REVISION` to the newly finalized revision and require
+`/readyz` to pass again.
+
+Preserve the issuer database and logs. List unresolved ephemeral-admin cleanup
+records with `reconcile.py --list`; reconcile one exact ID with
+`reconcile.py --user-id '@user:server'`. The command revokes a possibly-created
+registration token, deactivates the orphan admin, and also deactivates its own
+temporary reconciliation admin before issuance can resume.

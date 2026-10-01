@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { createHash } from 'node:crypto';
 import {
   Connection,
   Keypair,
@@ -13,6 +14,7 @@ import {
 const TOKEN_2022_PROGRAM = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+const UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
 const parseCli = (argv) => {
   const values = { send: false, acknowledgeMainnet: false, launch: 'apps/site/public/launch-record.json' };
@@ -23,7 +25,7 @@ const parseCli = (argv) => {
     else if (argument.startsWith('--')) values[argument.slice(2)] = argv[++index];
     else throw new Error(`Unexpected argument: ${argument}`);
   }
-  for (const required of ['cluster', 'rpc', 'program-id', 'authority-keypair', 'config-id', 'required-atomic-amount', 'minimum-lock-seconds']) {
+  for (const required of ['cluster', 'rpc', 'program-id', 'program-data-address', 'program-sha256', 'authority-keypair', 'issuer-authority', 'config-id', 'required-atomic-amount', 'minimum-lock-seconds']) {
     if (!values[required]) throw new Error(`Missing --${required}`);
   }
   if (!['devnet', 'mainnet'].includes(values.cluster)) throw new Error('--cluster must be devnet or mainnet');
@@ -51,12 +53,19 @@ async function main() {
     throw new Error('Authority keypair file is invalid');
   }
   const authority = Keypair.fromSecretKey(Uint8Array.from(secret));
+  const issuerAuthority = new PublicKey(options['issuer-authority']);
   const programId = new PublicKey(options['program-id']);
+  const programDataAddress = new PublicKey(options['program-data-address']);
+  const reviewedProgramHash = options['program-sha256'].toLowerCase();
+  if (!/^[0-9a-f]{64}$/u.test(reviewedProgramHash)) throw new Error('--program-sha256 must be a lowercase SHA-256');
   const configId = unsigned(options['config-id'], 8, 'config ID');
   const requiredAmount = unsigned(options['required-atomic-amount'], 8, 'required amount');
   const minimumLockSeconds = BigInt(options['minimum-lock-seconds']);
   if (requiredAmount === 0n || minimumLockSeconds <= 0n || minimumLockSeconds > 365n * 24n * 60n * 60n) {
     throw new Error('Stake terms are outside the on-chain bounds');
+  }
+  if (options.cluster === 'mainnet' && (requiredAmount !== 69_000_000_000n || minimumLockSeconds !== 7_776_000n)) {
+    throw new Error('Mainnet config requires exactly 69,000 NEAL at six decimals and a 90-day lock');
   }
 
   const launch = JSON.parse(await fs.readFile(path.resolve(options.launch), 'utf8'));
@@ -70,12 +79,28 @@ async function main() {
     [Buffer.from('access-config'), authority.publicKey.toBuffer(), configIdBytes],
     programId,
   );
-  const [programAccount, configAccount, mintAccount] = await Promise.all([
+  const [programAccount, programDataAccount, configAccount, mintAccount] = await Promise.all([
     connection.getAccountInfo(programId, 'finalized'),
+    connection.getAccountInfo(programDataAddress, 'finalized'),
     connection.getAccountInfo(configAddress, 'finalized'),
     connection.getParsedAccountInfo(mint, 'finalized'),
   ]);
-  if (!programAccount?.executable) throw new Error('Program is not deployed as an executable account');
+  if (
+    !programAccount?.executable
+    || !programAccount.owner.equals(UPGRADEABLE_LOADER)
+    || programAccount.data.length < 36
+    || programAccount.data.readUInt32LE(0) !== 2
+    || !new PublicKey(programAccount.data.subarray(4, 36)).equals(programDataAddress)
+  ) throw new Error('Program account does not match the reviewed ProgramData account');
+  if (
+    !programDataAccount
+    || !programDataAccount.owner.equals(UPGRADEABLE_LOADER)
+    || programDataAccount.data.length <= 45
+    || programDataAccount.data.readUInt32LE(0) !== 3
+    || programDataAccount.data[12] !== 0
+  ) throw new Error('ProgramData is missing, invalid, or still upgradeable');
+  const deployedHash = createHash('sha256').update(programDataAccount.data.subarray(45)).digest('hex');
+  if (deployedHash !== reviewedProgramHash) throw new Error('Deployed program bytes do not match --program-sha256');
   if (configAccount) throw new Error(`Config already exists at ${configAddress.toBase58()}`);
   const parsedMint = mintAccount.value;
   if (!parsedMint || !parsedMint.owner.equals(TOKEN_2022_PROGRAM) || !('parsed' in parsedMint.data)) {
@@ -102,11 +127,12 @@ async function main() {
     || (tokenMetadata && (tokenMetadata.updateAuthority !== null || tokenMetadata.mint !== mint.toBase58()))
   ) throw new Error('Mint metadata authorities are not permanently revoked');
 
-  const data = Buffer.alloc(25);
+  const data = Buffer.alloc(57);
   data[0] = 0;
   data.writeBigUInt64LE(configId, 1);
-  data.writeBigUInt64LE(requiredAmount, 9);
-  data.writeBigInt64LE(minimumLockSeconds, 17);
+  issuerAuthority.toBuffer().copy(data, 9);
+  data.writeBigUInt64LE(requiredAmount, 41);
+  data.writeBigInt64LE(minimumLockSeconds, 49);
   const instruction = new TransactionInstruction({
     programId,
     keys: [
@@ -135,13 +161,17 @@ async function main() {
     mode: options.send ? 'send' : 'dry-run',
     cluster: options.cluster,
     programId: programId.toBase58(),
+    programDataAddress: programDataAddress.toBase58(),
+    programSha256: deployedHash,
     authority: authority.publicKey.toBase58(),
+    issuerAuthority: issuerAuthority.toBase58(),
     configAddress: configAddress.toBase58(),
     configId: configId.toString(),
     mint: mint.toBase58(),
     tokenDecimals: mintInfo.decimals,
     requiredAtomicAmount: requiredAmount.toString(),
     minimumLockSeconds: Number(minimumLockSeconds),
+    configRevision: '0',
     simulationUnits: simulation.value.unitsConsumed ?? null,
   };
   if (!options.send) {

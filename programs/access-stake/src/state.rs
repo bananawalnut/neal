@@ -14,9 +14,11 @@ pub struct AccessConfig {
     pub discriminator: [u8; 8],
     pub version: u8,
     pub authority: Pubkey,
+    pub issuer_authority: Pubkey,
     pub config_id: u64,
     pub mint: Pubkey,
     pub token_program: Pubkey,
+    pub revision: u64,
     pub required_amount: u64,
     pub minimum_lock_seconds: i64,
     pub paused: bool,
@@ -24,7 +26,7 @@ pub struct AccessConfig {
 }
 
 impl AccessConfig {
-    pub const SPACE: usize = 8 + 1 + 32 + 8 + 32 + 32 + 8 + 8 + 1 + 1;
+    pub const SPACE: usize = 8 + 1 + 32 + 32 + 8 + 32 + 32 + 8 + 8 + 8 + 1 + 1;
 
     pub fn validate_terms(
         required_amount: u64,
@@ -54,16 +56,18 @@ pub struct StakeReceipt {
     pub staker: Pubkey,
     pub vault: Pubkey,
     pub amount: u64,
+    pub config_revision: u64,
     pub staked_at: i64,
     pub unlock_at: i64,
     pub claimed_at: i64,
+    pub issued_at: i64,
     pub released_at: i64,
     pub status: StakeStatus,
     pub bump: u8,
 }
 
 impl StakeReceipt {
-    pub const SPACE: usize = 8 + 1 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 1 + 1;
+    pub const SPACE: usize = 8 + 1 + 32 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1;
 
     pub fn claim(&mut self, now: i64) -> Result<(), ProgramError> {
         if self.status != StakeStatus::Active {
@@ -85,6 +89,17 @@ impl StakeReceipt {
         }
         self.status = StakeStatus::Released;
         self.released_at = now;
+        Ok(())
+    }
+
+    pub fn consume(&mut self, now: i64) -> Result<(), ProgramError> {
+        if self.status != StakeStatus::Active || self.claimed_at == 0 {
+            return Err(AccessStakeError::InvalidState.into());
+        }
+        if self.issued_at != 0 {
+            return Err(AccessStakeError::AlreadyConsumed.into());
+        }
+        self.issued_at = now;
         Ok(())
     }
 }

@@ -18,14 +18,19 @@ program ID and must not be treated as a mainnet deployment artifact.
 
 - The config pins one mint and the Token-2022 program.
 - The mint must be initialized with both mint and freeze authorities revoked.
-- The authority may change future stake terms or pause new stake/claim actions.
+- Amount and lock terms are immutable; authority pause or issuer rotation bumps
+  a revision that every new stake must sign.
 - The authority has no instruction that can withdraw user stakes.
 - Only the staking wallet can claim or release its receipt.
 - Release remains available after the minimum lock even while the config is
   paused.
 - Each config/wallet pair has exactly one persistent receipt PDA.
 - Pre-funding a predictable config or receipt PDA cannot block its creation.
-- Transfer postconditions reject fee-on-transfer behavior.
+- The mint and stake accounts enforce a narrow Token-2022 extension allowlist,
+  and transfer postconditions reject fee-on-transfer behavior.
+- Only the configured issuer can consume a claimed receipt, exactly once,
+  before creating an off-chain registration token.
 
 See [CONTRACT.md](CONTRACT.md) for the wire contract and
-[TESTING.md](TESTING.md) for the verification matrix.
+[TESTING.md](TESTING.md) for the verification matrix. The mitigation map and
+external release gates are tracked in [SECURITY_CHECKLIST.md](SECURITY_CHECKLIST.md).

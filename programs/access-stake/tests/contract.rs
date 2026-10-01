@@ -16,11 +16,13 @@ fn key(byte: u8) -> Pubkey {
 fn config() -> AccessConfig {
     AccessConfig {
         discriminator: CONFIG_DISCRIMINATOR,
-        version: 1,
+        version: 2,
         authority: key(1),
+        issuer_authority: key(6),
         config_id: 7,
         mint: key(2),
         token_program: client::TOKEN_2022_PROGRAM_ID,
+        revision: 3,
         required_amount: 25_000_000,
         minimum_lock_seconds: 604_800,
         paused: false,
@@ -31,14 +33,16 @@ fn config() -> AccessConfig {
 fn active_receipt() -> StakeReceipt {
     StakeReceipt {
         discriminator: STAKE_DISCRIMINATOR,
-        version: 1,
+        version: 2,
         config: key(3),
         staker: key(4),
         vault: key(5),
         amount: 25_000_000,
+        config_revision: 3,
         staked_at: 1_000,
         unlock_at: 2_000,
         claimed_at: 0,
+        issued_at: 0,
         released_at: 0,
         status: StakeStatus::Active,
         bump: 253,
@@ -69,6 +73,9 @@ fn access_claim_is_one_time_and_release_waits_for_unlock() {
     receipt.claim(1_500).unwrap();
     assert_eq!(receipt.claimed_at, 1_500);
     assert!(receipt.claim(1_501).is_err());
+    receipt.consume(1_502).unwrap();
+    assert_eq!(receipt.issued_at, 1_502);
+    assert!(receipt.consume(1_503).is_err());
     receipt.release(2_000).unwrap();
     assert_eq!(receipt.status, StakeStatus::Released);
     assert_eq!(receipt.released_at, 2_000);
@@ -87,11 +94,7 @@ fn receipt_address_is_unique_per_config_and_wallet() {
 
 #[test]
 fn instruction_encoding_is_deterministic_and_round_trips() {
-    let instruction = AccessStakeInstruction::UpdateConfig {
-        required_amount: Some(50_000_000),
-        minimum_lock_seconds: None,
-        paused: Some(true),
-    };
+    let instruction = AccessStakeInstruction::SetPaused { paused: true };
     let bytes = borsh::to_vec(&instruction).unwrap();
     assert_eq!(bytes[0], 1);
     assert_eq!(
@@ -104,16 +107,18 @@ fn instruction_encoding_is_deterministic_and_round_trips() {
 fn initialize_config_wire_matches_deployment_tooling() {
     let instruction = AccessStakeInstruction::InitializeConfig {
         config_id: 7,
+        issuer_authority: key(8),
         required_amount: 25_000_000,
         minimum_lock_seconds: 604_800,
     };
     let bytes = borsh::to_vec(&instruction).unwrap();
     let mut expected = vec![0];
     expected.extend_from_slice(&7_u64.to_le_bytes());
+    expected.extend_from_slice(key(8).as_ref());
     expected.extend_from_slice(&25_000_000_u64.to_le_bytes());
     expected.extend_from_slice(&604_800_i64.to_le_bytes());
     assert_eq!(bytes, expected);
-    assert_eq!(bytes.len(), 25);
+    assert_eq!(bytes.len(), 57);
 }
 
 #[test]
@@ -129,7 +134,10 @@ fn client_builders_pin_token_2022_and_expected_receipt() {
     let vault = key(24);
     let mint = key(25);
     let (receipt, _) = client::stake_address(&program_id, &config, &staker);
-    let instruction = client::stake(program_id, staker, config, source, vault, mint, 6).unwrap();
+    let instruction = client::stake(
+        program_id, staker, config, source, vault, mint, 6, 25_000_000, 604_800, 3,
+    )
+    .unwrap();
 
     assert_eq!(instruction.accounts[0].pubkey, staker);
     assert_eq!(instruction.accounts[2].pubkey, receipt);
@@ -139,7 +147,12 @@ fn client_builders_pin_token_2022_and_expected_receipt() {
     );
     assert_eq!(
         AccessStakeInstruction::try_from_slice(&instruction.data).unwrap(),
-        AccessStakeInstruction::Stake { token_decimals: 6 }
+        AccessStakeInstruction::Stake {
+            token_decimals: 6,
+            expected_required_amount: 25_000_000,
+            expected_minimum_lock_seconds: 604_800,
+            expected_revision: 3,
+        }
     );
 }
 

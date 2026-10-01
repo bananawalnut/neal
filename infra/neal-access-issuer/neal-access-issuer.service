@@ -5,14 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=neal-access
-Group=neal-access
+DynamicUser=yes
 EnvironmentFile=/etc/neal-access-issuer.env
+LoadCredential=matrix-registration-secret:/srv/neal-matrix/runtime/synapse/registration-shared-secret
+LoadCredential=issuer-keypair:/etc/neal-access-issuer-issuer-keypair.json
+Environment=NEAL_ACCESS_MATRIX_SECRET_FILE=%d/matrix-registration-secret
+Environment=NEAL_ACCESS_ISSUER_KEYPAIR_FILE=%d/issuer-keypair
 ExecStart=/opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/issuer.py
 Restart=on-failure
 RestartSec=3
 RuntimeDirectory=neal-access-issuer
 RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 StateDirectory=neal-access-issuer
 StateDirectoryMode=0700
 UMask=0077

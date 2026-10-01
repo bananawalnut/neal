@@ -5,7 +5,11 @@ import { verifyAccessStake } from './verify-access-stake-readiness.mjs';
 
 const required = [
   'program-id',
+  'program-data-address',
+  'program-sha256',
   'config-address',
+  'config-revision',
+  'issuer-authority',
   'required-atomic-amount',
   'minimum-lock-seconds',
   'challenge-endpoint',
@@ -40,6 +44,9 @@ async function main() {
   const amount = BigInt(options['required-atomic-amount']);
   const lock = Number(options['minimum-lock-seconds']);
   if (amount <= 0n || !Number.isSafeInteger(lock)) throw new Error('Invalid stake amount or lock duration');
+  if (amount !== 69_000_000_000n || lock !== 7_776_000) {
+    throw new Error('Production policy requires exactly 69,000 NEAL at six decimals and a 90-day lock');
+  }
 
   const candidate = structuredClone(policy);
   candidate.identity.challengeEndpoint = options['challenge-endpoint'];
@@ -47,8 +54,13 @@ async function main() {
   candidate.accessStake = {
     ...candidate.accessStake,
     status: 'active',
+    contractVersion: 2,
     programId: options['program-id'],
+    programDataAddress: options['program-data-address'],
+    programSha256: options['program-sha256'].toLowerCase(),
     configAddress: options['config-address'],
+    configRevision: String(BigInt(options['config-revision'])),
+    issuerAuthority: options['issuer-authority'],
     mint: launch.execution?.mintAddress,
     requiredAtomicAmount: amount.toString(),
     minimumLockSeconds: lock,

@@ -44,6 +44,7 @@ pub fn initialize_config(
     program_id: Pubkey,
     payer: Pubkey,
     authority: Pubkey,
+    issuer_authority: Pubkey,
     config_id: u64,
     mint: Pubkey,
     required_amount: u64,
@@ -62,19 +63,18 @@ pub fn initialize_config(
         ],
         AccessStakeInstruction::InitializeConfig {
             config_id,
+            issuer_authority,
             required_amount,
             minimum_lock_seconds,
         },
     )
 }
 
-pub fn update_config(
+pub fn set_paused(
     program_id: Pubkey,
     authority: Pubkey,
     config: Pubkey,
-    required_amount: Option<u64>,
-    minimum_lock_seconds: Option<i64>,
-    paused: Option<bool>,
+    paused: bool,
 ) -> Result<Instruction, AccessStakeError> {
     build(
         program_id,
@@ -82,11 +82,23 @@ pub fn update_config(
             AccountMeta::new_readonly(authority, true),
             AccountMeta::new(config, false),
         ],
-        AccessStakeInstruction::UpdateConfig {
-            required_amount,
-            minimum_lock_seconds,
-            paused,
-        },
+        AccessStakeInstruction::SetPaused { paused },
+    )
+}
+
+pub fn set_issuer_authority(
+    program_id: Pubkey,
+    authority: Pubkey,
+    config: Pubkey,
+    issuer_authority: Pubkey,
+) -> Result<Instruction, AccessStakeError> {
+    build(
+        program_id,
+        vec![
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(config, false),
+        ],
+        AccessStakeInstruction::SetIssuerAuthority { issuer_authority },
     )
 }
 
@@ -99,6 +111,9 @@ pub fn stake(
     vault: Pubkey,
     mint: Pubkey,
     token_decimals: u8,
+    expected_required_amount: u64,
+    expected_minimum_lock_seconds: i64,
+    expected_revision: u64,
 ) -> Result<Instruction, AccessStakeError> {
     let (receipt, _) = stake_address(&program_id, &config, &staker);
     build(
@@ -114,7 +129,12 @@ pub fn stake(
             AccountMeta::new_readonly(system_program::id(), false),
             AccountMeta::new_readonly(sysvar::clock::id(), false),
         ],
-        AccessStakeInstruction::Stake { token_decimals },
+        AccessStakeInstruction::Stake {
+            token_decimals,
+            expected_required_amount,
+            expected_minimum_lock_seconds,
+            expected_revision,
+        },
     )
 }
 
@@ -133,6 +153,25 @@ pub fn claim_access(
             AccountMeta::new_readonly(sysvar::clock::id(), false),
         ],
         AccessStakeInstruction::ClaimAccess,
+    )
+}
+
+pub fn consume_claim(
+    program_id: Pubkey,
+    issuer: Pubkey,
+    config: Pubkey,
+    staker: Pubkey,
+) -> Result<Instruction, AccessStakeError> {
+    let (receipt, _) = stake_address(&program_id, &config, &staker);
+    build(
+        program_id,
+        vec![
+            AccountMeta::new_readonly(issuer, true),
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(receipt, false),
+            AccountMeta::new_readonly(sysvar::clock::id(), false),
+        ],
+        AccessStakeInstruction::ConsumeClaim,
     )
 }
 

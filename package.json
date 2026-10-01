@@ -18,6 +18,8 @@
     "site:sync": "npm run sync -w @neal/public-site",
     "site:dev": "npm run dev -w @neal/public-site",
     "site:typecheck": "npm run typecheck -w @neal/public-site",
+    "site:validate-policy": "node scripts/validate-wallet-policy.mjs",
+    "site:manage-access-stake": "node scripts/manage-access-stake-config.mjs",
     "site:build": "npm run build -w @neal/public-site"
   }
 }

@@ -24,11 +24,17 @@ import type { WalletIdentityController, WalletTransactionSession } from './walle
 const CONFIG_DISCRIMINATOR = 'NEALACFG';
 const STAKE_DISCRIMINATOR = 'NEALSTAK';
 const NEAL_SERVER = 'matrix.nealtheseal.org';
+const UPGRADEABLE_LOADER_ID = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
 type AccessStakePolicy = {
   status: 'planned' | 'active' | 'paused';
+  contractVersion: 2;
   programId: string | null;
+  programDataAddress: string | null;
+  programSha256: string | null;
   configAddress: string | null;
+  configRevision: string | null;
+  issuerAuthority: string | null;
   mint: string;
   tokenProgram: string;
   tokenDecimals: number;
@@ -47,14 +53,20 @@ type WalletPolicy = {
 type ConfiguredPolicy = AccessStakePolicy & {
   status: 'active' | 'paused';
   programId: string;
+  programDataAddress: string;
+  programSha256: string;
   configAddress: string;
+  configRevision: string;
+  issuerAuthority: string;
   requiredAtomicAmount: string;
   minimumLockSeconds: number;
 };
 
 type ConfigState = {
+  issuerAuthority: PublicKey;
   mint: PublicKey;
   tokenProgram: PublicKey;
+  revision: bigint;
   requiredAmount: bigint;
   minimumLockSeconds: number;
   paused: boolean;
@@ -66,6 +78,7 @@ type ReceiptState = {
   amount: bigint;
   unlockAt: number;
   claimedAt: number;
+  issuedAt: number;
   released: boolean;
 };
 
@@ -90,13 +103,29 @@ const required = <T extends HTMLElement>(id: string): T => {
   return element;
 };
 
+const validPublicKey = (value: string | null): boolean => {
+  if (!value) return false;
+  try {
+    new PublicKey(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const parseConfiguredPolicy = (walletPolicy: WalletPolicy, canonicalMint: string | null): ConfiguredPolicy | null => {
   const policy = walletPolicy.accessStake;
   if (!policy || policy.status === 'planned') return null;
   try {
     if (
-      !policy.programId
-      || !policy.configAddress
+      !['active', 'paused'].includes(policy.status)
+      || policy.contractVersion !== 2
+      || !validPublicKey(policy.programId)
+      || !validPublicKey(policy.programDataAddress)
+      || !policy.programSha256
+      || !validPublicKey(policy.configAddress)
+      || policy.configRevision === null
+      || !validPublicKey(policy.issuerAuthority)
       || !policy.requiredAtomicAmount
       || policy.minimumLockSeconds === null
       || !Number.isSafeInteger(policy.minimumLockSeconds)
@@ -106,6 +135,8 @@ const parseConfiguredPolicy = (walletPolicy: WalletPolicy, canonicalMint: string
       || policy.tokenDecimals !== 6
       || canonicalMint !== policy.mint
       || BigInt(policy.requiredAtomicAmount) <= 0n
+      || BigInt(policy.configRevision) < 0n
+      || !/^[0-9a-f]{64}$/u.test(policy.programSha256)
       || (policy.status === 'active' && (
         !policy.tokenEndpoint
         || !walletPolicy.identity.challengeEndpoint
@@ -153,29 +184,62 @@ const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean =>
 const discriminator = (data: Buffer, expected: string): boolean =>
   new TextDecoder().decode(data.subarray(0, 8)) === expected;
 
+const attestProgram = async (
+  connection: Connection,
+  program: PublicKey,
+  programDataAddress: PublicKey,
+  expectedHash: string,
+): Promise<void> => {
+  const [programInfo, programDataInfo] = await Promise.all([
+    connection.getAccountInfo(program, 'finalized'),
+    connection.getAccountInfo(programDataAddress, 'finalized'),
+  ]);
+  if (
+    !programInfo?.executable
+    || !programInfo.owner.equals(UPGRADEABLE_LOADER_ID)
+    || programInfo.data.length < 36
+    || programInfo.data.readUInt32LE(0) !== 2
+    || !new PublicKey(programInfo.data.subarray(4, 36)).equals(programDataAddress)
+  ) throw new Error('The access-stake program does not match its reviewed ProgramData account.');
+  if (
+    !programDataInfo
+    || !programDataInfo.owner.equals(UPGRADEABLE_LOADER_ID)
+    || programDataInfo.data.length <= 45
+    || programDataInfo.data.readUInt32LE(0) !== 3
+    || programDataInfo.data[12] !== 0
+  ) throw new Error('The access-stake program is missing, invalid, or still upgradeable.');
+  const programBytes = new Uint8Array(programDataInfo.data.length - 45);
+  programBytes.set(programDataInfo.data.subarray(45));
+  const digest = await crypto.subtle.digest('SHA-256', programBytes.buffer);
+  const actualHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  if (actualHash !== expectedHash) throw new Error('The deployed access-stake program bytes do not match the reviewed release.');
+};
+
 const readConfig = async (
   connection: Connection,
   program: PublicKey,
   configAddress: PublicKey,
 ): Promise<ConfigState> => {
   const info = await connection.getAccountInfo(configAddress, 'finalized');
-  if (!info || !info.owner.equals(program) || info.data.length !== 131 || !discriminator(info.data, CONFIG_DISCRIMINATOR) || info.data[8] !== 1) {
+  if (!info || !info.owner.equals(program) || info.data.length !== 171 || !discriminator(info.data, CONFIG_DISCRIMINATOR) || info.data[8] !== 2) {
     throw new Error('The finalized access-stake config is invalid.');
   }
   const authority = new PublicKey(info.data.subarray(9, 41));
-  const configId = info.data.subarray(41, 49);
-  const bump = info.data[130];
+  const configId = info.data.subarray(73, 81);
+  const bump = info.data[170];
   const expected = PublicKey.createProgramAddressSync(
     [new TextEncoder().encode('access-config'), authority.toBytes(), configId, Uint8Array.of(bump)],
     program,
   );
   if (!expected.equals(configAddress)) throw new Error('The access-stake config PDA does not match its contents.');
   return {
-    mint: new PublicKey(info.data.subarray(49, 81)),
-    tokenProgram: new PublicKey(info.data.subarray(81, 113)),
-    requiredAmount: info.data.readBigUInt64LE(113),
-    minimumLockSeconds: Number(info.data.readBigInt64LE(121)),
-    paused: info.data[129] !== 0,
+    issuerAuthority: new PublicKey(info.data.subarray(41, 73)),
+    mint: new PublicKey(info.data.subarray(81, 113)),
+    tokenProgram: new PublicKey(info.data.subarray(113, 145)),
+    revision: info.data.readBigUInt64LE(145),
+    requiredAmount: info.data.readBigUInt64LE(153),
+    minimumLockSeconds: Number(info.data.readBigInt64LE(161)),
+    paused: info.data[169] !== 0,
   };
 };
 
@@ -194,14 +258,14 @@ const readReceipt = async (
   const address = receiptAddress(program, config, staker);
   const info = await connection.getAccountInfo(address, 'finalized');
   if (!info) return null;
-  if (!info.owner.equals(program) || info.data.length !== 147 || !discriminator(info.data, STAKE_DISCRIMINATOR) || info.data[8] !== 1) {
+  if (!info.owner.equals(program) || info.data.length !== 163 || !discriminator(info.data, STAKE_DISCRIMINATOR) || info.data[8] !== 2) {
     throw new Error('The finalized access-stake receipt is invalid.');
   }
   if (
     !bytesEqual(info.data.subarray(9, 41), config.toBytes())
     || !bytesEqual(info.data.subarray(41, 73), staker.toBytes())
   ) throw new Error('The access-stake receipt belongs to a different wallet or config.');
-  const bump = info.data[146];
+  const bump = info.data[162];
   const expected = PublicKey.createProgramAddressSync(
     [new TextEncoder().encode('access-stake'), config.toBytes(), staker.toBytes(), Uint8Array.of(bump)],
     program,
@@ -211,9 +275,10 @@ const readReceipt = async (
     address,
     vault: new PublicKey(info.data.subarray(73, 105)),
     amount: info.data.readBigUInt64LE(105),
-    unlockAt: Number(info.data.readBigInt64LE(121)),
-    claimedAt: Number(info.data.readBigInt64LE(129)),
-    released: info.data[145] === 1,
+    unlockAt: Number(info.data.readBigInt64LE(129)),
+    claimedAt: Number(info.data.readBigInt64LE(137)),
+    issuedAt: Number(info.data.readBigInt64LE(145)),
+    released: info.data[161] === 1,
   };
 };
 
@@ -379,6 +444,7 @@ export async function mountMatrixAccessStake(
   }
 
   const program = new PublicKey(policy.programId);
+  const programDataAddress = new PublicKey(policy.programDataAddress);
   const configAddress = new PublicKey(policy.configAddress);
   const mint = new PublicKey(policy.mint);
   const requiredAmount = BigInt(policy.requiredAtomicAmount);
@@ -386,12 +452,19 @@ export async function mountMatrixAccessStake(
   let receipt: ReceiptState | null = null;
   let rendering = false;
   let accessPaused = policy.status === 'paused';
+  let programAttested = false;
 
   const assertConfig = async (allowPaused = false): Promise<ConfigState> => {
+    if (!programAttested) {
+      await attestProgram(connection, program, programDataAddress, policy.programSha256);
+      programAttested = true;
+    }
     const state = await readConfig(connection, program, configAddress);
     if (
       !state.mint.equals(mint)
       || !state.tokenProgram.equals(TOKEN_2022_PROGRAM_ID)
+      || !state.issuerAuthority.equals(new PublicKey(policy.issuerAuthority))
+      || state.revision !== BigInt(policy.configRevision)
       || state.requiredAmount !== requiredAmount
       || state.minimumLockSeconds !== policy.minimumLockSeconds
     ) throw new Error('Published stake terms do not match the finalized on-chain config.');
@@ -514,7 +587,7 @@ export async function mountMatrixAccessStake(
       ui.stakeButton.disabled = true;
       setStatus(ui, 'Checking finalized terms and preparing the refundable stake…', 'busy');
       try {
-        await assertConfig();
+        const configState = await assertConfig();
         const staker = new PublicKey(session.account.address);
         const receiptKey = receiptAddress(program, configAddress, staker);
         const sourceAccounts = await connection.getParsedTokenAccountsByOwner(staker, { mint }, 'finalized');
@@ -531,6 +604,12 @@ export async function mountMatrixAccessStake(
           mint,
           TOKEN_2022_PROGRAM_ID,
         );
+        const stakeData = Buffer.alloc(26);
+        stakeData[0] = 3;
+        stakeData[1] = policy.tokenDecimals;
+        stakeData.writeBigUInt64LE(configState.requiredAmount, 2);
+        stakeData.writeBigInt64LE(BigInt(configState.minimumLockSeconds), 10);
+        stakeData.writeBigUInt64LE(configState.revision, 18);
         const stake = new TransactionInstruction({
           programId: program,
           keys: [
@@ -544,7 +623,7 @@ export async function mountMatrixAccessStake(
             { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
             { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
           ],
-          data: Buffer.from([2, policy.tokenDecimals]),
+          data: stakeData,
         });
         await sendInstructions(connection, session, [createVault, stake]);
         setStatus(ui, 'Stake finalized. The receipt is ready to claim.', 'good');
@@ -584,7 +663,7 @@ export async function mountMatrixAccessStake(
               { pubkey: receipt.address, isSigner: false, isWritable: true },
               { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
             ],
-            data: Buffer.from([3]),
+            data: Buffer.from([4]),
           });
           await sendInstructions(connection, session, [claim]);
         }
@@ -596,6 +675,10 @@ export async function mountMatrixAccessStake(
           body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v1' }),
         });
         const body = await tokenResponse.json() as { token?: unknown; error?: unknown };
+        if (tokenResponse.status === 401) {
+          walletController.invalidateServerAuthentication();
+          throw new Error('Wallet session expired. Verify the wallet again; the stake will not be repeated.');
+        }
         if (!tokenResponse.ok || typeof body.token !== 'string' || !body.token) {
           throw new Error(typeof body.error === 'string' ? body.error : 'The access-token issuer rejected this receipt.');
         }
@@ -642,7 +725,7 @@ export async function mountMatrixAccessStake(
             { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false },
             { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
           ],
-          data: Buffer.from([4, policy.tokenDecimals]),
+          data: Buffer.from([6, policy.tokenDecimals]),
         });
         await sendInstructions(connection, session, [createDestination, unstake]);
         setStatus(ui, 'Stake refund finalized.', 'good');

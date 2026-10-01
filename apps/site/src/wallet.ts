@@ -66,6 +66,7 @@ type WalletProof = {
   publicKey: string;
   digest: string;
   verification: 'local' | 'server';
+  serverSessionExpiresAt: number | null;
 };
 
 type HolderProof = {
@@ -216,7 +217,15 @@ export class WalletIdentityController {
     };
   }
 
+  invalidateServerAuthentication(): void {
+    if (this.#walletProof?.verification !== 'server') return;
+    this.#clearProofs();
+    this.#setStatus('Wallet session expired. Sign again to continue.', 'connected');
+    this.#render();
+  }
+
   getAuthenticationState(): WalletAuthenticationState {
+    this.#expireServerProof();
     return {
       connected: Boolean(this.#wallet && this.#account),
       address: this.#account?.address ?? null,
@@ -229,6 +238,7 @@ export class WalletIdentityController {
       this.#openDialog();
       return false;
     }
+    this.#expireServerProof();
     if (this.#walletProof?.verification === 'server') return true;
     await this.#verifyWallet();
     return this.getAuthenticationState().serverVerified;
@@ -377,7 +387,7 @@ export class WalletIdentityController {
       }
 
       if (output.account.address !== this.#account.address) throw new Error('Signed account changed during verification');
-      const verification = await this.#verifyWithServer(input, output, method);
+      const serverVerification = await this.#verifyWithServer(input, output, method);
       const digest = await digestProof(output.signedMessage, output.signature);
       this.#walletProof = {
         schema: 'neal.wallet-proof/v1',
@@ -393,11 +403,12 @@ export class WalletIdentityController {
         signature: encodeBase64Url(output.signature),
         publicKey: encodeBase64Url(new Uint8Array(this.#account.publicKey)),
         digest,
-        verification,
+        verification: serverVerification.verification,
+        serverSessionExpiresAt: serverVerification.sessionExpiresAt,
       };
       this.#holderProof = null;
       this.#setStatus(
-        verification === 'server'
+        serverVerification.verification === 'server'
           ? 'Wallet authenticated. No email. No password.'
           : 'Signature verified in this tab. Server session is not live yet.',
         'verified',
@@ -446,9 +457,9 @@ export class WalletIdentityController {
     input: SolanaSignInInput,
     output: SignOutput,
     method: WalletProof['method'],
-  ): Promise<WalletProof['verification']> {
+  ): Promise<{ verification: WalletProof['verification']; sessionExpiresAt: number | null }> {
     const endpoint = this.#policy.identity.verifyEndpoint;
-    if (!endpoint) return 'local';
+    if (!endpoint) return { verification: 'local', sessionExpiresAt: null };
     const response = await fetch(endpoint, {
       method: 'POST',
       credentials: 'include',
@@ -469,9 +480,12 @@ export class WalletIdentityController {
       }),
     });
     if (!response.ok) throw new Error('Wallet proof was rejected by the authentication service');
-    const body = await response.json() as { authenticated?: boolean };
+    const body = await response.json() as { authenticated?: boolean; sessionExpiresAt?: unknown };
     if (!body.authenticated) throw new Error('Wallet proof was not authenticated');
-    return 'server';
+    if (typeof body.sessionExpiresAt !== 'number' || body.sessionExpiresAt <= Date.now()) {
+      throw new Error('Wallet authentication service returned an invalid session expiry');
+    }
+    return { verification: 'server', sessionExpiresAt: body.sessionExpiresAt };
   }
 
   async #checkHolder(): Promise<void> {
@@ -582,7 +596,18 @@ export class WalletIdentityController {
     this.#holderProof = null;
   }
 
+  #expireServerProof(): void {
+    if (
+      this.#walletProof?.verification === 'server'
+      && (this.#walletProof.serverSessionExpiresAt ?? 0) <= Date.now()
+    ) {
+      this.#clearProofs();
+      this.#setStatus('Wallet session expired. Sign again to continue.', 'connected');
+    }
+  }
+
   #render(): void {
+    this.#expireServerProof();
     const connected = Boolean(this.#wallet && this.#account);
     const verified = Boolean(this.#walletProof);
     const mint = this.#getCanonicalMint();

@@ -2,13 +2,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { Connection, PublicKey } from '@solana/web3.js';
 
-const CONFIG_SIZE = 131;
+const CONFIG_SIZE = 171;
 const CONFIG_DISCRIMINATOR = Buffer.from('NEALACFG');
 const CONFIG_SEED = Buffer.from('access-config');
 const TOKEN_2022_PROGRAM = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+const UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 
@@ -50,18 +52,20 @@ const checkPreflight = async (url, publicOrigin) => {
 };
 
 const parseConfig = (data) => {
-  if (data.length !== CONFIG_SIZE || !data.subarray(0, 8).equals(CONFIG_DISCRIMINATOR) || data[8] !== 1) {
+  if (data.length !== CONFIG_SIZE || !data.subarray(0, 8).equals(CONFIG_DISCRIMINATOR) || data[8] !== 2) {
     throw new Error('The finalized config account has an unsupported wire shape');
   }
   return {
     authority: new PublicKey(data.subarray(9, 41)),
-    configId: data.readBigUInt64LE(41),
-    mint: new PublicKey(data.subarray(49, 81)),
-    tokenProgram: new PublicKey(data.subarray(81, 113)),
-    requiredAmount: data.readBigUInt64LE(113),
-    minimumLockSeconds: data.readBigInt64LE(121),
-    paused: data[129] !== 0,
-    bump: data[130],
+    issuerAuthority: new PublicKey(data.subarray(41, 73)),
+    configId: data.readBigUInt64LE(73),
+    mint: new PublicKey(data.subarray(81, 113)),
+    tokenProgram: new PublicKey(data.subarray(113, 145)),
+    revision: data.readBigUInt64LE(145),
+    requiredAmount: data.readBigUInt64LE(153),
+    minimumLockSeconds: data.readBigInt64LE(161),
+    paused: data[169] !== 0,
+    bump: data[170],
   };
 };
 
@@ -71,6 +75,7 @@ export async function verifyAccessStake(policy, launchRecord, { checkEndpoints =
   const stake = policy.accessStake;
   if (!stake || stake.status === 'planned') throw new Error('Access staking is still planned');
   if (!['active', 'paused'].includes(stake.status)) throw new Error('Unsupported access-stake status');
+  if (stake.contractVersion !== 2) throw new Error('Unsupported access-stake contract version');
 
   const programId = new PublicKey(stake.programId);
   const configAddress = new PublicKey(stake.configAddress);
@@ -87,14 +92,32 @@ export async function verifyAccessStake(policy, launchRecord, { checkEndpoints =
 
   const rpc = endpoint(policy.holderProof?.rpcEndpoint, 'holderProof.rpcEndpoint');
   const connection = new Connection(rpc.toString(), 'finalized');
-  const [genesis, programAccount, configAccount, mintAccount] = await Promise.all([
+  const programDataAddress = new PublicKey(stake.programDataAddress);
+  if (!/^[0-9a-f]{64}$/u.test(stake.programSha256)) throw new Error('Invalid reviewed program SHA-256');
+  const [genesis, programAccount, programDataAccount, configAccount, mintAccount] = await Promise.all([
     connection.getGenesisHash(),
     connection.getAccountInfo(programId, 'finalized'),
+    connection.getAccountInfo(programDataAddress, 'finalized'),
     connection.getAccountInfo(configAddress, 'finalized'),
     connection.getParsedAccountInfo(mint, 'finalized'),
   ]);
   if (genesis !== MAINNET_GENESIS) throw new Error('Holder-proof RPC is not Solana mainnet');
-  if (!programAccount?.executable) throw new Error('Program account is missing or not executable at finalized');
+  if (
+    !programAccount?.executable
+    || !programAccount.owner.equals(UPGRADEABLE_LOADER)
+    || programAccount.data.length < 36
+    || programAccount.data.readUInt32LE(0) !== 2
+    || !new PublicKey(programAccount.data.subarray(4, 36)).equals(programDataAddress)
+  ) throw new Error('Program account does not match the reviewed ProgramData account');
+  if (
+    !programDataAccount
+    || !programDataAccount.owner.equals(UPGRADEABLE_LOADER)
+    || programDataAccount.data.length <= 45
+    || programDataAccount.data.readUInt32LE(0) !== 3
+    || programDataAccount.data[12] !== 0
+  ) throw new Error('ProgramData is missing, invalid, or still upgradeable');
+  const deployedHash = createHash('sha256').update(programDataAccount.data.subarray(45)).digest('hex');
+  if (deployedHash !== stake.programSha256) throw new Error('Deployed program bytes do not match the reviewed SBF artifact');
   if (!configAccount || !configAccount.owner.equals(programId)) throw new Error('Config account is missing or owned by another program');
   const config = parseConfig(configAccount.data);
   const configId = Buffer.alloc(8);
@@ -106,6 +129,12 @@ export async function verifyAccessStake(policy, launchRecord, { checkEndpoints =
   if (!expectedConfig.equals(configAddress)) throw new Error('Config address is not the expected PDA');
   if (!config.mint.equals(mint) || !config.tokenProgram.equals(TOKEN_2022_PROGRAM)) {
     throw new Error('Finalized config pins different token accounts');
+  }
+  if (stake.issuerAuthority !== config.issuerAuthority.toBase58()) {
+    throw new Error('Published issuer authority does not match the finalized config');
+  }
+  if (stake.configRevision !== config.revision.toString()) {
+    throw new Error('Published config revision does not match the finalized config');
   }
   if (config.requiredAmount !== requiredAmount || config.minimumLockSeconds !== minimumLockSeconds) {
     throw new Error('Published stake terms do not match the finalized config');
@@ -151,22 +180,32 @@ export async function verifyAccessStake(policy, launchRecord, { checkEndpoints =
 
   return {
     programId: programId.toBase58(),
+    programDataAddress: programDataAddress.toBase58(),
+    programSha256: deployedHash,
     configAddress: configAddress.toBase58(),
     mint: mint.toBase58(),
     requiredAtomicAmount: requiredAmount.toString(),
     minimumLockSeconds: Number(minimumLockSeconds),
+    configRevision: config.revision.toString(),
+    issuerAuthority: config.issuerAuthority.toBase58(),
     status: stake.status,
     issuerOrigin: challenge.origin,
   };
 }
 
 const parseCli = (argv) => {
-  const options = { policy: 'apps/site/public/wallet-policy.json', launch: 'apps/site/public/launch-record.json', requireActive: false };
+  const options = {
+    policy: 'apps/site/public/wallet-policy.json',
+    launch: 'apps/site/public/launch-record.json',
+    requireActive: false,
+    informationalPlanned: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--policy') options.policy = argv[++index];
     else if (argument === '--launch') options.launch = argv[++index];
     else if (argument === '--require-active') options.requireActive = true;
+    else if (argument === '--informational-planned') options.informationalPlanned = true;
     else throw new Error(`Unknown argument: ${argument}`);
   }
   return options;
@@ -182,7 +221,11 @@ async function main() {
   if (policy.accessStake?.status === 'planned' && !options.requireActive) {
     const blockers = [
       ['programId', policy.accessStake.programId],
+      ['programDataAddress', policy.accessStake.programDataAddress],
+      ['programSha256', policy.accessStake.programSha256],
       ['configAddress', policy.accessStake.configAddress],
+      ['configRevision', policy.accessStake.configRevision],
+      ['issuerAuthority', policy.accessStake.issuerAuthority],
       ['requiredAtomicAmount', policy.accessStake.requiredAtomicAmount],
       ['minimumLockSeconds', policy.accessStake.minimumLockSeconds],
       ['identity.challengeEndpoint', policy.identity?.challengeEndpoint],
@@ -190,6 +233,7 @@ async function main() {
       ['tokenEndpoint', policy.accessStake.tokenEndpoint],
     ].filter(([, value]) => value === null || value === undefined || value === '');
     console.log(JSON.stringify({ status: 'planned', blockers: blockers.map(([name]) => name) }, null, 2));
+    if (!options.informationalPlanned) process.exitCode = 1;
     return;
   }
   console.log(JSON.stringify(await verifyAccessStake(policy, launch), null, 2));

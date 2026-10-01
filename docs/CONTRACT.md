@@ -64,7 +64,8 @@ for exact flow and compatibility rules.
 
 `wallet-policy.json.accessStake` is an additive optional member of
 `neal.wallet-policy/v1`. Its lifecycle is `planned | active | paused`. It
-publishes the exact program, config PDA, canonical mint, Token-2022 program,
+publishes contract version 2, the exact program and immutable ProgramData hash,
+config PDA and revision, issuer authority, canonical mint, Token-2022 program,
 decimals, integer atomic amount, minimum lock seconds, and token endpoint. All
 deployment-dependent values remain nullable while `planned`. A consumer may
 enable staking only when status is `active`, every value is populated, the
@@ -85,13 +86,15 @@ relax any program, config, identity, issuer, or finalized-chain activation gate.
 
 The reviewed producer path for an `active` value is
 `scripts/stage-access-stake-policy.mjs`. It refuses to write until the canonical
-mint, executable program, config PDA, decoded finalized terms, revoked mint and
-freeze authorities, and credentialed issuer preflights all match. Directly
+mint, executable immutable program bytes, config PDA/revision/issuer, decoded
+finalized terms, Token-2022 extension allowlist, revoked mint and freeze
+authorities, and credentialed issuer preflights all match. Directly
 changing the lifecycle string is not an activation procedure.
 
 `neal.matrix-access-token-request/v1` contains no Matrix username or password.
 It is authenticated by the opaque SIWS session cookie. A successful response
 uses `neal.matrix-access-token/v1` and returns one Synapse registration token,
-its millisecond expiry, and the finalized receipt address. The issuer ledger
-enforces one token per receipt and may return the same unexpired token after a
-safe retry; it must never mint a second token for that receipt.
+its millisecond expiry, and the finalized receipt address. The issuer first
+finalizes the issuer-authority-only on-chain consumption marker. Its ledger may
+return the same unexpired token after a safe retry; it must never mint a second
+token for that receipt, including after database restore.
