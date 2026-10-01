@@ -16,8 +16,8 @@
 | Future YAHOO program/indexer | Undecided | Only exists if a later product decision approves wallet-linked, global, or on-chain YAHOOS | Undecided |
 | NEAL Matrix client | Vanilla TypeScript + official `matrix-js-sdk` | Show the public GC transcript, discover a user's homeserver, initiate account creation or login, knock, moderate, and exchange GC messages without an Element redirect | Session access token only when signed in |
 | NEAL Matrix homeserver | Synapse + Postgres + filtered local gateway | Serve `matrix.nealtheseal.org`, the public unencrypted GC, and a fixed read-only message feed | Server signing keys and a server-held guest reader token |
-| Access stake program | Solana Token-2022 program | Hold refundable NEAL stakes in receipt-owned vaults and record a one-time access claim | User wallets sign stake, claim, and release instructions |
-| Matrix access issuer | Unprivileged Python service + Unix socket + SQLite | Verify SIWS and finalized stake receipts, then create one 15-minute/one-use Synapse registration token per receipt | Ephemeral Synapse admin only; no wallet or Matrix user keys |
+| Access stake program | Solana Token-2022 program | Hold refundable NEAL stakes, bind immutable terms/revisions, and record one-time issuer consumption | User wallets sign stake, claim, and release; issuer signs consumption only |
+| Matrix access issuer | Dynamic-user Python service + Unix socket + SQLite | Verify SIWS, dual-RPC chain state, immutable program bytes, and consume receipts before one-use Synapse token creation | Dedicated Solana issuer key and ephemeral Synapse admin; no wallet or Matrix user keys |
 | Future NEAL Nostr relay | strfry + isolated LMDB volume | Reserved plan for `nostr.nealtheseal.org`; not deployed | No user or wallet keys |
 | NEAL agent runner | Custom Nostr bridge + Goose ACP | Connect a separately keyed NEAL agent to reviewed event threads | Agent Nostr key only |
 | Quest ledger | Append-only signed records | Record eligibility inputs and decisions | Service signing key only |
@@ -35,12 +35,13 @@
 - Holder proof combines a verified wallet-control proof with a finalized RPC read for the canonical mint at a recorded slot. Connection alone is not holder proof.
 - Matrix access staking is a separate authorization flow from holder proof. The
   program escrows the configured canonical NEAL amount in a receipt PDA vault;
-  the authority can update future terms or pause new stake/claim actions but
-  has no withdrawal instruction. A user may release the full vault after the
-  snapshotted minimum lock, including while paused.
+  amount and lock are immutable, while pause or issuer rotation increments the
+  revision. Authority has no withdrawal instruction. A user may release the
+  full vault after the snapshotted minimum lock, including while paused.
 - The access issuer accepts only server-authenticated wallets, derives the
-  expected receipt, reads config/receipt/vault at `finalized`, and durably
-  reserves the receipt before calling Synapse. It never receives the desired
+  expected receipt, requires two RPCs to agree on finalized config/receipt/vault
+  state and exact immutable program bytes, then durably reserves and consumes
+  the receipt on chain before calling Synapse. It never receives the desired
   Matrix username or password. Matrix account continuity does not depend on a
   later unstake.
 - The issuer listens on a host Unix socket shared read-only into Caddy. Only the

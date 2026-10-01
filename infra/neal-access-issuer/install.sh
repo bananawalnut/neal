@@ -19,19 +19,26 @@ source_root="$(cd "$(dirname "$0")" && pwd)"
 install_root="/opt/neal-access-issuer"
 environment_file="/etc/neal-access-issuer.env"
 matrix_secret="/srv/neal-matrix/runtime/synapse/registration-shared-secret"
+issuer_keypair="/etc/neal-access-issuer-issuer-keypair.json"
 
-for required in issuer.py requirements.txt access-issuer.env.example neal-access-issuer.service; do
+for required in issuer.py reconcile.py requirements-deploy.txt access-issuer.env.example neal-access-issuer.service; do
   [[ -f "$source_root/$required" ]] || { printf 'Missing deployment file: %s\n' "$source_root/$required" >&2; exit 1; }
 done
 command -v python3 >/dev/null || { printf 'python3 is required.\n' >&2; exit 1; }
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)' || {
+  printf 'Python 3.13 is required by the hash-locked deployment wheel set.\n' >&2
+  exit 1
+}
 python3 -m venv --help >/dev/null 2>&1 || { printf 'python3-venv is required.\n' >&2; exit 1; }
-
-getent group neal-access >/dev/null || groupadd --system neal-access
-id neal-access >/dev/null 2>&1 || useradd --system --gid neal-access --home-dir /nonexistent --shell /usr/sbin/nologin neal-access
+[[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] || {
+  printf 'The hash-locked deployment wheel set supports Linux x86_64 only.\n' >&2
+  exit 1
+}
 
 install -d -m 0755 "$install_root"
 install -m 0644 "$source_root/issuer.py" "$install_root/issuer.py"
-install -m 0644 "$source_root/requirements.txt" "$install_root/requirements.txt"
+install -m 0755 "$source_root/reconcile.py" "$install_root/reconcile.py"
+install -m 0644 "$source_root/requirements-deploy.txt" "$install_root/requirements-deploy.txt"
 install -m 0644 "$source_root/neal-access-issuer.service" /etc/systemd/system/neal-access-issuer.service
 if [[ ! -f "$environment_file" ]]; then
   install -m 0600 "$source_root/access-issuer.env.example" "$environment_file"
@@ -41,7 +48,7 @@ fi
 if [[ ! -x "$install_root/venv/bin/python" ]]; then
   python3 -m venv "$install_root/venv"
 fi
-"$install_root/venv/bin/pip" install --disable-pip-version-check --no-cache-dir --requirement "$install_root/requirements.txt"
+"$install_root/venv/bin/pip" install --disable-pip-version-check --no-cache-dir --only-binary=:all: --require-hashes --requirement "$install_root/requirements-deploy.txt"
 systemctl daemon-reload
 
 if [[ "$start_service" -ne 1 ]]; then
@@ -55,8 +62,8 @@ if grep -q 'REPLACE_WITH' "$environment_file"; then
 fi
 chmod 0600 "$environment_file"
 [[ -s "$matrix_secret" ]] || { printf 'Matrix registration secret is missing.\n' >&2; exit 1; }
-chown 991:neal-access "$matrix_secret"
-chmod 0640 "$matrix_secret"
+[[ -s "$issuer_keypair" ]] || { printf 'Issuer authority keypair is missing at %s.\n' "$issuer_keypair" >&2; exit 1; }
+chmod 0600 "$matrix_secret" "$issuer_keypair"
 
 cd /srv/neal-matrix
 docker compose config --quiet

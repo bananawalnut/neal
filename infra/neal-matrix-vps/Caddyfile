@@ -105,6 +105,9 @@ matrix.nealtheseal.org {
         header Origin https://nealtheseal.org
     }
     handle @neal_access_post {
+        request_body {
+            max_size 32KB
+        }
         reverse_proxy unix//run/neal-access-issuer/issuer.sock
     }
 

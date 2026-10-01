@@ -22,12 +22,22 @@ import issuer
 class FakeSolana:
     def __init__(self, receipt: str):
         self.receipt = receipt
+        self.consume_calls = 0
+
+    def receipt_address(self, _address: str) -> str:
+        return self.receipt
 
     def verify(self, _address: str) -> str:
         return self.receipt
 
+    def consume(self, _address: str, receipt: str) -> str:
+        self.consume_calls += 1
+        if receipt != self.receipt:
+            raise AssertionError("wrong receipt")
+        return "consume-signature"
+
     def config(self) -> dict[str, int]:
-        return {"required_amount": 25_000_000, "minimum_lock_seconds": 604_800}
+        return {"required_amount": 25_000_000, "minimum_lock_seconds": 604_800, "revision": 0}
 
 
 class FakeMatrix:
@@ -48,18 +58,56 @@ class FailingMatrix(FakeMatrix):
         raise RuntimeError("simulated Matrix failure")
 
 
+class FakeReconcileIssuer(issuer.MatrixIssuer):
+    def __init__(self, settings: issuer.Settings, store: issuer.Store):
+        super().__init__(settings, store)
+        self.calls: list[tuple[str, str]] = []
+
+    def temporary_admin(self) -> tuple[str, str]:
+        return "@reconciler:test", "reconciler-token"
+
+    def request_json(self, method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        self.calls.append((method, path))
+        return {}
+
+    def deactivate(self, user_id: str, _token: str) -> None:
+        self.calls.append(("DEACTIVATE", user_id))
+
+
 class IssuerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        secret = Path(self.temp.name) / "secret"
+        secret.write_text("test-secret")
+        issuer_keypair = Path(self.temp.name) / "issuer.json"
+        signer = Ed25519PrivateKey.generate()
+        signer_seed = signer.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        signer_public = signer.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        issuer_keypair.write_text(str(list(signer_seed + signer_public)))
         self.settings = issuer.Settings(
             database=Path(self.temp.name) / "issuer.sqlite3",
-            rpc_url="https://rpc.invalid",
+            rpc_urls=("https://rpc-a.invalid", "https://rpc-b.invalid"),
+            chain_id="solana:mainnet",
+            genesis_hash=issuer.CHAIN_GENESIS["solana:mainnet"],
             program_id="11111111111111111111111111111111",
+            program_data_address="11111111111111111111111111111111",
+            program_sha256="0" * 64,
             config_address="11111111111111111111111111111111",
             mint="11111111111111111111111111111111",
+            expected_revision=0,
+            expected_amount=25_000_000,
+            expected_lock_seconds=604_800,
+            issuer_keypair_file=issuer_keypair,
             public_origin="https://nealtheseal.org",
             matrix_url="http://127.0.0.1:8008",
-            matrix_secret_file=Path(self.temp.name) / "secret",
+            matrix_secret_file=secret,
         )
 
     def tearDown(self) -> None:
@@ -130,6 +178,7 @@ class IssuerTests(unittest.TestCase):
         self.assertEqual(first["token"], "one-use-token")
         self.assertEqual(second["token"], first["token"])
         self.assertEqual(matrix.calls, 1)
+        self.assertEqual(solana.consume_calls, 1)
 
     def test_expired_or_failed_claim_never_issues_a_second_token(self) -> None:
         address = "11111111111111111111111111111111"
@@ -164,9 +213,24 @@ class IssuerTests(unittest.TestCase):
                 "status": "ready",
                 "requiredAtomicAmount": "25000000",
                 "minimumLockSeconds": 604_800,
+                "configRevision": "0",
             },
         )
 
+    def test_admin_cleanup_reconciliation_revokes_token_and_both_admins(self) -> None:
+        store = issuer.Store(self.settings.database)
+        store.add_admin_cleanup("@orphan:test", "registration-token", "cleanup failed")
+        matrix = FakeReconcileIssuer(self.settings, store)
+        matrix.reconcile_admin_cleanup("@orphan:test")
+        self.assertEqual(store.unresolved_admin_cleanups(), 0)
+        self.assertEqual(
+            matrix.calls,
+            [
+                ("DELETE", "/_synapse/admin/v1/registration_tokens/registration-token"),
+                ("DEACTIVATE", "@orphan:test"),
+                ("DEACTIVATE", "@reconciler:test"),
+            ],
+        )
     def test_unix_socket_serves_health_without_opening_tcp(self) -> None:
         socket_path = Path(self.temp.name) / "issuer.sock"
         settings = dataclasses.replace(self.settings, socket_path=socket_path)
@@ -201,10 +265,18 @@ class IssuerTests(unittest.TestCase):
         secret.write_text("test-secret")
         environment = {
             "NEAL_ACCESS_DATABASE": str(Path(self.temp.name) / "issuer.sqlite3"),
-            "NEAL_ACCESS_SOLANA_RPC": "https://solana-rpc.publicnode.com",
+            "NEAL_ACCESS_SOLANA_RPCS": "https://rpc-a.invalid,https://rpc-b.invalid",
+            "NEAL_ACCESS_CHAIN_ID": "solana:mainnet",
+            "NEAL_ACCESS_SOLANA_GENESIS_HASH": issuer.CHAIN_GENESIS["solana:mainnet"],
             "NEAL_ACCESS_PROGRAM_ID": "11111111111111111111111111111111",
+            "NEAL_ACCESS_PROGRAM_DATA_ADDRESS": "11111111111111111111111111111111",
+            "NEAL_ACCESS_PROGRAM_SHA256": "0" * 64,
             "NEAL_ACCESS_CONFIG_ADDRESS": "11111111111111111111111111111111",
             "NEAL_ACCESS_MINT": "11111111111111111111111111111111",
+            "NEAL_ACCESS_EXPECTED_REVISION": "0",
+            "NEAL_ACCESS_EXPECTED_AMOUNT": "25000000",
+            "NEAL_ACCESS_EXPECTED_LOCK_SECONDS": "604800",
+            "NEAL_ACCESS_ISSUER_KEYPAIR_FILE": str(self.settings.issuer_keypair_file),
             "NEAL_ACCESS_PUBLIC_ORIGIN": "https://nealtheseal.org",
             "NEAL_ACCESS_MATRIX_URL": "http://127.0.0.1:8008",
             "NEAL_ACCESS_MATRIX_SECRET_FILE": str(secret),
@@ -224,21 +296,41 @@ class IssuerTests(unittest.TestCase):
         config = b"".join(
             (
                 issuer.CONFIG_DISCRIMINATOR,
-                b"\x01",
+                b"\x02",
+                key,
                 key,
                 struct.pack("<Q", 7),
                 key,
                 issuer.public_key(issuer.TOKEN_2022_PROGRAM),
-                struct.pack("<Qq", 25_000_000, 604_800),
+                struct.pack("<QQq", 3, 25_000_000, 604_800),
                 b"\x00\xfe",
             )
         )
         parsed = issuer.parse_config(config)
         self.assertEqual(parsed["config_id"], 7)
         self.assertEqual(parsed["required_amount"], 25_000_000)
+        self.assertEqual(parsed["revision"], 3)
         self.assertEqual(parsed["bump"], 254)
         with self.assertRaises(issuer.IssuerError):
             issuer.parse_config(config[:-1])
+
+    def test_independent_rpc_disagreement_fails_closed(self) -> None:
+        verifier = issuer.SolanaVerifier(self.settings)
+        with patch.object(
+            verifier,
+            "rpc_endpoint",
+            side_effect=[
+                {"context": {"slot": 10}, "value": {"lamports": 1}},
+                {"context": {"slot": 11}, "value": {"lamports": 2}},
+            ],
+        ):
+            with self.assertRaisesRegex(issuer.IssuerError, "disagree"):
+                verifier.rpc("getAccountInfo", ["address"])
+
+    def test_issuer_keypair_rejects_mismatched_public_half(self) -> None:
+        self.settings.issuer_keypair_file.write_text(str([0] * 64))
+        with self.assertRaisesRegex(issuer.IssuerError, "does not match"):
+            issuer.SolanaVerifier(self.settings)
 
 
 if __name__ == "__main__":

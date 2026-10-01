@@ -15,6 +15,7 @@ use solana_sdk::{
 };
 use solana_system_interface::instruction as system_instruction;
 use spl_token_2022::{
+    extension::{ExtensionType, transfer_fee::instruction::initialize_transfer_fee_config},
     instruction::{self as token_instruction, AuthorityType},
     state::{Account as TokenAccount, Mint},
 };
@@ -118,6 +119,84 @@ async fn receipt(context: &mut ProgramTestContext, address: Pubkey) -> StakeRece
 }
 
 #[tokio::test]
+async fn validator_rejects_unreviewed_token_2022_mint_extensions() {
+    let program_id = Pubkey::new_unique();
+    let mut program_test = ProgramTest::new(
+        "neal_access_stake",
+        program_id,
+        processor!(processor::process_instruction),
+    );
+    program_test.prefer_bpf(false);
+    program_test.add_program(
+        "spl_token_2022",
+        spl_token_2022::id(),
+        processor!(spl_token_2022::processor::Processor::process),
+    );
+    let mut context = program_test.start_with_context().await;
+    let authority = context.payer.pubkey();
+    let mint = Keypair::new();
+    let mint_len =
+        ExtensionType::try_calculate_account_len::<Mint>(&[ExtensionType::TransferFeeConfig])
+            .unwrap();
+    send(
+        &mut context,
+        &[
+            system_instruction::create_account(
+                &authority,
+                &mint.pubkey(),
+                Rent::default().minimum_balance(mint_len),
+                mint_len as u64,
+                &spl_token_2022::id(),
+            ),
+            initialize_transfer_fee_config(
+                &spl_token_2022::id(),
+                &mint.pubkey(),
+                None,
+                None,
+                100,
+                1_000,
+            )
+            .unwrap(),
+            token_instruction::initialize_mint2(
+                &spl_token_2022::id(),
+                &mint.pubkey(),
+                &authority,
+                None,
+                DECIMALS,
+            )
+            .unwrap(),
+            token_instruction::set_authority(
+                &spl_token_2022::id(),
+                &mint.pubkey(),
+                None,
+                AuthorityType::MintTokens,
+                &authority,
+                &[],
+            )
+            .unwrap(),
+        ],
+        &[&mint],
+    )
+    .await;
+    expect_access_error(
+        &mut context,
+        client::initialize_config(
+            program_id,
+            authority,
+            authority,
+            authority,
+            0,
+            mint.pubkey(),
+            REQUIRED_AMOUNT,
+            LOCK_SECONDS,
+        )
+        .unwrap(),
+        AccessStakeError::InvalidMint,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
     let program_id = Pubkey::new_unique();
     let mut program_test = ProgramTest::new(
@@ -180,6 +259,16 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
     )
     .unwrap();
     send(&mut context, &[mint_to], &[]).await;
+    let dust_vault = token_instruction::mint_to(
+        &spl_token_2022::id(),
+        &mint.pubkey(),
+        &vault.pubkey(),
+        &authority,
+        &[],
+        1,
+    )
+    .unwrap();
+    send(&mut context, &[dust_vault], &[]).await;
     let revoke_mint_authority = token_instruction::set_authority(
         &spl_token_2022::id(),
         &mint.pubkey(),
@@ -197,6 +286,7 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
             program_id,
             authority,
             authority,
+            authority,
             0,
             mint.pubkey(),
             REQUIRED_AMOUNT,
@@ -206,6 +296,35 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
         &[],
     )
     .await;
+    let stale_stake = || {
+        client::stake(
+            program_id,
+            authority,
+            config,
+            source.pubkey(),
+            vault.pubkey(),
+            mint.pubkey(),
+            DECIMALS,
+            REQUIRED_AMOUNT,
+            LOCK_SECONDS,
+            0,
+        )
+        .unwrap()
+    };
+    send(
+        &mut context,
+        &[client::set_paused(program_id, authority, config, true).unwrap()],
+        &[],
+    )
+    .await;
+    expect_access_error(&mut context, stale_stake(), AccessStakeError::ConfigPaused).await;
+    send(
+        &mut context,
+        &[client::set_paused(program_id, authority, config, false).unwrap()],
+        &[],
+    )
+    .await;
+    expect_access_error(&mut context, stale_stake(), AccessStakeError::TermsChanged).await;
     send(
         &mut context,
         &[client::stake(
@@ -216,6 +335,9 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
             vault.pubkey(),
             mint.pubkey(),
             DECIMALS,
+            REQUIRED_AMOUNT,
+            LOCK_SECONDS,
+            2,
         )
         .unwrap()],
         &[],
@@ -224,7 +346,7 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
     assert_eq!(token_balance(&mut context, source.pubkey()).await, 0);
     assert_eq!(
         token_balance(&mut context, vault.pubkey()).await,
-        REQUIRED_AMOUNT
+        REQUIRED_AMOUNT + 1
     );
 
     send(
@@ -238,6 +360,38 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
         &mut context,
         client::claim_access(program_id, authority, config).unwrap(),
         AccessStakeError::AlreadyClaimed,
+    )
+    .await;
+    let unauthorized_issuer = Keypair::new();
+    let unauthorized_error = process(
+        &mut context,
+        &[
+            client::consume_claim(program_id, unauthorized_issuer.pubkey(), config, authority)
+                .unwrap(),
+        ],
+        &[&unauthorized_issuer],
+    )
+    .await
+    .expect_err("unauthorized issuer unexpectedly consumed the claim")
+    .unwrap();
+    assert_eq!(
+        unauthorized_error,
+        TransactionError::InstructionError(
+            0,
+            InstructionError::Custom(AccessStakeError::InvalidAuthority as u32),
+        )
+    );
+    send(
+        &mut context,
+        &[client::consume_claim(program_id, authority, config, authority).unwrap()],
+        &[],
+    )
+    .await;
+    assert!(receipt(&mut context, receipt_address).await.issued_at > 0);
+    expect_access_error(
+        &mut context,
+        client::consume_claim(program_id, authority, config, authority).unwrap(),
+        AccessStakeError::AlreadyConsumed,
     )
     .await;
 
@@ -260,7 +414,7 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
     context.set_sysvar(&clock);
     send(
         &mut context,
-        &[client::update_config(program_id, authority, config, None, None, Some(true)).unwrap()],
+        &[client::set_paused(program_id, authority, config, true).unwrap()],
         &[],
     )
     .await;
@@ -269,7 +423,7 @@ async fn validator_executes_token_2022_stake_claim_and_refund_lifecycle() {
     assert_eq!(token_balance(&mut context, vault.pubkey()).await, 0);
     assert_eq!(
         token_balance(&mut context, destination.pubkey()).await,
-        REQUIRED_AMOUNT
+        REQUIRED_AMOUNT + 1
     );
     let released = receipt(&mut context, receipt_address).await;
     assert_eq!(released.status, StakeStatus::Released);

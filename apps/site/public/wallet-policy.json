@@ -25,8 +25,13 @@
   },
   "accessStake": {
     "status": "planned",
+    "contractVersion": 2,
     "programId": null,
+    "programDataAddress": null,
+    "programSha256": null,
     "configAddress": null,
+    "configRevision": null,
+    "issuerAuthority": null,
     "mint": "8JBYSxrFRMf1Y4NcbjyEsxGPFe4AXzHXELmXh4WYDCBE",
     "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
     "tokenDecimals": 6,

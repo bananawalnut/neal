@@ -6,14 +6,25 @@ Run the focused suite:
 cargo test -p neal-access-stake --offline
 ```
 
-The contract tests cover wire sizes, term bounds, one-time claim and release
-transitions, deterministic instruction encoding, PDA uniqueness, Token-2022
-pinning, signer/destination placement, and pre-funded PDA recovery.
+The contract tests cover v2 wire sizes, immutable term bounds, revision-bound
+stakes, one-time claim/issuer-consumption/release transitions, deterministic
+instruction encoding, PDA uniqueness, Token-2022 extension allowlisting,
+signer/destination placement, and pre-funded PDA recovery.
 
 The validator-backed test executes the lifecycle against the real Token-2022
-processor: config initialization, escrow deposit, on-chain claim, locked early
-release rejection, time advancement, and full refund. It also checks that a
-claimed receipt cannot be claimed twice.
+processor: config initialization, a pre-dusted vault, stale-term rejection,
+escrow deposit, on-chain claim, issuer-only one-time consumption, pause,
+locked early-release rejection, time advancement, and refund of the full vault.
+
+Run the other release gates:
+
+```bash
+python3 -m unittest -v infra/neal-access-issuer/test_issuer.py
+npm run site:typecheck
+npm run site:validate-policy
+npm run site:build
+node scripts/verify-access-stake-readiness.mjs --informational-planned
+```
 
 Before any mainnet deployment, additionally record:
 

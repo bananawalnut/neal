@@ -15,12 +15,14 @@ and reverse proxy have been reviewed and deployed.
    challenge.
 2. `POST /v1/verify` verifies the exact Ed25519 message, consumes the challenge,
    and sets a ten-minute Secure/HttpOnly/SameSite cookie.
-3. The wallet submits `Stake` and `ClaimAccess` to Solana.
+3. The wallet submits revision-bound `Stake` and `ClaimAccess` instructions.
 4. `POST /v1/access-token` derives the receipt PDA and reads the config, receipt,
    and vault with `finalized` commitment.
-5. SQLite reserves the receipt before Synapse is called. Synapse creates a token
+5. SQLite reserves the receipt, then the issuer signer finalizes the on-chain
+   `ConsumeClaim` instruction before Synapse is called. Synapse creates a token
    with `uses_allowed: 1` and a 15-minute expiry. A successful retry returns the
-   same still-live token, never a second token.
+   same still-live token, never a second token. Restoring an old database cannot
+   issue again because the receipt's finalized `issued_at` is authoritative.
 
 If Synapse fails after a receipt is reserved, the service marks it failed and
 does not retry automatically. An operator must determine whether Synapse
@@ -29,8 +31,9 @@ fail-closed.
 
 ## Production packaging
 
-The supported VPS deployment runs as the unprivileged `neal-access` system
-user. It listens on `/run/neal-access-issuer/issuer.sock`; that directory is
+The supported VPS deployment uses a systemd dynamic user with both secrets
+delivered through read-only credentials. It listens on
+`/run/neal-access-issuer/issuer.sock`; that directory is
 mounted read-only into the Caddy container. Caddy exposes only exact-path
 `POST`/`OPTIONS` requests for `/v1/challenge`, `/v1/verify`, and
 `/v1/access-token` from `https://nealtheseal.org`. `/healthz` and `/readyz`
@@ -51,19 +54,31 @@ sudo /srv/neal-matrix/access-issuer/install.sh --start
 sudo /srv/neal-matrix/verify_public.sh https://matrix.nealtheseal.org --with-access-issuer
 ```
 
-The installer changes the existing Synapse registration secret to mode `0640`,
-owned by Synapse's UID and the `neal-access` group. It does not print that
-secret. The SQLite state lives under `/var/lib/neal-access-issuer`; include it
-in encrypted off-host backups and test a restore before activation.
+The installer never changes ownership of the Synapse runtime tree and does not
+print either secret. Stage the issuer's 64-byte Solana keypair at
+`/etc/neal-access-issuer-issuer-keypair.json` with mode `0600`. SQLite state
+lives under `/var/lib/neal-access-issuer`; include it in encrypted off-host
+backups and test a restore before activation. Production installation is
+restricted to Linux x86_64 with Python 3.13 and uses the hash-locked binary-wheel set in
+`requirements-deploy.txt`; `requirements.txt` remains the portable local test
+dependency declaration.
 
 ## Required environment
 
 ```text
 NEAL_ACCESS_DATABASE=/srv/neal-access-issuer/data/issuer.sqlite3
-NEAL_ACCESS_SOLANA_RPC=https://...
+NEAL_ACCESS_SOLANA_RPCS=https://PRIMARY_RPC,https://INDEPENDENT_RPC
+NEAL_ACCESS_CHAIN_ID=solana:mainnet
+NEAL_ACCESS_SOLANA_GENESIS_HASH=5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp
 NEAL_ACCESS_PROGRAM_ID=<reviewed deployed program>
+NEAL_ACCESS_PROGRAM_DATA_ADDRESS=<reviewed immutable ProgramData>
+NEAL_ACCESS_PROGRAM_SHA256=<reviewed SBF SHA-256>
 NEAL_ACCESS_CONFIG_ADDRESS=<reviewed config PDA>
 NEAL_ACCESS_MINT=8JBYSxrFRMf1Y4NcbjyEsxGPFe4AXzHXELmXh4WYDCBE
+NEAL_ACCESS_EXPECTED_REVISION=<finalized config revision>
+NEAL_ACCESS_EXPECTED_AMOUNT=69000000000
+NEAL_ACCESS_EXPECTED_LOCK_SECONDS=7776000
+NEAL_ACCESS_ISSUER_KEYPAIR_FILE=/run/credentials/neal-access-issuer.service/issuer-keypair
 NEAL_ACCESS_PUBLIC_ORIGIN=https://nealtheseal.org
 NEAL_ACCESS_MATRIX_URL=http://127.0.0.1:8008
 NEAL_ACCESS_MATRIX_SECRET_FILE=/srv/neal-matrix/runtime/synapse/registration-shared-secret
@@ -74,7 +89,9 @@ For isolated local testing, omit `NEAL_ACCESS_SOCKET` and use the loopback-only
 `NEAL_ACCESS_BIND`/`NEAL_ACCESS_PORT` fallback. The process rejects non-loopback
 TCP binds.
 
-The SQLite directory and file are created as `0700` and `0600`. Back up the
+The SQLite directory and file are created as `0700` and `0600`, requests use a
+bounded worker pool, request bodies are capped, expired ephemeral rows are
+pruned, and a hard database-size ceiling fails closed. Back up the
 database because it is the one-receipt/one-token ledger. Keep the Synapse shared
 secret readable only by this service and Synapse operators.
 
@@ -82,6 +99,13 @@ secret readable only by this service and Synapse operators.
 
 ```bash
 python3 -m unittest -v test_issuer.py
+```
+
+If `/readyz` reports an administrator cleanup blocker, keep issuance stopped:
+
+```bash
+/opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/reconcile.py --list
+/opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/reconcile.py --user-id '@exact-id:server'
 ```
 
 Before activation, also run the end-to-end checklist in

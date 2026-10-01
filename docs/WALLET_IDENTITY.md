@@ -66,16 +66,19 @@ pause.
 
 The connected wallet creates one config/wallet receipt, moves the configured
 atomic NEAL amount into a Token-2022 vault controlled by that receipt PDA, and
-submits a one-time `ClaimAccess` instruction. The issuer authenticates the same
-wallet, derives that receipt, and verifies its active claimed state and funded
-vault at `finalized`. A SQLite reservation is committed before Synapse is
+submits a one-time `ClaimAccess` instruction. The stake transaction signs the
+exact amount, lock, and config revision displayed to the user. The issuer
+authenticates the same wallet, derives that receipt, and verifies its active
+claimed state and funded vault at `finalized` through two RPCs. It also verifies
+the immutable ProgramData account and reviewed byte hash. A SQLite reservation
+and issuer-signed on-chain `ConsumeClaim` are finalized before Synapse is
 called. The resulting registration token allows one use and expires after 15
 minutes. The browser places it into the Matrix registration flow and unlocks
 account submission; the normal flow never requires the user to copy or paste
 it. The issuer never sees the selected Matrix username or password. Changing
 providers clears the held token before another homeserver can receive it.
 
-The receipt snapshots its amount and unlock time. The wallet can return the
+The receipt snapshots its revision, amount, and unlock time. The wallet can return the
 entire vault after the minimum lock, even if the authority pauses new activity.
 The receipt stays on-chain and cannot issue another token. The Matrix account
 continues to exist after the stake is released.
