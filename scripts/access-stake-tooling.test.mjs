@@ -14,7 +14,7 @@ import {
   validateRehearsalReceipt,
 } from './access-stake-contracts.mjs';
 import { expectProgramError, matrixAttempt, parseCli, validateReview } from './rehearse-access-stake-devnet.mjs';
-import { buildSbfCommand } from './reproduce-access-stake-release.mjs';
+import { buildSbfCommand, buildSbfEnvironment } from './reproduce-access-stake-release.mjs';
 
 const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -198,6 +198,9 @@ test('negative chain evidence requires the expected custom program error', async
 
 test('release builds use the pinned cache without rustup or network resolution', () => {
   const command = buildSbfCommand();
+  assert.deepEqual(buildSbfEnvironment(), {
+    RUSTC: '/root/.cache/solana/v1.54/platform-tools/rust/bin/rustc',
+  });
   assert.deepEqual(command.slice(0, 5), [
     'cargo', 'build-sbf', '--skip-tools-install', '--no-rustup-override', '--tools-version',
   ]);

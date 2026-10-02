@@ -19,6 +19,9 @@ const PLATFORM_TOOLS_VERSION = 'v1.54';
 const PLATFORM_TOOLS_ARCHIVE_SHA256 = 'fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e';
 const PLATFORM = 'linux/amd64';
 const ARTIFACT = 'neal_access_stake.so';
+const PLATFORM_RUSTC = '/root/.cache/solana/v1.54/platform-tools/rust/bin/rustc';
+
+export const buildSbfEnvironment = () => ({ RUSTC: PLATFORM_RUSTC });
 
 export const buildSbfCommand = () => [
   'cargo', 'build-sbf', '--skip-tools-install', '--no-rustup-override',
@@ -84,6 +87,7 @@ const buildOnce = async (image, source, output, cargoHome, cargoTarget) => {
     fs.mkdir(cargoHome, { recursive: true, mode: 0o700 }),
     fs.mkdir(cargoTarget, { recursive: true, mode: 0o700 }),
   ]);
+  const sbfEnvironment = buildSbfEnvironment();
   await run('docker', [
     'run', '--rm', '--platform', PLATFORM,
     '--network', 'none',
@@ -95,6 +99,7 @@ const buildOnce = async (image, source, output, cargoHome, cargoTarget) => {
     '--env', 'CARGO_HOME=/cargo-home',
     '--env', 'CARGO_TARGET_DIR=/cargo-target',
     '--env', 'CARGO_NET_OFFLINE=true',
+    '--env', `RUSTC=${sbfEnvironment.RUSTC}`,
     '--env', 'HOME=/root',
     '--workdir', '/workspace',
     image,

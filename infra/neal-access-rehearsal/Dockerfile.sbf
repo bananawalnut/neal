@@ -103,5 +103,7 @@ RUN chmod o+x /root \
     && cargo build-sbf --version | grep --fixed-strings --line-regexp 'platform-tools v1.54' \
     && solana --version | grep --fixed-strings --line-regexp 'solana-cli 4.2.1 (src:c4b48df9; feat:21b0d33a, client:Agave)' \
     && test -x /root/.cache/solana/v1.54/platform-tools/rust/bin/rustc \
-    && test -x /root/.cache/solana/v1.54/platform-tools/llvm/bin/clang
+    && test -x /root/.cache/solana/v1.54/platform-tools/llvm/bin/clang \
+    && /root/.cache/solana/v1.54/platform-tools/rust/bin/rustc --print target-list \
+      | grep --fixed-strings --line-regexp 'sbf-solana-solana'
 WORKDIR /workspace
