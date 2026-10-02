@@ -23,3 +23,7 @@ The executor tears down containers and deletes its temporary directory even on
 failure. Its only persistent output is a sanitized public receipt written to
 the explicitly supplied `--receipt` location.
 
+The release command compiles the selected Git commit twice from separate
+source trees into separate Cargo target directories and rejects any byte or
+size mismatch. The builds may reuse the same Cargo registry/source download
+cache; compiled target output is never shared between them.

@@ -49,10 +49,11 @@ const extractCommit = async (commit, destination, archive) => {
   await run('tar', ['-xf', archive, '-C', destination]);
 };
 
-const buildOnce = async (image, source, output, cargoHome) => {
+const buildOnce = async (image, source, output, cargoHome, cargoTarget) => {
   await Promise.all([
     fs.mkdir(output, { recursive: true, mode: 0o700 }),
     fs.mkdir(cargoHome, { recursive: true, mode: 0o700 }),
+    fs.mkdir(cargoTarget, { recursive: true, mode: 0o700 }),
   ]);
   await run('docker', [
     'run', '--rm', '--platform', PLATFORM,
@@ -60,7 +61,9 @@ const buildOnce = async (image, source, output, cargoHome) => {
     '--volume', `${source}:/workspace`,
     '--volume', `${output}:/release`,
     '--volume', `${cargoHome}:/cargo-home`,
+    '--volume', `${cargoTarget}:/cargo-target`,
     '--env', 'CARGO_HOME=/cargo-home',
+    '--env', 'CARGO_TARGET_DIR=/cargo-target',
     '--env', 'HOME=/tmp',
     '--workdir', '/workspace',
     image,
@@ -94,8 +97,12 @@ async function main() {
     ]);
     const containerImageId = await run('docker', ['image', 'inspect', '--format', '{{.Id}}', image], { capture: true });
     if (!/^sha256:[0-9a-f]{64}$/u.test(containerImageId)) throw new Error('Docker returned an invalid toolchain image identity');
-    const first = await buildOnce(image, sources[0], path.join(root, 'build-1'), path.join(root, 'cargo-home-1'));
-    const second = await buildOnce(image, sources[1], path.join(root, 'build-2'), path.join(root, 'cargo-home-2'));
+    // The registry/source cache is shared to avoid downloading duplicate immutable
+    // dependencies. Source trees and target directories remain independent, so no
+    // compiled output can cross from one reproducibility build to the other.
+    const cargoHome = path.join(root, 'cargo-home');
+    const first = await buildOnce(image, sources[0], path.join(root, 'build-1'), cargoHome, path.join(root, 'cargo-target-1'));
+    const second = await buildOnce(image, sources[1], path.join(root, 'build-2'), cargoHome, path.join(root, 'cargo-target-2'));
     if (first.sha256 !== second.sha256 || first.bytes !== second.bytes) {
       throw new Error(`Reproducibility failure: ${first.sha256}/${first.bytes} != ${second.sha256}/${second.bytes}`);
     }
