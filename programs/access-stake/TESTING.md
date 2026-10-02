@@ -26,6 +26,23 @@ npm run site:build
 node scripts/verify-access-stake-readiness.mjs --informational-planned
 ```
 
+The issuer suite includes authenticated encrypted-backup round trips, wrong
+passphrase rejection, and strict passphrase-file permission checks.
+
+Run the release/evidence contract tests and validate every committed receipt:
+
+```bash
+npm run access-stake:test-tooling
+npm run access-stake:validate-evidence
+```
+
+The tooling suite rejects mismatched double-build hashes, malformed review
+attestations, receipts with a failed lifecycle check, and public evidence
+containing credential-shaped fields or values. A repository with no devnet
+receipt reports zero validated receipts rather than inventing evidence. Only a
+separately committed live receipt can complete the devnet checklist; source
+changes and dry runs do not.
+
 Before any mainnet deployment, additionally record:
 
 - reproducible SBF build hash and deployed program-data authority;

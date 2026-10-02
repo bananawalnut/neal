@@ -1,0 +1,112 @@
+name: Access-stake devnet rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full reviewed 40-character Git commit SHA
+        required: true
+        type: string
+      acknowledge_devnet:
+        description: I acknowledge this creates disposable state on Solana devnet
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: access-stake-devnet-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    if: ${{ inputs.acknowledge_devnet }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate exact source commit input
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase SHA' >&2; exit 1; }
+
+      - name: Check out reviewed source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+
+      - name: Require the exact current main commit
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$SOURCE_COMMIT" || {
+            echo 'The devnet rehearsal only executes the exact current main commit.' >&2
+            exit 1
+          }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Restore isolated review attestation
+        shell: bash
+        env:
+          REVIEW_ATTESTATION_B64: ${{ secrets.NEAL_ACCESS_REVIEW_ATTESTATION_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_ATTESTATION_B64" || { echo 'NEAL_ACCESS_REVIEW_ATTESTATION_B64 is required' >&2; exit 1; }
+          mkdir -p outputs
+          printf '%s' "$REVIEW_ATTESTATION_B64" | base64 --decode > outputs/isolated-review.json
+          chmod 600 outputs/isolated-review.json
+
+      - name: Reproduce exact release artifact twice
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: npm run access-stake:reproduce -- --commit "$SOURCE_COMMIT" --output outputs/access-stake-release
+
+      - name: Execute isolated devnet and Matrix lifecycle
+        env:
+          NEAL_DEVNET_RPC_SECONDARY: ${{ secrets.NEAL_DEVNET_RPC_SECONDARY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$NEAL_DEVNET_RPC_SECONDARY" || { echo 'NEAL_DEVNET_RPC_SECONDARY is required' >&2; exit 1; }
+          npm run access-stake:rehearse-devnet -- \
+            --release-manifest outputs/access-stake-release/release-manifest.json \
+            --rpc-primary https://api.devnet.solana.com \
+            --rpc-secondary "$NEAL_DEVNET_RPC_SECONDARY" \
+            --review-file outputs/isolated-review.json \
+            --receipt outputs/devnet-receipt.json \
+            --log outputs/devnet-log.json \
+            --execute --acknowledge-devnet
+
+      - name: Validate public receipt
+        run: npm run access-stake:validate-evidence -- --file outputs/devnet-receipt.json
+
+      - name: Upload release and sanitized rehearsal evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: neal-access-stake-devnet-${{ inputs.source_commit }}
+          path: |
+            outputs/access-stake-release/release-manifest.json
+            outputs/access-stake-release/neal_access_stake.so
+            outputs/devnet-receipt.json
+            outputs/devnet-log.json
+          if-no-files-found: error

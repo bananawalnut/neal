@@ -33,6 +33,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test access-stake release and evidence contracts
+        run: npm run access-stake:test-tooling
+
+      - name: Validate committed access-stake evidence
+        run: npm run access-stake:validate-evidence
+
       - name: Type-check public site
         run: npm run site:typecheck
 
@@ -65,36 +71,22 @@ jobs:
         run: cargo test --workspace --locked
 
   sbf:
-    name: Access-stake SBF build
+    name: Reproducible access-stake SBF build
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Install pinned Agave toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          agave_version="$(tr -d '\r\n' < .agave-version)"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-            "https://release.anza.xyz/${agave_version}/install" \
-            --output /tmp/agave-install.sh
-          sh /tmp/agave-install.sh
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
-
-      - name: Build access-stake SBF
-        run: cargo build-sbf --manifest-path programs/access-stake/Cargo.toml -- --locked
-
-      - name: Record reviewed artifact hash
-        run: sha256sum target/deploy/neal_access_stake.so | tee target/deploy/neal_access_stake.sha256
+      - name: Build the selected commit twice in isolated pinned containers
+        run: npm run access-stake:reproduce -- --commit "$GITHUB_SHA" --output outputs/access-stake-release
 
       - name: Upload SBF review artifact
         uses: actions/upload-artifact@v4
         with:
           name: neal-access-stake-sbf
           path: |
-            target/deploy/neal_access_stake.so
-            target/deploy/neal_access_stake.sha256
+            outputs/access-stake-release/neal_access_stake.so
+            outputs/access-stake-release/release-manifest.json
           if-no-files-found: error
 
   issuer:

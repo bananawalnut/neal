@@ -1,0 +1,28 @@
+FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
+
+ARG AGAVE_VERSION=v4.2.1
+ARG AGAVE_INSTALLER_SHA256=24b3374030dff853e455b0f910aab149c934c79ccc7f498984923074967647d6
+ARG RUST_VERSION=1.90.0
+ARG RUSTUP_INSTALLER_SHA256=7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl bzip2 xz-utils git build-essential pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+      "https://sh.rustup.rs" --output /tmp/rustup-init.sh \
+    && echo "${RUSTUP_INSTALLER_SHA256}  /tmp/rustup-init.sh" | sha256sum --check --strict \
+    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && rm /tmp/rustup-init.sh
+RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+      "https://release.anza.xyz/${AGAVE_VERSION}/install" --output /tmp/agave-install.sh \
+    && echo "${AGAVE_INSTALLER_SHA256}  /tmp/agave-install.sh" | sha256sum --check --strict \
+    && sh /tmp/agave-install.sh \
+    && rm /tmp/agave-install.sh \
+    && chmod o+x /root \
+    && chmod -R o+rX /root/.cargo /root/.rustup /root/.local/share/solana
+RUN chmod -R o+rwX /root/.rustup
+
+ENV PATH=/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:${PATH}
+ENV RUSTUP_HOME=/root/.rustup
+WORKDIR /workspace
