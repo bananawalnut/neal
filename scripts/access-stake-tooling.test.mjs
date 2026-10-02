@@ -14,6 +14,7 @@ import {
   validateRehearsalReceipt,
 } from './access-stake-contracts.mjs';
 import { expectProgramError, matrixAttempt, parseCli, validateReview } from './rehearse-access-stake-devnet.mjs';
+import { buildSbfCommand } from './reproduce-access-stake-release.mjs';
 
 const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -193,4 +194,13 @@ test('negative chain evidence requires the expected custom program error', async
     () => expectProgramError(async () => {}, 'early unstake', 8),
     /unexpectedly succeeded/u,
   );
+});
+
+test('release builds use the pinned cache without rustup or network resolution', () => {
+  const command = buildSbfCommand();
+  assert.deepEqual(command.slice(0, 5), [
+    'cargo', 'build-sbf', '--skip-tools-install', '--no-rustup-override', '--tools-version',
+  ]);
+  assert.equal(command.filter((argument) => argument === '--offline').length, 2);
+  assert.ok(command.includes('--locked'));
 });

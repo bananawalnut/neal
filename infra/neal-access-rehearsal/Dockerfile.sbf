@@ -81,8 +81,8 @@ ADD --checksum=sha256:fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aa
   https://github.com/anza-xyz/platform-tools/releases/download/v1.54/platform-tools-linux-x86_64.tar.bz2 \
   /tmp/platform-tools.tar.bz2
 RUN echo "${PLATFORM_TOOLS_ARCHIVE_SHA256}  /tmp/platform-tools.tar.bz2" | sha256sum --check --strict \
-    && mkdir -p "/root/.cache/solana/${PLATFORM_TOOLS_VERSION}" \
-    && tar --extract --bzip2 --file /tmp/platform-tools.tar.bz2 --directory "/root/.cache/solana/${PLATFORM_TOOLS_VERSION}" \
+    && mkdir -p "/root/.cache/solana/${PLATFORM_TOOLS_VERSION}/platform-tools" \
+    && tar --extract --bzip2 --file /tmp/platform-tools.tar.bz2 --directory "/root/.cache/solana/${PLATFORM_TOOLS_VERSION}/platform-tools" \
     && rm /tmp/platform-tools.tar.bz2 \
     && chmod o+x /root \
     && chmod -R o+rX /root/.cache
@@ -102,6 +102,6 @@ RUN chmod o+x /root \
     && cargo build-sbf --version | grep --fixed-strings --line-regexp 'cargo-build-sbf 4.1.0' \
     && cargo build-sbf --version | grep --fixed-strings --line-regexp 'platform-tools v1.54' \
     && solana --version | grep --fixed-strings --line-regexp 'solana-cli 4.2.1 (src:c4b48df9; feat:21b0d33a, client:Agave)' \
-    && test -x /root/.cache/solana/v1.54/rust/bin/rustc \
-    && test -x /root/.cache/solana/v1.54/llvm/bin/clang
+    && test -x /root/.cache/solana/v1.54/platform-tools/rust/bin/rustc \
+    && test -x /root/.cache/solana/v1.54/platform-tools/llvm/bin/clang
 WORKDIR /workspace

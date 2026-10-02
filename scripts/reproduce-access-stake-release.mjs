@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { RELEASE_SCHEMA, sha256File, validateReleaseManifest } from './access-stake-contracts.mjs';
 
 const AGAVE_VERSION = 'v4.2.1';
@@ -18,6 +19,13 @@ const PLATFORM_TOOLS_VERSION = 'v1.54';
 const PLATFORM_TOOLS_ARCHIVE_SHA256 = 'fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e';
 const PLATFORM = 'linux/amd64';
 const ARTIFACT = 'neal_access_stake.so';
+
+export const buildSbfCommand = () => [
+  'cargo', 'build-sbf', '--skip-tools-install', '--no-rustup-override',
+  '--tools-version', PLATFORM_TOOLS_VERSION, '--offline',
+  '--manifest-path', 'programs/access-stake/Cargo.toml', '--sbf-out-dir', '/release',
+  '--', '--locked', '--offline',
+];
 
 const parseCli = (argv) => {
   const values = { output: 'outputs/access-stake-release' };
@@ -90,8 +98,7 @@ const buildOnce = async (image, source, output, cargoHome, cargoTarget) => {
     '--env', 'HOME=/root',
     '--workdir', '/workspace',
     image,
-    'cargo', 'build-sbf', '--skip-tools-install', '--tools-version', PLATFORM_TOOLS_VERSION, '--offline',
-    '--manifest-path', 'programs/access-stake/Cargo.toml', '--sbf-out-dir', '/release', '--', '--locked', '--offline',
+    ...buildSbfCommand(),
   ]);
   const artifact = path.join(output, ARTIFACT);
   const [sha256, stats] = await Promise.all([sha256File(artifact), fs.stat(artifact)]);
@@ -175,7 +182,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`Access-stake reproducible build failed: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-});
+if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  main().catch((error) => {
+    console.error(`Access-stake reproducible build failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}
