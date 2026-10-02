@@ -105,5 +105,5 @@ RUN chmod o+x /root \
     && test -x /root/.cache/solana/v1.54/platform-tools/rust/bin/rustc \
     && test -x /root/.cache/solana/v1.54/platform-tools/llvm/bin/clang \
     && /root/.cache/solana/v1.54/platform-tools/rust/bin/rustc --print target-list \
-      | grep --fixed-strings --line-regexp 'sbf-solana-solana'
+      | grep --fixed-strings --line-regexp 'sbpf-solana-solana'
 WORKDIR /workspace
