@@ -59,6 +59,8 @@ const POSTGRES_REHEARSAL_IMAGE = 'postgres:16.15-bookworm@sha256:1938c16e9d2f10a
 const SYNAPSE_REHEARSAL_IMAGE = 'matrixdotorg/synapse:v1.157.2@sha256:3827b727cb40c52d7d4806db2eb96058eb4514e94a79ca1d7b805de7a8fc44d9';
 const UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const MINTED_ATOMIC = 140_000_000_000n;
+const CONFIG_PAUSED_ERROR = 5;
+const STAKE_LOCKED_ERROR = 8;
 
 export const parseCli = (argv) => {
   const values = { execute: false, acknowledgeDevnet: false };
@@ -353,7 +355,9 @@ export const matrixAttempt = async (registrationToken, shouldSucceed) => {
     && tokenBody.completed.includes('m.login.registration_token');
   if (!tokenAccepted) {
     if (shouldSucceed) throw new Error('Synapse rejected the freshly issued one-use registration token');
-    if (tokenStage.ok) throw new Error('Synapse completed registration without the required dummy UIA stage');
+    if (tokenStage.status !== 403 || tokenBody.errcode !== 'M_FORBIDDEN') {
+      throw new Error('Synapse did not reject the replayed registration token with the expected one-use failure');
+    }
     return tokenBody;
   }
 
@@ -385,13 +389,17 @@ const send = (connection, instructions, signers) => sendAndConfirmTransaction(
   { commitment: 'finalized', preflightCommitment: 'finalized', maxRetries: 3 },
 );
 
-const expectRejected = async (operation, label) => {
+export const expectProgramError = async (operation, label, expectedCode) => {
   try {
     await operation();
-  } catch {
-    return true;
+  } catch (error) {
+    const evidence = [error instanceof Error ? error.message : String(error), ...(Array.isArray(error?.logs) ? error.logs : [])].join('\n');
+    const codes = [...evidence.matchAll(/custom program error: 0x([0-9a-f]+)/giu)]
+      .map((match) => Number.parseInt(match[1], 16));
+    if (codes.includes(expectedCode)) return true;
+    throw new Error(`${label} failed without expected custom program error 0x${expectedCode.toString(16)}`);
   }
-  throw new Error(`${label} unexpectedly succeeded`);
+  throw new Error(`${label} unexpectedly succeeded instead of custom program error 0x${expectedCode.toString(16)}`);
 };
 
 const fundWithAirdrop = async (connection, account, targetLamports) => {
@@ -776,22 +784,25 @@ async function execute(options, release, review, rpcAgreement) {
     await transferChecked(connection, wallets.lifecycle, lifecycleSource, mint, lifecycleStake.vault, wallets.lifecycle, 1n, 6, [],
       { commitment: 'finalized', preflightCommitment: 'finalized' }, TOKEN_2022_PROGRAM_ID);
     await send(connection, lifecycleStake.instructions, [wallets.lifecycle]);
-    await expectRejected(
+    await expectProgramError(
       () => send(connection, [unstakeInstruction(programId, lifecycleConfig.address, mint, wallets.lifecycle.publicKey, lifecycleStake.vault, lifecycleSource)], [wallets.lifecycle]),
-      'early unstake',
+      'early unstake', STAKE_LOCKED_ERROR,
     );
     const paused = await pauseCommand({ runtime, rpc: options['rpc-primary'], programId, config: lifecycleConfig.address, action: 'pause' });
     if (paused.finalizedRevision !== '1') throw new Error('Lifecycle pause did not finalize revision 1');
-    await expectRejected(
+    await expectProgramError(
       () => send(connection, [claimInstruction(programId, lifecycleConfig.address, wallets.lifecycle.publicKey)], [wallets.lifecycle]),
-      'claim while paused',
+      'claim while paused', CONFIG_PAUSED_ERROR,
     );
     const pausedStake = stakeInstruction({
       programId, config: lifecycleConfig.address, mint, staker: wallets.pausedAttempt.publicKey,
       source: accounts[wallets.pausedAttempt.publicKey.toBase58()], amount: LIFECYCLE_AMOUNT,
       lockSeconds: LIFECYCLE_LOCK_SECONDS, revision: 1,
     });
-    await expectRejected(() => send(connection, pausedStake.instructions, [wallets.pausedAttempt]), 'new stake while paused');
+    await expectProgramError(
+      () => send(connection, pausedStake.instructions, [wallets.pausedAttempt]),
+      'new stake while paused', CONFIG_PAUSED_ERROR,
+    );
     const lifecycleReceipt = await readReceipt(connection, lifecycleStake.receipt);
     const waitMilliseconds = Math.max(0, (lifecycleReceipt.unlockAt - Math.floor(Date.now() / 1000) + 2) * 1000);
     await sleep(waitMilliseconds);

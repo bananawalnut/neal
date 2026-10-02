@@ -13,7 +13,7 @@ import {
   validateReleaseManifest,
   validateRehearsalReceipt,
 } from './access-stake-contracts.mjs';
-import { matrixAttempt, parseCli, validateReview } from './rehearse-access-stake-devnet.mjs';
+import { expectProgramError, matrixAttempt, parseCli, validateReview } from './rehearse-access-stake-devnet.mjs';
 
 const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -25,12 +25,15 @@ const release = () => ({
   createdAt: '2026-10-02T00:00:00.000Z',
   toolchain: {
     agaveVersion: 'v4.2.1',
-    agaveInstallerSha256: '24b3374030dff853e455b0f910aab149c934c79ccc7f498984923074967647d6',
+    agaveArchiveSha256: '7f35f92c15861263bc540c001466678d2da228149a107b51d5b65ce497603074',
     rustVersion: '1.90.0',
-    rustupInstallerSha256: '7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af',
+    rustcArchiveSha256: '48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9',
+    rustStdArchiveSha256: '663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569',
+    cargoArchiveSha256: '9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d',
     ubuntuSnapshot: '20261002T150000Z',
     cargoBuildSbfVersion: '4.1.0',
     platformToolsVersion: 'v1.54',
+    platformToolsArchiveSha256: 'fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e',
     containerImage: 'ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b',
     containerImageId: `sha256:${SHA}`,
     platform: 'linux/amd64',
@@ -156,4 +159,38 @@ test('Matrix rehearsal completes token and dummy UIA stages and rejects token re
   assert.equal(requests[1].auth.token, 'one-use-token');
   assert.equal(requests[2].auth.type, 'm.login.dummy');
   assert.equal(requests.length, 5);
+});
+
+test('Matrix replay evidence rejects transient server failures', async () => {
+  const originalFetch = globalThis.fetch;
+  const response = (status, body) => new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const queue = [
+    response(401, { session: 'replay', flows: [{ stages: ['m.login.registration_token', 'm.login.dummy'] }] }),
+    response(500, { errcode: 'M_UNKNOWN' }),
+  ];
+  globalThis.fetch = async () => queue.shift();
+  try {
+    await assert.rejects(() => matrixAttempt('one-use-token', false), /expected one-use failure/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('negative chain evidence requires the expected custom program error', async () => {
+  await expectProgramError(
+    async () => { throw new Error('simulation failed: custom program error: 0x8'); },
+    'early unstake',
+    8,
+  );
+  await assert.rejects(
+    () => expectProgramError(async () => { throw new Error('RPC request timed out'); }, 'early unstake', 8),
+    /without expected custom program error/u,
+  );
+  await assert.rejects(
+    () => expectProgramError(async () => {}, 'early unstake', 8),
+    /unexpectedly succeeded/u,
+  );
 });

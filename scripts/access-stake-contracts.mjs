@@ -10,8 +10,11 @@ export const PRODUCTION_AMOUNT = '69000000000';
 export const PRODUCTION_LOCK_SECONDS = 7_776_000;
 export const LIFECYCLE_AMOUNT = '1000000';
 export const LIFECYCLE_LOCK_SECONDS = 120;
-const AGAVE_INSTALLER_SHA256 = '24b3374030dff853e455b0f910aab149c934c79ccc7f498984923074967647d6';
-const RUSTUP_INSTALLER_SHA256 = '7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af';
+const AGAVE_ARCHIVE_SHA256 = '7f35f92c15861263bc540c001466678d2da228149a107b51d5b65ce497603074';
+const RUSTC_ARCHIVE_SHA256 = '48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9';
+const RUST_STD_ARCHIVE_SHA256 = '663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569';
+const CARGO_ARCHIVE_SHA256 = '9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d';
+const PLATFORM_TOOLS_ARCHIVE_SHA256 = 'fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e';
 const CONTAINER_IMAGE = 'ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b';
 const POSTGRES_REHEARSAL_IMAGE = 'postgres:16.15-bookworm@sha256:1938c16e9d2f10a6a3623b344b64ae8d45f407f2c5f34f0979468bb689b9227a';
 const SYNAPSE_REHEARSAL_IMAGE = 'matrixdotorg/synapse:v1.157.2@sha256:3827b727cb40c52d7d4806db2eb96058eb4514e94a79ca1d7b805de7a8fc44d9';
@@ -73,17 +76,21 @@ export function validateReleaseManifest(input) {
   isoTimestamp(value.createdAt, 'createdAt');
   const toolchain = object(value.toolchain, 'toolchain');
   exactKeys(toolchain, [
-    'agaveVersion', 'agaveInstallerSha256', 'rustVersion', 'rustupInstallerSha256',
-    'ubuntuSnapshot', 'cargoBuildSbfVersion', 'platformToolsVersion',
+    'agaveVersion', 'agaveArchiveSha256', 'rustVersion', 'rustcArchiveSha256',
+    'rustStdArchiveSha256', 'cargoArchiveSha256',
+    'ubuntuSnapshot', 'cargoBuildSbfVersion', 'platformToolsVersion', 'platformToolsArchiveSha256',
     'containerImage', 'containerImageId', 'platform',
   ], 'toolchain');
   if (toolchain.agaveVersion !== 'v4.2.1') throw new Error('toolchain.agaveVersion must be v4.2.1');
-  if (toolchain.agaveInstallerSha256 !== AGAVE_INSTALLER_SHA256) throw new Error('toolchain.agaveInstallerSha256 is not the reviewed installer');
+  if (toolchain.agaveArchiveSha256 !== AGAVE_ARCHIVE_SHA256) throw new Error('toolchain.agaveArchiveSha256 is not the reviewed archive');
   if (toolchain.rustVersion !== '1.90.0') throw new Error('toolchain.rustVersion must be 1.90.0');
-  if (toolchain.rustupInstallerSha256 !== RUSTUP_INSTALLER_SHA256) throw new Error('toolchain.rustupInstallerSha256 is not the reviewed installer');
+  if (toolchain.rustcArchiveSha256 !== RUSTC_ARCHIVE_SHA256) throw new Error('toolchain.rustcArchiveSha256 is not the reviewed archive');
+  if (toolchain.rustStdArchiveSha256 !== RUST_STD_ARCHIVE_SHA256) throw new Error('toolchain.rustStdArchiveSha256 is not the reviewed archive');
+  if (toolchain.cargoArchiveSha256 !== CARGO_ARCHIVE_SHA256) throw new Error('toolchain.cargoArchiveSha256 is not the reviewed archive');
   if (toolchain.ubuntuSnapshot !== '20261002T150000Z') throw new Error('toolchain.ubuntuSnapshot must be the reviewed Ubuntu snapshot');
   if (toolchain.cargoBuildSbfVersion !== '4.1.0') throw new Error('toolchain.cargoBuildSbfVersion must be 4.1.0');
   if (toolchain.platformToolsVersion !== 'v1.54') throw new Error('toolchain.platformToolsVersion must be v1.54');
+  if (toolchain.platformToolsArchiveSha256 !== PLATFORM_TOOLS_ARCHIVE_SHA256) throw new Error('toolchain.platformToolsArchiveSha256 is not the reviewed archive');
   if (toolchain.containerImage !== CONTAINER_IMAGE) throw new Error('toolchain.containerImage is not the reviewed base image');
   if (!/^sha256:[0-9a-f]{64}$/u.test(string(toolchain.containerImageId, 'toolchain.containerImageId'))) {
     throw new Error('toolchain.containerImageId must be a Docker image SHA-256');

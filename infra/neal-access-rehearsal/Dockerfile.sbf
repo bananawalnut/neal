@@ -1,11 +1,14 @@
-FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
+FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b AS build-base
 
 ARG AGAVE_VERSION=v4.2.1
-ARG AGAVE_INSTALLER_SHA256=24b3374030dff853e455b0f910aab149c934c79ccc7f498984923074967647d6
+ARG AGAVE_ARCHIVE_SHA256=7f35f92c15861263bc540c001466678d2da228149a107b51d5b65ce497603074
 ARG RUST_VERSION=1.90.0
-ARG RUSTUP_INSTALLER_SHA256=7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af
+ARG RUSTC_ARCHIVE_SHA256=48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9
+ARG RUST_STD_ARCHIVE_SHA256=663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569
+ARG CARGO_ARCHIVE_SHA256=9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d
 ARG UBUNTU_SNAPSHOT=20261002T150000Z
 ARG PLATFORM_TOOLS_VERSION=v1.54
+ARG PLATFORM_TOOLS_ARCHIVE_SHA256=fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e
 
 ENV DEBIAN_FRONTEND=noninteractive
 ADD --checksum=sha256:6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50 \
@@ -16,7 +19,14 @@ RUN dpkg --unpack /tmp/ca-certificates.deb \
     && mkdir -p /etc/ssl/certs \
     && cat /usr/share/ca-certificates/mozilla/*.crt > /etc/ssl/certs/ca-certificates.crt \
     && rm /tmp/ca-certificates.deb \
-    && printf 'APT::Snapshot "%s";\n' "${UBUNTU_SNAPSHOT}" > /etc/apt/apt.conf.d/50snapshot \
+    && printf '%s\n' \
+      'Types: deb' \
+      "URIs: https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}" \
+      'Suites: noble noble-updates noble-backports noble-security' \
+      'Components: main universe restricted multiverse' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+      > /etc/apt/sources.list.d/ubuntu.sources \
+    && rm -f /etc/apt/sources.list \
     && apt-get update \
     && apt-get install --yes --no-install-recommends --fix-broken openssl \
     && apt-get install --yes --no-install-recommends \
@@ -29,24 +39,69 @@ RUN dpkg --unpack /tmp/ca-certificates.deb \
       pkg-config=1.8.1-2build1 \
       libssl-dev=3.0.13-0ubuntu3.16 \
     && rm -rf /var/lib/apt/lists/*
-RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-      "https://sh.rustup.rs" --output /tmp/rustup-init.sh \
-    && echo "${RUSTUP_INSTALLER_SHA256}  /tmp/rustup-init.sh" | sha256sum --check --strict \
-    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain "${RUST_VERSION}" \
-    && rm /tmp/rustup-init.sh
-RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-      "https://release.anza.xyz/${AGAVE_VERSION}/install" --output /tmp/agave-install.sh \
-    && echo "${AGAVE_INSTALLER_SHA256}  /tmp/agave-install.sh" | sha256sum --check --strict \
-    && sh /tmp/agave-install.sh \
-    && rm /tmp/agave-install.sh \
-    && chmod o+x /root \
-    && chmod -R o+rX /root/.cargo /root/.rustup /root/.local/share/solana
 
-ENV PATH=/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:${PATH}
-ENV RUSTUP_HOME=/root/.rustup
-RUN cargo build-sbf --install-only --tools-version "${PLATFORM_TOOLS_VERSION}" \
-    && cargo build-sbf --version \
-    && solana --version \
+FROM build-base AS toolchain
+
+ARG AGAVE_VERSION=v4.2.1
+ARG AGAVE_ARCHIVE_SHA256=7f35f92c15861263bc540c001466678d2da228149a107b51d5b65ce497603074
+ARG RUST_VERSION=1.90.0
+ARG RUSTC_ARCHIVE_SHA256=48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9
+ARG RUST_STD_ARCHIVE_SHA256=663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569
+ARG CARGO_ARCHIVE_SHA256=9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d
+ARG PLATFORM_TOOLS_VERSION=v1.54
+ARG PLATFORM_TOOLS_ARCHIVE_SHA256=fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e
+ADD --checksum=sha256:48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9 \
+  https://static.rust-lang.org/dist/2025-09-18/rustc-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz \
+  /tmp/rustc.tar.xz
+ADD --checksum=sha256:663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569 \
+  https://static.rust-lang.org/dist/2025-09-18/rust-std-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz \
+  /tmp/rust-std.tar.xz
+ADD --checksum=sha256:9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d \
+  https://static.rust-lang.org/dist/2025-09-18/cargo-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz \
+  /tmp/cargo.tar.xz
+RUN printf '%s\n' \
+      "${RUSTC_ARCHIVE_SHA256}  /tmp/rustc.tar.xz" \
+      "${RUST_STD_ARCHIVE_SHA256}  /tmp/rust-std.tar.xz" \
+      "${CARGO_ARCHIVE_SHA256}  /tmp/cargo.tar.xz" \
+      | sha256sum --check --strict \
+    && for component in rustc rust-std cargo; do \
+      mkdir "/tmp/${component}-dist"; \
+      tar --extract --xz --file "/tmp/${component}.tar.xz" --directory "/tmp/${component}-dist" --strip-components=1; \
+      "/tmp/${component}-dist/install.sh" --prefix=/opt/rust --disable-ldconfig; \
+    done \
+    && rm -rf /tmp/rustc.tar.xz /tmp/rust-std.tar.xz /tmp/cargo.tar.xz /tmp/rustc-dist /tmp/rust-std-dist /tmp/cargo-dist
+ADD --checksum=sha256:7f35f92c15861263bc540c001466678d2da228149a107b51d5b65ce497603074 \
+  https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2 \
+  /tmp/agave.tar.bz2
+RUN echo "${AGAVE_ARCHIVE_SHA256}  /tmp/agave.tar.bz2" | sha256sum --check --strict \
+    && mkdir -p /opt/agave \
+    && tar --extract --bzip2 --file /tmp/agave.tar.bz2 --directory /opt/agave --strip-components=1 \
+    && rm /tmp/agave.tar.bz2
+ADD --checksum=sha256:fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e \
+  https://github.com/anza-xyz/platform-tools/releases/download/v1.54/platform-tools-linux-x86_64.tar.bz2 \
+  /tmp/platform-tools.tar.bz2
+RUN echo "${PLATFORM_TOOLS_ARCHIVE_SHA256}  /tmp/platform-tools.tar.bz2" | sha256sum --check --strict \
+    && mkdir -p "/root/.cache/solana/${PLATFORM_TOOLS_VERSION}" \
+    && tar --extract --bzip2 --file /tmp/platform-tools.tar.bz2 --directory "/root/.cache/solana/${PLATFORM_TOOLS_VERSION}" \
+    && rm /tmp/platform-tools.tar.bz2 \
+    && chmod o+x /root \
+    && chmod -R o+rX /root/.cache
+
+FROM build-base AS release
+
+ARG PLATFORM_TOOLS_VERSION=v1.54
+
+COPY --from=toolchain /opt/rust /opt/rust
+COPY --from=toolchain /opt/agave /opt/agave
+COPY --from=toolchain /root/.cache/solana/${PLATFORM_TOOLS_VERSION} /root/.cache/solana/${PLATFORM_TOOLS_VERSION}
+
+ENV PATH=/opt/rust/bin:/opt/agave/bin:${PATH}
+RUN chmod o+x /root \
     && chmod -R o+rX /root/.cache \
-    && chmod -R o+rwX /root/.rustup
+    && rustc --version | grep --fixed-strings --line-regexp 'rustc 1.90.0 (1159e78c4 2025-09-14)' \
+    && cargo build-sbf --version | grep --fixed-strings --line-regexp 'cargo-build-sbf 4.1.0' \
+    && cargo build-sbf --version | grep --fixed-strings --line-regexp 'platform-tools v1.54' \
+    && solana --version | grep --fixed-strings --line-regexp 'solana-cli 4.2.1 (src:c4b48df9; feat:21b0d33a, client:Agave)' \
+    && test -x /root/.cache/solana/v1.54/rust/bin/rustc \
+    && test -x /root/.cache/solana/v1.54/llvm/bin/clang
 WORKDIR /workspace

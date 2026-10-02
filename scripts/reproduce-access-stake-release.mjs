@@ -6,13 +6,16 @@ import { spawn } from 'node:child_process';
 import { RELEASE_SCHEMA, sha256File, validateReleaseManifest } from './access-stake-contracts.mjs';
 
 const AGAVE_VERSION = 'v4.2.1';
-const AGAVE_INSTALLER_SHA256 = '24b3374030dff853e455b0f910aab149c934c79ccc7f498984923074967647d6';
+const AGAVE_ARCHIVE_SHA256 = '7f35f92c15861263bc540c001466678d2da228149a107b51d5b65ce497603074';
 const RUST_VERSION = '1.90.0';
-const RUSTUP_INSTALLER_SHA256 = '7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af';
+const RUSTC_ARCHIVE_SHA256 = '48c2a42de9e92fcae8c24568f5fe40d5734696a6f80e83cc6d46eef1a78f13c9';
+const RUST_STD_ARCHIVE_SHA256 = '663f4ab7945b392d5e5294dec1b050a66820a20e86f084ec37eeb0f2f7ff5569';
+const CARGO_ARCHIVE_SHA256 = '9853db03d68578a30972e2755c89c66aec035fec641cf8f3a7117c81eec2578d';
 const CONTAINER_IMAGE = 'ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b';
 const UBUNTU_SNAPSHOT = '20261002T150000Z';
 const CARGO_BUILD_SBF_VERSION = '4.1.0';
 const PLATFORM_TOOLS_VERSION = 'v1.54';
+const PLATFORM_TOOLS_ARCHIVE_SHA256 = 'fcc41631c7f77561bf5412218bf297501dccf0305ea280f338f0ace2aab9f31e';
 const PLATFORM = 'linux/amd64';
 const ARTIFACT = 'neal_access_stake.so';
 
@@ -75,6 +78,7 @@ const buildOnce = async (image, source, output, cargoHome, cargoTarget) => {
   ]);
   await run('docker', [
     'run', '--rm', '--platform', PLATFORM,
+    '--network', 'none',
     '--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
     '--volume', `${source}:/workspace:ro`,
     '--volume', `${output}:/release`,
@@ -109,11 +113,14 @@ async function main() {
       'build', '--platform', PLATFORM,
       '--file', path.join(sources[0], 'infra/neal-access-rehearsal/Dockerfile.sbf'),
       '--build-arg', `AGAVE_VERSION=${AGAVE_VERSION}`,
-      '--build-arg', `AGAVE_INSTALLER_SHA256=${AGAVE_INSTALLER_SHA256}`,
+      '--build-arg', `AGAVE_ARCHIVE_SHA256=${AGAVE_ARCHIVE_SHA256}`,
       '--build-arg', `RUST_VERSION=${RUST_VERSION}`,
-      '--build-arg', `RUSTUP_INSTALLER_SHA256=${RUSTUP_INSTALLER_SHA256}`,
+      '--build-arg', `RUSTC_ARCHIVE_SHA256=${RUSTC_ARCHIVE_SHA256}`,
+      '--build-arg', `RUST_STD_ARCHIVE_SHA256=${RUST_STD_ARCHIVE_SHA256}`,
+      '--build-arg', `CARGO_ARCHIVE_SHA256=${CARGO_ARCHIVE_SHA256}`,
       '--build-arg', `UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT}`,
       '--build-arg', `PLATFORM_TOOLS_VERSION=${PLATFORM_TOOLS_VERSION}`,
+      '--build-arg', `PLATFORM_TOOLS_ARCHIVE_SHA256=${PLATFORM_TOOLS_ARCHIVE_SHA256}`,
       '--tag', image,
       sources[0],
     ]);
@@ -139,12 +146,15 @@ async function main() {
       createdAt: new Date().toISOString(),
       toolchain: {
         agaveVersion: AGAVE_VERSION,
-        agaveInstallerSha256: AGAVE_INSTALLER_SHA256,
+        agaveArchiveSha256: AGAVE_ARCHIVE_SHA256,
         rustVersion: RUST_VERSION,
-        rustupInstallerSha256: RUSTUP_INSTALLER_SHA256,
+        rustcArchiveSha256: RUSTC_ARCHIVE_SHA256,
+        rustStdArchiveSha256: RUST_STD_ARCHIVE_SHA256,
+        cargoArchiveSha256: CARGO_ARCHIVE_SHA256,
         ubuntuSnapshot: UBUNTU_SNAPSHOT,
         cargoBuildSbfVersion: CARGO_BUILD_SBF_VERSION,
         platformToolsVersion: PLATFORM_TOOLS_VERSION,
+        platformToolsArchiveSha256: PLATFORM_TOOLS_ARCHIVE_SHA256,
         containerImage: CONTAINER_IMAGE,
         containerImageId,
         platform: PLATFORM,
