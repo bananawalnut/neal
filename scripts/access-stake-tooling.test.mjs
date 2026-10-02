@@ -144,7 +144,7 @@ test('Matrix rehearsal completes token and dummy UIA stages and rejects token re
     response(401, { session: 'first', completed: ['m.login.registration_token'] }),
     response(200, { user_id: '@rehearsal:rehearsal.neal.invalid' }),
     response(401, { session: 'replay', flows: [{ stages: ['m.login.registration_token', 'm.login.dummy'] }] }),
-    response(403, { errcode: 'M_FORBIDDEN' }),
+    response(401, { errcode: 'M_UNAUTHORIZED', error: 'Invalid registration token' }),
   ];
   globalThis.fetch = async (_url, options) => {
     requests.push(JSON.parse(options.body));

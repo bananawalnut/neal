@@ -355,7 +355,11 @@ export const matrixAttempt = async (registrationToken, shouldSucceed) => {
     && tokenBody.completed.includes('m.login.registration_token');
   if (!tokenAccepted) {
     if (shouldSucceed) throw new Error('Synapse rejected the freshly issued one-use registration token');
-    if (tokenStage.status !== 403 || tokenBody.errcode !== 'M_FORBIDDEN') {
+    if (
+      tokenStage.status !== 401
+      || tokenBody.errcode !== 'M_UNAUTHORIZED'
+      || tokenBody.error !== 'Invalid registration token'
+    ) {
       throw new Error('Synapse did not reject the replayed registration token with the expected one-use failure');
     }
     return tokenBody;
