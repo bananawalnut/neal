@@ -22,7 +22,7 @@ Activation is intentionally split into independently verifiable stages.
      --output outputs/access-stake-release
    ```
 
-   The command uses two independent source and Cargo directories, requires
+   The command uses two independent source and Cargo target directories, requires
    byte-identical output, and emits `neal.access-stake-release/v1` beside the
    final `.so`.
 4. Record the artifact SHA-256, program key, program-data address, upgrade
@@ -44,7 +44,10 @@ npm run access-stake:rehearse-devnet -- \
   --review-file outputs/isolated-review.json
 ```
 
-The dry run reads finalized state only. Devnet writes require both
+The dry run validates the release and review documents, planned policy, clean
+checkout, and independent finalized devnet agreement while reading chain state
+only. It does not start the local rehearsal services; the executing run performs
+those service and tool checks. Devnet writes require both
 `--execute --acknowledge-devnet`. The live run creates an isolated disposable
 Synapse/Postgres stack on loopback ports 18008-18010, a disposable issuer on
 18009, an immutable deployment of the exact release artifact, a six-decimal
@@ -99,8 +102,12 @@ The repository also provides a manually dispatched `Access-stake devnet
 rehearsal` workflow. It requires the exact source commit, explicit devnet
 acknowledgement, `NEAL_DEVNET_RPC_SECONDARY`, and a base64-encoded isolated
 review attestation in `NEAL_ACCESS_REVIEW_ATTESTATION_B64`. It uploads the
-release manifest, `.so`, receipt, and sanitized log; it never commits or changes
-the production policy.
+release manifest, `.so`, public review attestation, receipt, and sanitized log,
+and creates GitHub build-provenance attestations for each file; it never commits
+or changes the production policy. Configure the `access-stake-devnet`
+environment with required reviewers and keep both secrets in that environment,
+not at repository scope. Verify downloaded evidence with `gh attestation verify
+FILE --repo OWNER/REPOSITORY` in addition to the offline schema validator.
 
 Use the same first-party pause tool on devnet. It simulates by default:
 

@@ -4,10 +4,30 @@ ARG AGAVE_VERSION=v4.2.1
 ARG AGAVE_INSTALLER_SHA256=24b3374030dff853e455b0f910aab149c934c79ccc7f498984923074967647d6
 ARG RUST_VERSION=1.90.0
 ARG RUSTUP_INSTALLER_SHA256=7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af
+ARG UBUNTU_SNAPSHOT=20261002T150000Z
+ARG PLATFORM_TOOLS_VERSION=v1.54
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl bzip2 xz-utils git build-essential pkg-config libssl-dev \
+ADD --checksum=sha256:6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50 \
+  https://snapshot.ubuntu.com/ubuntu/20261002T150000Z/pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb \
+  /tmp/ca-certificates.deb
+RUN dpkg --unpack /tmp/ca-certificates.deb \
+    && find /usr/share/ca-certificates -type f -name '*.crt' -printf '%P\n' | sort > /etc/ca-certificates.conf \
+    && mkdir -p /etc/ssl/certs \
+    && cat /usr/share/ca-certificates/mozilla/*.crt > /etc/ssl/certs/ca-certificates.crt \
+    && rm /tmp/ca-certificates.deb \
+    && printf 'APT::Snapshot "%s";\n' "${UBUNTU_SNAPSHOT}" > /etc/apt/apt.conf.d/50snapshot \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends --fix-broken openssl \
+    && apt-get install --yes --no-install-recommends \
+      ca-certificates=20260601~24.04.1 \
+      curl=8.5.0-2ubuntu10.15 \
+      bzip2=1.0.8-5.1ubuntu0.1 \
+      xz-utils=5.6.1+really5.4.5-1ubuntu0.3 \
+      git=1:2.43.0-1ubuntu7.3 \
+      build-essential=12.10ubuntu1 \
+      pkg-config=1.8.1-2build1 \
+      libssl-dev=3.0.13-0ubuntu3.16 \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
       "https://sh.rustup.rs" --output /tmp/rustup-init.sh \
@@ -21,8 +41,12 @@ RUN curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
     && rm /tmp/agave-install.sh \
     && chmod o+x /root \
     && chmod -R o+rX /root/.cargo /root/.rustup /root/.local/share/solana
-RUN chmod -R o+rwX /root/.rustup
 
 ENV PATH=/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:${PATH}
 ENV RUSTUP_HOME=/root/.rustup
+RUN cargo build-sbf --install-only --tools-version "${PLATFORM_TOOLS_VERSION}" \
+    && cargo build-sbf --version \
+    && solana --version \
+    && chmod -R o+rX /root/.cache \
+    && chmod -R o+rwX /root/.rustup
 WORKDIR /workspace

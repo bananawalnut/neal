@@ -368,6 +368,29 @@ class IssuerTests(unittest.TestCase):
                 passphrase,
             )
 
+    def test_backup_rejects_same_input_and_output(self) -> None:
+        issuer.Store(self.settings.database)
+        passphrase = Path(self.temp.name) / "backup-passphrase"
+        passphrase.write_text("correct horse battery staple")
+        os.chmod(passphrase, 0o600)
+        with self.assertRaisesRegex(backup.BackupError, "different files"):
+            backup.create_backup(self.settings.database, self.settings.database, passphrase, replace=True)
+
+    def test_restore_rejects_same_input_and_output_and_sqlite_sidecars(self) -> None:
+        issuer.Store(self.settings.database)
+        passphrase = Path(self.temp.name) / "backup-passphrase"
+        passphrase.write_text("correct horse battery staple")
+        os.chmod(passphrase, 0o600)
+        encrypted = Path(self.temp.name) / "issuer.nealbak"
+        restored = Path(self.temp.name) / "restored.sqlite3"
+        backup.create_backup(self.settings.database, encrypted, passphrase)
+        with self.assertRaisesRegex(backup.BackupError, "different files"):
+            backup.restore_backup(encrypted, encrypted, passphrase, replace=True)
+        restored.write_bytes(b"old database")
+        Path(f"{restored}-wal").write_bytes(b"stale")
+        with self.assertRaisesRegex(backup.BackupError, "sidecar"):
+            backup.restore_backup(encrypted, restored, passphrase, replace=True)
+
 
 if __name__ == "__main__":
     unittest.main()

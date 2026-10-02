@@ -10,6 +10,9 @@ const AGAVE_INSTALLER_SHA256 = '24b3374030dff853e455b0f910aab149c934c79ccc7f4989
 const RUST_VERSION = '1.90.0';
 const RUSTUP_INSTALLER_SHA256 = '7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af';
 const CONTAINER_IMAGE = 'ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b';
+const UBUNTU_SNAPSHOT = '20261002T150000Z';
+const CARGO_BUILD_SBF_VERSION = '4.1.0';
+const PLATFORM_TOOLS_VERSION = 'v1.54';
 const PLATFORM = 'linux/amd64';
 const ARTIFACT = 'neal_access_stake.so';
 
@@ -49,6 +52,21 @@ const extractCommit = async (commit, destination, archive) => {
   await run('tar', ['-xf', archive, '-C', destination]);
 };
 
+const prefetchCargo = async (image, source, cargoHome) => {
+  await fs.mkdir(cargoHome, { recursive: true, mode: 0o700 });
+  await run('docker', [
+    'run', '--rm', '--platform', PLATFORM,
+    '--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+    '--volume', `${source}:/workspace:ro`,
+    '--volume', `${cargoHome}:/cargo-home`,
+    '--env', 'CARGO_HOME=/cargo-home',
+    '--env', 'HOME=/root',
+    '--workdir', '/workspace',
+    image,
+    'cargo', 'fetch', '--locked', '--manifest-path', 'programs/access-stake/Cargo.toml',
+  ]);
+};
+
 const buildOnce = async (image, source, output, cargoHome, cargoTarget) => {
   await Promise.all([
     fs.mkdir(output, { recursive: true, mode: 0o700 }),
@@ -58,16 +76,18 @@ const buildOnce = async (image, source, output, cargoHome, cargoTarget) => {
   await run('docker', [
     'run', '--rm', '--platform', PLATFORM,
     '--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
-    '--volume', `${source}:/workspace`,
+    '--volume', `${source}:/workspace:ro`,
     '--volume', `${output}:/release`,
-    '--volume', `${cargoHome}:/cargo-home`,
+    '--volume', `${cargoHome}:/cargo-home:ro`,
     '--volume', `${cargoTarget}:/cargo-target`,
     '--env', 'CARGO_HOME=/cargo-home',
     '--env', 'CARGO_TARGET_DIR=/cargo-target',
-    '--env', 'HOME=/tmp',
+    '--env', 'CARGO_NET_OFFLINE=true',
+    '--env', 'HOME=/root',
     '--workdir', '/workspace',
     image,
-    'cargo', 'build-sbf', '--manifest-path', 'programs/access-stake/Cargo.toml', '--sbf-out-dir', '/release', '--', '--locked',
+    'cargo', 'build-sbf', '--skip-tools-install', '--tools-version', PLATFORM_TOOLS_VERSION, '--offline',
+    '--manifest-path', 'programs/access-stake/Cargo.toml', '--sbf-out-dir', '/release', '--', '--locked', '--offline',
   ]);
   const artifact = path.join(output, ARTIFACT);
   const [sha256, stats] = await Promise.all([sha256File(artifact), fs.stat(artifact)]);
@@ -92,15 +112,18 @@ async function main() {
       '--build-arg', `AGAVE_INSTALLER_SHA256=${AGAVE_INSTALLER_SHA256}`,
       '--build-arg', `RUST_VERSION=${RUST_VERSION}`,
       '--build-arg', `RUSTUP_INSTALLER_SHA256=${RUSTUP_INSTALLER_SHA256}`,
+      '--build-arg', `UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT}`,
+      '--build-arg', `PLATFORM_TOOLS_VERSION=${PLATFORM_TOOLS_VERSION}`,
       '--tag', image,
       sources[0],
     ]);
     const containerImageId = await run('docker', ['image', 'inspect', '--format', '{{.Id}}', image], { capture: true });
     if (!/^sha256:[0-9a-f]{64}$/u.test(containerImageId)) throw new Error('Docker returned an invalid toolchain image identity');
-    // The registry/source cache is shared to avoid downloading duplicate immutable
-    // dependencies. Source trees and target directories remain independent, so no
-    // compiled output can cross from one reproducibility build to the other.
+    // Populate the dependency cache once, then mount it read-only into both builds.
+    // Source trees and target directories are also separate and source is read-only,
+    // so neither build can alter any input observed by the other.
     const cargoHome = path.join(root, 'cargo-home');
+    await prefetchCargo(image, sources[0], cargoHome);
     const first = await buildOnce(image, sources[0], path.join(root, 'build-1'), cargoHome, path.join(root, 'cargo-target-1'));
     const second = await buildOnce(image, sources[1], path.join(root, 'build-2'), cargoHome, path.join(root, 'cargo-target-2'));
     if (first.sha256 !== second.sha256 || first.bytes !== second.bytes) {
@@ -119,6 +142,9 @@ async function main() {
         agaveInstallerSha256: AGAVE_INSTALLER_SHA256,
         rustVersion: RUST_VERSION,
         rustupInstallerSha256: RUSTUP_INSTALLER_SHA256,
+        ubuntuSnapshot: UBUNTU_SNAPSHOT,
+        cargoBuildSbfVersion: CARGO_BUILD_SBF_VERSION,
+        platformToolsVersion: PLATFORM_TOOLS_VERSION,
         containerImage: CONTAINER_IMAGE,
         containerImageId,
         platform: PLATFORM,

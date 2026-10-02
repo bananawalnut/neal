@@ -55,6 +55,8 @@ const RECONCILE = path.join(ISSUER_DIR, 'reconcile.py');
 const BACKUP = path.join(ISSUER_DIR, 'backup.py');
 const POLICY = path.join(ROOT, 'apps/site/public/wallet-policy.json');
 const TOOLCHAIN_IMAGE = 'neal-access-stake-devnet-toolchain:v4.2.1';
+const POSTGRES_REHEARSAL_IMAGE = 'postgres:16.15-bookworm@sha256:1938c16e9d2f10a6a3623b344b64ae8d45f407f2c5f34f0979468bb689b9227a';
+const SYNAPSE_REHEARSAL_IMAGE = 'matrixdotorg/synapse:v1.157.2@sha256:3827b727cb40c52d7d4806db2eb96058eb4514e94a79ca1d7b805de7a8fc44d9';
 const UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const MINTED_ATOMIC = 140_000_000_000n;
 
@@ -183,13 +185,13 @@ const compose = (project, runtime, args, options = {}) => run('docker', [
 
 const stopProcess = async (child) => {
   if (!child || child.exitCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
   child.kill('SIGTERM');
-  await Promise.race([
-    new Promise((resolve) => child.once('exit', resolve)),
-    sleep(5_000).then(() => {
-      if (child.exitCode === null) child.kill('SIGKILL');
-    }),
-  ]);
+  const graceful = await Promise.race([exited.then(() => true), sleep(5_000).then(() => false)]);
+  if (graceful) return;
+  if (!child.kill('SIGKILL')) throw new Error('Could not terminate a rehearsal child process');
+  const killed = await Promise.race([exited.then(() => true), sleep(5_000).then(() => false)]);
+  if (!killed) throw new Error('A rehearsal child process did not exit after SIGKILL');
 };
 
 const waitHttp = async (url, expected, attempts = 60) => {
@@ -324,22 +326,42 @@ const requestAccessToken = async (cookie) => {
   return { response, body };
 };
 
-const matrixAttempt = async (registrationToken, shouldSucceed) => {
+export const matrixAttempt = async (registrationToken, shouldSucceed) => {
   const base = { username: `rehearsal_${randomBytes(8).toString('hex')}`, password: randomBytes(36).toString('base64url') };
-  let response = await fetch('http://127.0.0.1:18008/_matrix/client/v3/register', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(base),
+  const request = (body) => fetch('http://127.0.0.1:18008/_matrix/client/v3/register', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
-  let body = await response.json().catch(() => ({}));
-  if (response.status === 401 && typeof body.session === 'string') {
-    response = await fetch('http://127.0.0.1:18008/_matrix/client/v3/register', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...base, auth: { type: 'm.login.registration_token', token: registrationToken, session: body.session } }),
-    });
-    body = await response.json().catch(() => ({}));
+  const started = await request(base);
+  const startedBody = await started.json().catch(() => ({}));
+  const session = startedBody.session;
+  const supported = startedBody.flows?.some((flow) => (
+    Array.isArray(flow.stages)
+    && flow.stages.includes('m.login.registration_token')
+    && flow.stages.includes('m.login.dummy')
+  ));
+  if (started.status !== 401 || typeof session !== 'string' || !supported) {
+    throw new Error('Pinned Synapse did not advertise the expected registration-token and dummy UIA flow');
   }
-  if (shouldSucceed && !response.ok) throw new Error('Synapse rejected the freshly issued one-use registration token');
-  if (!shouldSucceed && response.ok) throw new Error('Synapse accepted a replayed one-use registration token');
-  return body;
+
+  const tokenStage = await request({
+    ...base,
+    auth: { type: 'm.login.registration_token', token: registrationToken, session },
+  });
+  const tokenBody = await tokenStage.json().catch(() => ({}));
+  const tokenAccepted = tokenStage.status === 401
+    && Array.isArray(tokenBody.completed)
+    && tokenBody.completed.includes('m.login.registration_token');
+  if (!tokenAccepted) {
+    if (shouldSucceed) throw new Error('Synapse rejected the freshly issued one-use registration token');
+    if (tokenStage.ok) throw new Error('Synapse completed registration without the required dummy UIA stage');
+    return tokenBody;
+  }
+
+  const finalStage = await request({ ...base, auth: { type: 'm.login.dummy', session } });
+  const finalBody = await finalStage.json().catch(() => ({}));
+  if (shouldSucceed && !finalStage.ok) throw new Error('Synapse did not finish account creation after both UIA stages');
+  if (!shouldSucceed && finalStage.ok) throw new Error('Synapse accepted a replayed one-use registration token');
+  return finalBody;
 };
 
 const buildToolchain = () => run('docker', [
@@ -702,8 +724,11 @@ async function execute(options, release, review, rpcAgreement) {
       python, runtime, rpcPrimary: options['rpc-primary'], rpcSecondary: options['rpc-secondary'],
       programId, programData, programHash, config: parityConfig, mint,
     }));
+    await waitHttp('http://127.0.0.1:18009/readyz', [200]);
     const replay = await requestAccessToken(cookieOne);
-    if (replay.response.ok) throw new Error('Stale database restore reissued an on-chain-consumed receipt');
+    if (replay.response.status !== 422 || replay.body.error !== 'Finalized stake receipt is not eligible') {
+      throw new Error('Stale restore did not fail specifically on finalized on-chain consumption');
+    }
     mark('encrypted-stale-restore-replay-rejected');
 
     const parityTwoStake = stakeInstruction({
@@ -726,9 +751,16 @@ async function execute(options, release, review, rpcAgreement) {
     if (!Array.isArray(pending.pending) || pending.pending.length !== 1 || typeof pending.pending[0].user_id !== 'string') {
       throw new Error('Cleanup failure did not create exactly one durable reconciliation record');
     }
-    await jsonCommand(python, [
+    const reconciliation = await jsonCommand(python, [
       RECONCILE, '--environment-file', path.join(runtime, 'no-environment-file'), '--user-id', pending.pending[0].user_id,
     ], { cwd: ISSUER_DIR, env: issuerEnvironment, failure: 'Temporary-admin reconciliation failed' });
+    if (reconciliation.pendingCount !== 0) throw new Error('Temporary-admin reconciliation left unresolved records');
+    const afterReconciliation = await jsonCommand(python, [
+      RECONCILE, '--environment-file', path.join(runtime, 'no-environment-file'), '--list',
+    ], { cwd: ISSUER_DIR, env: issuerEnvironment, failure: 'Could not verify cleanup reconciliation state' });
+    if (!Array.isArray(afterReconciliation.pending) || afterReconciliation.pending.length !== 0) {
+      throw new Error('Temporary-admin cleanup record remained after reconciliation');
+    }
     await waitHttp('http://127.0.0.1:18009/readyz', [200]);
     mark('cleanup-failure-halted-and-reconciled');
 
@@ -778,8 +810,13 @@ async function execute(options, release, review, rpcAgreement) {
       executedAt: new Date().toISOString(),
       sourceCommit: release.manifest.sourceCommit,
       releaseManifestSha256: await sha256File(release.manifestFile),
+      reviewAttestationSha256: await sha256File(path.resolve(options['review-file'])),
       artifact: { sha256: release.manifest.artifact.sha256, bytes: release.manifest.artifact.bytes },
-      cluster: { name: 'devnet', genesisHash: rpcAgreement.genesisHash, independentRpcAgreement: true },
+      cluster: {
+        name: 'devnet', genesisHash: rpcAgreement.genesisHash,
+        independentRpcAgreement: true, finalizedAgreementSlot: rpcAgreement.slot,
+      },
+      harness: { postgresImage: POSTGRES_REHEARSAL_IMAGE, synapseImage: SYNAPSE_REHEARSAL_IMAGE },
       program: {
         programId: programId.toBase58(), programDataAddress: programData.toBase58(),
         deployedSha256: programHash, immutable: true,
@@ -804,10 +841,20 @@ async function execute(options, release, review, rpcAgreement) {
       review: { sourceCommit: review.sourceCommit, isolatedAgent: true, unresolvedP0ToP2: 0 },
     };
   } finally {
-    await stopProcess(issuerProcess).catch(() => {});
-    await stopProcess(proxyProcess).catch(() => {});
-    await compose(project, runtime, ['down', '--volumes', '--remove-orphans'], { failure: 'Rehearsal container cleanup failed' }).catch(() => {});
-    await fs.rm(runtime, { recursive: true, force: true });
+    let cleanupFailure;
+    for (const [label, operation] of [
+      ['issuer process', () => stopProcess(issuerProcess)],
+      ['fault proxy process', () => stopProcess(proxyProcess)],
+      ['rehearsal containers and volumes', () => compose(project, runtime, ['down', '--volumes', '--remove-orphans'], { failure: 'Rehearsal container cleanup failed' })],
+      ['temporary secret directory', () => fs.rm(runtime, { recursive: true, force: true })],
+    ]) {
+      try {
+        await operation();
+      } catch {
+        cleanupFailure ??= new Error(`Failed to remove ${label}; no rehearsal receipt will be emitted`);
+      }
+    }
+    if (cleanupFailure) throw cleanupFailure;
   }
   if (!receipt) throw new Error('Devnet rehearsal did not produce a receipt');
   receipt.checks.temporarySecretsRemoved = true;
@@ -832,8 +879,8 @@ async function main() {
   await assertPlannedPolicy();
   const head = await run('git', ['rev-parse', 'HEAD'], { capture: true });
   if (head !== release.manifest.sourceCommit) throw new Error('Executor checkout must be the exact reviewed release source commit');
-  if (await run('git', ['status', '--porcelain', '--untracked-files=no'], { capture: true })) {
-    throw new Error('Executor checkout has tracked changes; use a clean release commit');
+  if (await run('git', ['status', '--porcelain'], { capture: true })) {
+    throw new Error('Executor checkout has changes; use a clean release commit');
   }
   let rpcAgreement;
   try {
@@ -848,7 +895,7 @@ async function main() {
     console.log(JSON.stringify({
       schema: 'neal.access-stake-devnet-plan/v1', mode: 'dry-run', sourceCommit: release.manifest.sourceCommit,
       artifactSha256: release.manifest.artifact.sha256, devnetGenesis: rpcAgreement.genesisHash,
-      independentFinalizedAgreement: true, writesAuthorized: false,
+      independentFinalizedAgreement: true, finalizedAgreementSlot: rpcAgreement.slot, writesAuthorized: false,
       configs: [
         { purpose: 'parity', configId: '0', requiredAtomicAmount: PRODUCTION_AMOUNT, minimumLockSeconds: PRODUCTION_LOCK_SECONDS },
         { purpose: 'lifecycle', configId: '1', requiredAtomicAmount: LIFECYCLE_AMOUNT, minimumLockSeconds: LIFECYCLE_LOCK_SECONDS },

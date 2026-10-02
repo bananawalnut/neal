@@ -25,5 +25,6 @@ the explicitly supplied `--receipt` location.
 
 The release command compiles the selected Git commit twice from separate
 source trees into separate Cargo target directories and rejects any byte or
-size mismatch. The builds may reuse the same Cargo registry/source download
-cache; compiled target output is never shared between them.
+size mismatch. A prefetched Cargo registry/source cache is mounted read-only
+into both builds; source trees are also read-only and compiled output is never
+shared between builds.

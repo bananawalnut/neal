@@ -29,6 +29,16 @@ class BackupError(RuntimeError):
     pass
 
 
+def _same_file(first: Path, second: Path) -> bool:
+    """Return true for the same lexical path or existing filesystem object."""
+    if first.absolute() == second.absolute():
+        return True
+    try:
+        return first.exists() and second.exists() and os.path.samefile(first, second)
+    except OSError:
+        return False
+
+
 def _passphrase(file: Path | None) -> bytes:
     if file is None:
         if not os.isatty(0):
@@ -106,6 +116,8 @@ def _snapshot(database: Path) -> bytes:
 
 
 def create_backup(database: Path, output: Path, passphrase_file: Path | None, replace: bool = False) -> None:
+    if _same_file(database, output):
+        raise BackupError("Backup input and output must be different files")
     plaintext = _snapshot(database.absolute())
     salt = os.urandom(SALT_BYTES)
     nonce = os.urandom(NONCE_BYTES)
@@ -136,6 +148,8 @@ def _decrypt(source: Path, passphrase_file: Path | None) -> bytes:
 
 
 def restore_backup(source: Path, database: Path, passphrase_file: Path | None, replace: bool = False) -> None:
+    if _same_file(source, database):
+        raise BackupError("Backup input and restored database must be different files")
     plaintext = _decrypt(source.resolve(), passphrase_file)
     if not plaintext.startswith(b"SQLite format 3\0"):
         raise BackupError("Decrypted backup is not a SQLite database")
@@ -160,12 +174,21 @@ def restore_backup(source: Path, database: Path, passphrase_file: Path | None, r
             raise BackupError("Restored SQLite database is invalid") from error
         if database.exists() and not replace:
             raise BackupError(f"Refusing to replace existing database: {database}")
+        sidecars = [Path(f"{database}{suffix}") for suffix in ("-wal", "-shm")]
+        if any(sidecar.exists() for sidecar in sidecars):
+            raise BackupError("Refusing restore while SQLite WAL/SHM sidecar files exist; stop and checkpoint the issuer first")
         os.replace(temporary, database)
         os.chmod(database, 0o600)
-        for suffix in ("-wal", "-shm"):
-            stale = Path(f"{database}{suffix}")
-            if stale.exists():
-                stale.unlink()
+        restored_descriptor = os.open(database, os.O_RDONLY)
+        try:
+            os.fsync(restored_descriptor)
+        finally:
+            os.close(restored_descriptor)
+        directory_descriptor = os.open(database.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     finally:
         if temporary.exists():
             temporary.unlink()

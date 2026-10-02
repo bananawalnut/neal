@@ -81,9 +81,10 @@ python3 backup.py restore \
   --replace
 ```
 
-Stop the issuer before restore. Restore verifies authentication and SQLite
-integrity before atomically replacing the destination. Never place either the
-passphrase file or encrypted backup in this repository.
+Stop the issuer and checkpoint SQLite before restore. Restore refuses a
+destination with WAL/SHM sidecars, verifies authentication and SQLite integrity,
+then durably replaces the destination. Never place either the passphrase file or
+encrypted backup in this repository.
 
 ## Required environment
 

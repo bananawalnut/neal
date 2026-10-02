@@ -14,6 +14,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 concurrency:
   group: access-stake-devnet-rehearsal
@@ -23,6 +25,7 @@ jobs:
   rehearse:
     if: ${{ inputs.acknowledge_devnet }}
     runs-on: ubuntu-latest
+    environment: access-stake-devnet
     timeout-minutes: 45
     steps:
       - name: Validate exact source commit input
@@ -34,10 +37,11 @@ jobs:
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase SHA' >&2; exit 1; }
 
       - name: Check out reviewed source
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ inputs.source_commit }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Require the exact current main commit
         shell: bash
@@ -52,13 +56,13 @@ jobs:
           }
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           cache: npm
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
 
@@ -100,13 +104,24 @@ jobs:
       - name: Validate public receipt
         run: npm run access-stake:validate-evidence -- --file outputs/devnet-receipt.json
 
+      - name: Attest release and rehearsal evidence provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            outputs/access-stake-release/release-manifest.json
+            outputs/access-stake-release/neal_access_stake.so
+            outputs/isolated-review.json
+            outputs/devnet-receipt.json
+            outputs/devnet-log.json
+
       - name: Upload release and sanitized rehearsal evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: neal-access-stake-devnet-${{ inputs.source_commit }}
           path: |
             outputs/access-stake-release/release-manifest.json
             outputs/access-stake-release/neal_access_stake.so
+            outputs/isolated-review.json
             outputs/devnet-receipt.json
             outputs/devnet-log.json
           if-no-files-found: error
