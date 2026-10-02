@@ -20,6 +20,10 @@
     "site:typecheck": "npm run typecheck -w @neal/public-site",
     "site:validate-policy": "node scripts/validate-wallet-policy.mjs",
     "site:manage-access-stake": "node scripts/manage-access-stake-config.mjs",
-    "site:build": "npm run build -w @neal/public-site"
+    "site:build": "npm run build -w @neal/public-site",
+    "access-stake:reproduce": "node scripts/reproduce-access-stake-release.mjs",
+    "access-stake:rehearse-devnet": "node scripts/rehearse-access-stake-devnet.mjs",
+    "access-stake:validate-evidence": "node scripts/validate-access-stake-evidence.mjs",
+    "access-stake:test-tooling": "node --test scripts/access-stake-tooling.test.mjs"
   }
 }

@@ -22,6 +22,10 @@ not authorize mainnet activation.
 | Pause/recovery depended on ad-hoc transactions | Reviewed tool simulates by default, verifies genesis/PDA/authority, requires explicit mainnet acknowledgement, confirms finality/revision, and can atomically stage policy. | `manage-access-stake-config.mjs` |
 | Planned readiness looked successful | Planned status exits nonzero unless `--informational-planned` is explicit; CI separately validates the offline policy shape. | Readiness and CI |
 | Dependency/toolchain drift | npm and Cargo locks are enforced, issuer deployment wheels are version/hash locked, Rust and Agave CI versions are pinned, and CI builds/uploads the SBF hash. | CI and deployment requirements |
+| A single non-reproducible SBF was reviewed | Release tooling builds the exact commit twice with separate sources/Cargo homes in a digest-pinned linux/amd64 container, verifies the Agave installer hash, byte-compares output, and emits a strict manifest. | `access-stake:reproduce`, CI release artifact |
+| Devnet evidence could leak credentials | The receipt has an exact allowlisted schema plus recursive credential-shaped key/value rejection; credentials remain in a mode-0700 OS temporary root and mode-0600 files. | Evidence validator and tooling tests |
+| A rehearsal could touch live Matrix | Pinned rehearsal containers use `rehearsal.neal.invalid`, loopback-only ports 18008-18010, distinct disposable volumes, and generated credentials; no production path, port, DNS name, or secret is mounted. | Rehearsal compose and executor |
+| Backup files could be forged or expose SQLite | Online SQLite snapshots use the authenticated `NEALBKP1` envelope with scrypt and AES-256-GCM; restore verifies authentication and SQLite integrity before atomic replacement. | Issuer backup unit tests and rehearsal stale-restore drill |
 
 ## Later review
 

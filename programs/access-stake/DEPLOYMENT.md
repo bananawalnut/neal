@@ -13,13 +13,64 @@ Activation is intentionally split into independently verifiable stages.
 
 1. Obtain an independent review of the exact program and issuer commit.
 2. Run `cargo test -p neal-access-stake --offline` and the issuer unit suite.
-3. Build the SBF artifact reproducibly with the official Solana toolchain.
+3. Build the SBF artifact twice from the exact clean commit with the pinned,
+   hash-verified Agave/container toolchain:
+
+   ```bash
+   npm run access-stake:reproduce -- \
+     --commit FULL_40_CHARACTER_COMMIT \
+     --output outputs/access-stake-release
+   ```
+
+   The command uses two independent source and Cargo target directories, requires
+   byte-identical output, and emits `neal.access-stake-release/v1` beside the
+   final `.so`.
 4. Record the artifact SHA-256, program key, program-data address, upgrade
    authority, reviewer, and reviewed commit outside the mutable policy file.
 5. Back up the deployment/config authority using the operator's approved key
    custody process. Never commit or copy a keypair into this repository.
 
 ## 2. Devnet rehearsal
+
+The supported end-to-end executor is dry-run by default. It requires two HTTPS
+RPCs on distinct hosts and a `neal.access-stake-isolated-review/v1` attestation
+covering the exact release commit with zero unresolved P0-P2 findings:
+
+```bash
+npm run access-stake:rehearse-devnet -- \
+  --release-manifest outputs/access-stake-release/release-manifest.json \
+  --rpc-primary https://api.devnet.solana.com \
+  --rpc-secondary "$NEAL_DEVNET_RPC_SECONDARY" \
+  --review-file outputs/isolated-review.json
+```
+
+The dry run validates the release and review documents, planned policy, clean
+checkout, and independent finalized devnet agreement while reading chain state
+only. It does not start the local rehearsal services; the executing run performs
+those service and tool checks. Devnet writes require both
+`--execute --acknowledge-devnet`. The live run creates an isolated disposable
+Synapse/Postgres stack on loopback ports 18008-18010, a disposable issuer on
+18009, an immutable deployment of the exact release artifact, a six-decimal
+140,000-token Token-2022 mint with disabled authorities, and two configs:
+
+- config 0: `69000000000` atomic units and `7776000` seconds;
+- config 1: `1000000` atomic units and `120` seconds.
+
+It verifies SIWS, stake/claim/consume, one-use Matrix registration, stale
+backup replay resistance, injected temporary-admin cleanup failure and
+reconciliation, early-release rejection, pause rejection, full pre-dusted vault
+refund while paused, and unpause. Temporary identities and credentials are
+deleted during teardown. The only persistent output is a sanitized
+`neal.access-stake-devnet-rehearsal/v1` receipt and public step log. Validate a
+receipt offline with:
+
+```bash
+npm run access-stake:validate-evidence -- --file /path/to/devnet-receipt.json
+```
+
+Commit the validated receipt under
+`programs/access-stake/evidence/devnet/YYYY-MM-DD-SHORTSHA.json` in a separate
+evidence-only pull request. Do not activate policy as part of that pull request.
 
 Deploy the reviewed artifact to devnet and initialize a fresh config. The
 initializer is dry-run by default and verifies the RPC genesis, canonical mint,
@@ -46,6 +97,17 @@ pause, release-while-paused, issuer failure reconciliation, and an encrypted
 SQLite backup/restore against a non-production Synapse instance. The rehearsal
 issuer must use `NEAL_ACCESS_CHAIN_ID=solana:devnet` with the devnet genesis;
 the service rejects an ID/genesis mismatch.
+
+The repository also provides a manually dispatched `Access-stake devnet
+rehearsal` workflow. It requires the exact source commit, explicit devnet
+acknowledgement, `NEAL_DEVNET_RPC_SECONDARY`, and a base64-encoded isolated
+review attestation in `NEAL_ACCESS_REVIEW_ATTESTATION_B64`. It uploads the
+release manifest, `.so`, public review attestation, receipt, and sanitized log,
+and creates GitHub build-provenance attestations for each file; it never commits
+or changes the production policy. Configure the `access-stake-devnet`
+environment with required reviewers and keep both secrets in that environment,
+not at repository scope. Verify downloaded evidence with `gh attestation verify
+FILE --repo OWNER/REPOSITORY` in addition to the offline schema validator.
 
 Use the same first-party pause tool on devnet. It simulates by default:
 

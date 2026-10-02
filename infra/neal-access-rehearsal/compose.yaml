@@ -1,0 +1,64 @@
+name: neal-access-rehearsal
+
+services:
+  postgres:
+    image: postgres:16.15-bookworm@sha256:1938c16e9d2f10a6a3623b344b64ae8d45f407f2c5f34f0979468bb689b9227a
+    environment:
+      POSTGRES_DB: synapse_rehearsal
+      POSTGRES_USER: synapse_rehearsal
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    secrets:
+      - postgres_password
+    volumes:
+      - rehearsal-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse_rehearsal -d synapse_rehearsal"]
+      interval: 2s
+      timeout: 3s
+      retries: 45
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /run/postgresql:size=8m,mode=3775
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - rehearsal-internal
+
+  synapse:
+    image: matrixdotorg/synapse:v1.157.2@sha256:3827b727cb40c52d7d4806db2eb96058eb4514e94a79ca1d7b805de7a8fc44d9
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: "${NEAL_REHEARSAL_UID:?set NEAL_REHEARSAL_UID}:${NEAL_REHEARSAL_GID:?set NEAL_REHEARSAL_GID}"
+    volumes:
+      - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}/homeserver.yaml:/data/homeserver.yaml:ro
+      - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}/synapse.log.config:/data/synapse.log.config:ro
+      - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}/rehearsal.signing.key:/data/rehearsal.signing.key:ro
+    ports:
+      - "127.0.0.1:18008:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/_matrix/client/versions', timeout=2)\""]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /data/media_store:size=64m,mode=0700,uid=${NEAL_REHEARSAL_UID},gid=${NEAL_REHEARSAL_GID}
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - rehearsal-internal
+
+secrets:
+  postgres_password:
+    file: ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}/postgres-password
+
+networks:
+  rehearsal-internal:
+    internal: true
+
+volumes:
+  rehearsal-postgres:

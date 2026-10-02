@@ -4,6 +4,7 @@ import base64
 import dataclasses
 import os
 import socket
+import sqlite3
 import stat
 import struct
 import tempfile
@@ -17,6 +18,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import issuer
+import backup
 
 
 class FakeSolana:
@@ -331,6 +333,63 @@ class IssuerTests(unittest.TestCase):
         self.settings.issuer_keypair_file.write_text(str([0] * 64))
         with self.assertRaisesRegex(issuer.IssuerError, "does not match"):
             issuer.SolanaVerifier(self.settings)
+
+    def test_encrypted_online_backup_round_trip_and_authentication(self) -> None:
+        store = issuer.Store(self.settings.database)
+        store.add_admin_cleanup("@temporary:test", "registration-token", "cleanup failed")
+        passphrase = Path(self.temp.name) / "backup-passphrase"
+        passphrase.write_text("correct horse battery staple")
+        os.chmod(passphrase, 0o600)
+        encrypted = Path(self.temp.name) / "issuer.nealbak"
+        restored = Path(self.temp.name) / "restored.sqlite3"
+
+        backup.create_backup(self.settings.database, encrypted, passphrase)
+        self.assertEqual(encrypted.read_bytes()[:8], backup.MAGIC)
+        self.assertEqual(stat.S_IMODE(encrypted.stat().st_mode), 0o600)
+        backup.restore_backup(encrypted, restored, passphrase)
+        with sqlite3.connect(restored) as database:
+            self.assertEqual(database.execute("SELECT COUNT(*) FROM admin_cleanups").fetchone()[0], 1)
+
+        wrong = Path(self.temp.name) / "wrong-passphrase"
+        wrong.write_text("this passphrase is definitely wrong")
+        os.chmod(wrong, 0o600)
+        with self.assertRaisesRegex(backup.BackupError, "authentication failed"):
+            backup.restore_backup(encrypted, Path(self.temp.name) / "wrong.sqlite3", wrong)
+
+    def test_backup_rejects_passphrase_file_with_broad_permissions(self) -> None:
+        issuer.Store(self.settings.database)
+        passphrase = Path(self.temp.name) / "backup-passphrase"
+        passphrase.write_text("correct horse battery staple")
+        os.chmod(passphrase, 0o644)
+        with self.assertRaisesRegex(backup.BackupError, "exactly 0600"):
+            backup.create_backup(
+                self.settings.database,
+                Path(self.temp.name) / "issuer.nealbak",
+                passphrase,
+            )
+
+    def test_backup_rejects_same_input_and_output(self) -> None:
+        issuer.Store(self.settings.database)
+        passphrase = Path(self.temp.name) / "backup-passphrase"
+        passphrase.write_text("correct horse battery staple")
+        os.chmod(passphrase, 0o600)
+        with self.assertRaisesRegex(backup.BackupError, "different files"):
+            backup.create_backup(self.settings.database, self.settings.database, passphrase, replace=True)
+
+    def test_restore_rejects_same_input_and_output_and_sqlite_sidecars(self) -> None:
+        issuer.Store(self.settings.database)
+        passphrase = Path(self.temp.name) / "backup-passphrase"
+        passphrase.write_text("correct horse battery staple")
+        os.chmod(passphrase, 0o600)
+        encrypted = Path(self.temp.name) / "issuer.nealbak"
+        restored = Path(self.temp.name) / "restored.sqlite3"
+        backup.create_backup(self.settings.database, encrypted, passphrase)
+        with self.assertRaisesRegex(backup.BackupError, "different files"):
+            backup.restore_backup(encrypted, encrypted, passphrase, replace=True)
+        restored.write_bytes(b"old database")
+        Path(f"{restored}-wal").write_bytes(b"stale")
+        with self.assertRaisesRegex(backup.BackupError, "sidecar"):
+            backup.restore_backup(encrypted, restored, passphrase, replace=True)
 
 
 if __name__ == "__main__":

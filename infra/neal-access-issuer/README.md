@@ -63,6 +63,29 @@ restricted to Linux x86_64 with Python 3.13 and uses the hash-locked binary-whee
 `requirements-deploy.txt`; `requirements.txt` remains the portable local test
 dependency declaration.
 
+The supported backup command takes a consistent SQLite online snapshot and
+wraps it in the versioned `NEALBKP1` envelope using scrypt (`N=32768`, `r=8`,
+`p=1`) and AES-256-GCM. Passphrases are accepted only from an interactive TTY
+or an exact-mode `0600` regular file:
+
+```bash
+python3 backup.py backup \
+  --database /var/lib/neal-access-issuer/issuer.sqlite3 \
+  --output /secure/off-host/issuer.nealbak \
+  --passphrase-file /run/credentials/issuer-backup-passphrase
+
+python3 backup.py restore \
+  --input /secure/off-host/issuer.nealbak \
+  --database /var/lib/neal-access-issuer/issuer.sqlite3 \
+  --passphrase-file /run/credentials/issuer-backup-passphrase \
+  --replace
+```
+
+Stop the issuer and checkpoint SQLite before restore. Restore refuses a
+destination with WAL/SHM sidecars, verifies authentication and SQLite integrity,
+then durably replaces the destination. Never place either the passphrase file or
+encrypted backup in this repository.
+
 ## Required environment
 
 ```text
