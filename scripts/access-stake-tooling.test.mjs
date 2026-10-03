@@ -23,6 +23,10 @@ const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
 const KEY = '11111111111111111111111111111111';
 
+test('devnet genesis uses the canonical full hash', () => {
+  assert.equal(DEVNET_GENESIS, 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG');
+});
+
 const release = () => ({
   schema: RELEASE_SCHEMA,
   sourceCommit: COMMIT,

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 
 export const RELEASE_SCHEMA = 'neal.access-stake-release/v1';
 export const REHEARSAL_SCHEMA = 'neal.access-stake-devnet-rehearsal/v1';
-export const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+export const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
 export const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 export const PRODUCTION_AMOUNT = '69000000000';
 export const PRODUCTION_LOCK_SECONDS = 7_776_000;

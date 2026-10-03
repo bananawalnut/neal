@@ -63,6 +63,14 @@ class FakeSolana:
         return {"required_amount": 25_000_000, "minimum_lock_seconds": 604_800, "revision": 0}
 
 
+class GenesisContractTests(unittest.TestCase):
+    def test_devnet_genesis_uses_the_canonical_full_hash(self) -> None:
+        self.assertEqual(
+            issuer.CHAIN_GENESIS["solana:devnet"],
+            "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+        )
+
+
 class FakeMatrix:
     def __init__(self):
         self.calls = 0

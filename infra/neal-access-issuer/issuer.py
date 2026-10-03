@@ -40,7 +40,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 CHAIN_GENESIS = {
     "solana:mainnet": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-    "solana:devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "solana:devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
 }
 CONFIG_DISCRIMINATOR = b"NEALACFG"
 STAKE_DISCRIMINATOR = b"NEALSTAK"

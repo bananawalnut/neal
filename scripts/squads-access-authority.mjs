@@ -7,7 +7,7 @@ import { Connection, PublicKey, SystemProgram, TransactionInstruction } from '@s
 import * as multisig from '@sqds/multisig';
 
 const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
 const TOKEN_2022_PROGRAM = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const CONFIG_DISCRIMINATOR = Buffer.from('NEALACFG');
 const VAULT_INDEX = 0;

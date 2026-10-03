@@ -13,7 +13,7 @@ import { verifyAccessStake } from './verify-access-stake-readiness.mjs';
 const CONFIG_SIZE = 171;
 const CONFIG_DISCRIMINATOR = Buffer.from('NEALACFG');
 const CONFIG_SEED = Buffer.from('access-config');
-const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
 
 const parseCli = (argv) => {
   const values = {
