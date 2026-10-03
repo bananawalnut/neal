@@ -39,6 +39,7 @@ import {
   enforceTeardownBarrier,
   processAlive,
   reviewSignaturePayload,
+  validateDockerImageId,
   validateSignedIsolatedReview,
 } from './manual-devnet.mjs';
 
@@ -148,6 +149,14 @@ test('devnet writes require both explicit flags', () => {
   assert.equal(parseCli(required).execute, false);
   assert.throws(() => parseCli([...required, '--execute']), /acknowledge-devnet/u);
   assert.equal(parseCli([...required, '--execute', '--acknowledge-devnet']).execute, true);
+});
+
+test('manual issuer image identity accepts one exact Docker digest only', () => {
+  const imageId = `sha256:${'a'.repeat(64)}`;
+  assert.equal(validateDockerImageId(`${imageId}\n`), imageId);
+  assert.throws(() => validateDockerImageId(''), /image ID is invalid/u);
+  assert.throws(() => validateDockerImageId(`${imageId}\n${imageId}`), /image ID is invalid/u);
+  assert.throws(() => validateDockerImageId(`sha256:${'A'.repeat(64)}`), /image ID is invalid/u);
 });
 
 test('manual acceptance port preflight reports an occupied listener without stopping it', async () => {

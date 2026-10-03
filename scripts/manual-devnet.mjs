@@ -90,6 +90,12 @@ const requireOptions = (options, names) => {
   for (const name of names) if (!options[name]) throw new Error(`Missing --${name}`);
 };
 
+export const validateDockerImageId = (value) => {
+  const imageId = value.trim();
+  if (!/^sha256:[0-9a-f]{64}$/u.test(imageId)) throw new Error('Manual issuer image ID is invalid');
+  return imageId;
+};
+
 const stateFile = (runtime) => path.join(runtime, 'state.json');
 const publicRuntimeFile = (runtime) => path.join(runtime, 'public-runtime.json');
 const faultsFile = (runtime) => path.join(runtime, 'faults.json');
@@ -622,10 +628,11 @@ const prepare = async (options) => {
       env: { NEAL_ISSUER_SOURCE_COMMIT: head },
       failure: 'Could not build the Ubuntu 24.04 manual issuer image',
     });
-    const issuerImageId = (await manualCompose(project, runtime, ['images', '--quiet', 'issuer'], {
+    const issuerImageId = validateDockerImageId(await run('docker', [
+      'image', 'inspect', `${project}-issuer:latest`, '--format', '{{.Id}}',
+    ], {
       capture: true, failure: 'Could not identify the exact manual issuer image',
-    })).trim();
-    if (!/^sha256:[0-9a-f]{64}$/u.test(issuerImageId)) throw new Error('Manual issuer image ID is invalid');
+    }));
     await buildToolchain();
     const primaryRpc = rpcSet.endpoints[0].url;
     await writePrivate(path.join(runtime, 'solana-cli.yml'), [
