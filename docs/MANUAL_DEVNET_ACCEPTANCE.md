@@ -64,8 +64,11 @@ Use `status` for a sanitized snapshot and
 `fault --name matrix-final-response-once` before the registration recovery
 step. After the full refund and reconciliation, `stop` removes the local stack,
 volumes, runtime secrets, and trusted certificate. It first records a draining
-state and pauses the disposable config at finalized 2-of-3 quorum. If a stake
+state only after pausing the disposable config at finalized 2-of-3 quorum. If a stake
 is still active, services remain available for the wallet's refund while new
 stake and claim instructions are blocked. Cleanup proceeds only after the
 gateway and issuer are stopped, a finalized barrier passes, all receipts are
 released, and privileged reconciliation is empty.
+The four-hour lease guardian invokes this same idempotent teardown path. Pause,
+receipt, or process failures keep it armed through both `running` and
+`draining`; it retries without silently downgrading to a local-only shutdown.

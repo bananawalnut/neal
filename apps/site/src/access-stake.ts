@@ -29,6 +29,22 @@ const MANUAL_BROWSER_WALLET = getRuntimeConfig()?.browserWallet ?? null;
 const UPGRADEABLE_LOADER_ID = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const ACCESS_OPERATION_KEY = 'neal.matrix-access-operation.v2';
 
+const resolveHolderProofEndpoint = (endpoint: string): string => {
+  if (!MANUAL_BROWSER_WALLET) return endpoint;
+  const acceptanceOrigin = 'https://localhost:4280';
+  const resolved = new URL(endpoint, window.location.origin);
+  if (
+    window.location.origin !== acceptanceOrigin
+    || resolved.origin !== acceptanceOrigin
+    || resolved.pathname !== '/_neal/devnet/rpc'
+    || resolved.search !== ''
+    || resolved.hash !== ''
+  ) {
+    throw new Error('The isolated devnet RPC route is not the reviewed same-origin gateway.');
+  }
+  return resolved.toString();
+};
+
 type AccessOperation = {
   schema: 'neal.matrix-access-operation-tab/v1';
   endpoint: string;
@@ -546,7 +562,7 @@ export async function mountMatrixAccessStake(
   const configAddress = new PublicKey(policy.configAddress);
   const mint = new PublicKey(policy.mint);
   const requiredAmount = BigInt(policy.requiredAtomicAmount);
-  const connection = new Connection(walletPolicy.holderProof.rpcEndpoint, {
+  const connection = new Connection(resolveHolderProofEndpoint(walletPolicy.holderProof.rpcEndpoint), {
     commitment: 'finalized',
     httpHeaders: manualRequestHeaders(),
   });

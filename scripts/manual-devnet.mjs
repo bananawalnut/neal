@@ -976,22 +976,40 @@ const start = async (options) => {
 
 const stopLocalServices = async (runtime, state) => {
   const owned = await discoverOwnedProcesses(state).catch(() => []);
-  await Promise.all([...Object.values(state.pids ?? {}), ...owned].map(terminatePid));
+  const otherProcesses = [...Object.values(state.pids ?? {}), ...owned]
+    .filter((entry) => entry?.pid !== process.pid);
+  await Promise.all(otherProcesses.map(terminatePid));
   await manualCompose(state.project, runtime, ['stop']).catch(() => {});
   state.pids = {};
+};
+
+export const enforceLeaseExpiry = async ({
+  expiresAt, readCurrent, teardown, sleep,
+  now = () => Date.now(), retryMilliseconds = 30_000,
+}) => {
+  await sleep(Math.max(0, Date.parse(expiresAt) - now()));
+  for (;;) {
+    const current = await readCurrent();
+    if (current.expiresAt !== expiresAt || !['running', 'draining'].includes(current.status)) return;
+    try {
+      await teardown(current);
+      return;
+    } catch {
+      await sleep(retryMilliseconds);
+    }
+  }
 };
 
 const guardian = async (options) => {
   requireOptions(options, ['runtime']);
   const runtime = path.resolve(options.runtime);
   const state = await readState(runtime);
-  const wait = Math.max(0, Date.parse(state.expiresAt) - Date.now());
-  await new Promise((resolve) => setTimeout(resolve, wait));
-  const current = await readState(runtime);
-  if (current.expiresAt !== state.expiresAt || current.status !== 'running') return;
-  await stopLocalServices(runtime, current);
-  current.status = 'expired';
-  await writeState(runtime, current);
+  await enforceLeaseExpiry({
+    expiresAt: state.expiresAt,
+    readCurrent: () => readState(runtime),
+    teardown: () => stop({ runtime }),
+    sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  });
 };
 
 const verify = async (options) => {
@@ -1189,9 +1207,6 @@ const stop = async (options) => {
   const rpcSet = await loadRpcSetCredential(state.rpcSetFile);
   const programId = new PublicKey(state.programId);
   const configAddress = new PublicKey(state.manualConfigAddress);
-  state.status = 'draining';
-  state.drainingStartedAt ??= new Date().toISOString();
-  await writeState(runtime, state);
   await enforceTeardownBarrier({
     pause: async () => {
       let configState = await quorumConfigPauseState(rpcSet, programId, configAddress);
@@ -1205,6 +1220,8 @@ const stop = async (options) => {
         }
       }
       state.pausedConfigRevision = configState.revision;
+      state.status = 'draining';
+      state.drainingStartedAt ??= new Date().toISOString();
       await writeState(runtime, state);
     },
     scan: () => quorumConfigReceipts(rpcSet, programId, configAddress),

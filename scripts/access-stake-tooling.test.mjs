@@ -23,7 +23,7 @@ import { expectProgramError, matrixAttempt, parseCli, validateReview } from './r
 import { buildSbfCommand, buildSbfEnvironment } from './reproduce-access-stake-release.mjs';
 import { createProposalManifest, validateProposalManifest } from './squads-access-authority.mjs';
 import { validateProductionReview } from './verify-production-review.mjs';
-import { establishDevnetAgreement, validateRpcSetCredential } from './devnet-rpc-set.mjs';
+import { establishDevnetAgreement, rpcCall, validateRpcSetCredential } from './devnet-rpc-set.mjs';
 import {
   MANUAL_RUNTIME_SCHEMA,
   MANUAL_LEASE_SECONDS,
@@ -35,6 +35,7 @@ import {
 import {
   assertAcceptancePortsAvailable,
   directoryDigest,
+  enforceLeaseExpiry,
   enforceTeardownBarrier,
   processAlive,
   reviewSignaturePayload,
@@ -201,6 +202,74 @@ test('teardown barrier catches a receipt that finalizes during quiescence', asyn
   assert.deepEqual(events, ['pause', 'scan-1', 'quiesce', 'barrier', 'scan-2']);
 });
 
+test('teardown barrier keeps services available for refund while a receipt is locked', async () => {
+  const events = [];
+  const data = Buffer.alloc(163);
+  Buffer.from('NEALSTAK').copy(data, 0);
+  data.writeBigInt64LE(123n, 129);
+  data.writeBigInt64LE(0n, 153);
+  await assert.rejects(() => enforceTeardownBarrier({
+    pause: async () => { events.push('pause'); },
+    scan: async () => { events.push('scan'); return [{ pubkey: KEY, data }]; },
+    quiesce: async () => { events.push('quiesce'); },
+    finalizedBarrier: async () => { events.push('barrier'); },
+  }), /not released/u);
+  assert.deepEqual(events, ['pause', 'scan']);
+});
+
+test('lease guardian runs the same teardown barrier at normal expiry', async () => {
+  const events = [];
+  await enforceLeaseExpiry({
+    expiresAt: '2026-10-03T12:00:00.000Z',
+    now: () => Date.parse('2026-10-03T12:00:01.000Z'),
+    readCurrent: async () => ({ expiresAt: '2026-10-03T12:00:00.000Z', status: 'running' }),
+    teardown: async () => { events.push('teardown'); },
+    sleep: async (milliseconds) => { events.push(`sleep-${milliseconds}`); },
+  });
+  assert.deepEqual(events, ['sleep-0', 'teardown']);
+});
+
+test('lease guardian retries pause failure without disarming', async () => {
+  const events = [];
+  let attempts = 0;
+  await enforceLeaseExpiry({
+    expiresAt: '2026-10-03T12:00:00.000Z',
+    now: () => Date.parse('2026-10-03T12:00:01.000Z'),
+    readCurrent: async () => ({
+      expiresAt: '2026-10-03T12:00:00.000Z',
+      status: 'running',
+    }),
+    teardown: async () => {
+      attempts += 1;
+      events.push(`teardown-${attempts}`);
+      if (attempts === 1) throw new Error('pause unavailable');
+    },
+    sleep: async (milliseconds) => { events.push(`sleep-${milliseconds}`); },
+    retryMilliseconds: 25,
+  });
+  assert.deepEqual(events, ['sleep-0', 'teardown-1', 'sleep-25', 'teardown-2']);
+});
+
+test('lease guardian retries a partial process teardown while state is draining', async () => {
+  const events = [];
+  let attempts = 0;
+  await enforceLeaseExpiry({
+    expiresAt: '2026-10-03T12:00:00.000Z',
+    now: () => Date.parse('2026-10-03T12:00:01.000Z'),
+    readCurrent: async () => ({
+      expiresAt: '2026-10-03T12:00:00.000Z', status: attempts === 0 ? 'running' : 'draining',
+    }),
+    teardown: async () => {
+      attempts += 1;
+      events.push(`teardown-${attempts}`);
+      if (attempts === 1) throw new Error('process quiescence interrupted');
+    },
+    sleep: async (milliseconds) => { events.push(`sleep-${milliseconds}`); },
+    retryMilliseconds: 25,
+  });
+  assert.deepEqual(events, ['sleep-0', 'teardown-1', 'sleep-25', 'teardown-2']);
+});
+
 test('manual process identity rejects a live PID with the wrong ownership nonce', async () => {
   const marker = `neal-manual-owner-${'a'.repeat(32)}`;
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', marker], { stdio: 'ignore' });
@@ -323,6 +392,30 @@ test('manual browser runtime produces only a localhost devnet policy', () => {
     generatedAt: new Date(generatedAt - (MANUAL_LEASE_SECONDS * 1_000)).toISOString(),
     expiresAt: new Date(generatedAt - 1).toISOString(),
   }), /expired/u);
+});
+
+test('manual RPC client forbids cross-host and local-address redirects', async () => {
+  const originalFetch = globalThis.fetch;
+  const endpoint = {
+    id: 'helius-devnet', trustDomain: 'helius',
+    url: 'https://example.helius-rpc.com/?api-key=redacted',
+  };
+  try {
+    for (const redirectedUrl of ['https://attacker.invalid/rpc', 'http://127.0.0.1:8899/rpc']) {
+      globalThis.fetch = async (_url, options) => {
+        assert.equal(options.redirect, 'error');
+        const response = new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 1 }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+        Object.defineProperty(response, 'redirected', { value: true });
+        Object.defineProperty(response, 'url', { value: redirectedUrl });
+        return response;
+      };
+      await assert.rejects(() => rpcCall(endpoint, 'getBlockHeight'), /redirects are forbidden/u);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('manual readiness is sanitized, exact-commit bound, and requires every check', () => {

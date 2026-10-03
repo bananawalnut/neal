@@ -92,6 +92,9 @@ manual and formal devnet tooling requires `quorum-2-of-3`, threshold two, and
 exactly three distinct IDs, hosts, registrable domains, and trust domains. The
 issuer additionally binds Helius, QuickNode, and Alchemy IDs and host suffixes
 to its compiled approved trust-domain registry and rejects cross-host redirects.
+The manual deployment client also uses fetch redirect mode `error`; redirected
+provider responses, including local-address redirects, cannot participate in
+readiness, deployment, or teardown quorum.
 Tooling receives only the mode-`0600` credential path. URLs may contain provider
 credentials but must never appear in command arguments, browser contracts,
 logs, receipts, or GitHub artifacts.

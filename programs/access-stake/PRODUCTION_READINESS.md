@@ -79,9 +79,18 @@ RESERVED
 `attention_required` is independent of phase. Legacy rows become
 `LEGACY_REVIEW`; they are never reinterpreted or automatically reissued. Each
 claim persists an opaque operation ID, receipt, wallet, config/revision,
-transaction signature, signed bytes, blockhash and last-valid block height,
+the current signed transaction, an append-only history of attempted signatures
+and transaction commitments, an independently attributed finalized signature,
+blockhash and last-valid block height,
 recovery-key version, token generation
 and commitment, expiry, Matrix counters, timestamps, and stable error code.
+If a prior attempt consumes the receipt after a replacement has been persisted
+and no attempted signature can be proven finalized, the claim remains
+`CHAIN_CONSUMED` with `attention_required` and
+`chain_signature_ambiguous`; it cannot advance to Matrix issuance until
+operator reconciliation attributes the finality or accepts the ambiguity.
+Upgrades quarantine submitted rows that predate recoverable blockhash metadata
+as `LEGACY_REVIEW` rather than retrying or reissuing them.
 
 Registration tokens are derived with domain-separated HMAC from a dedicated
 versioned 32-byte recovery credential. The Solana issuer key is never reused and

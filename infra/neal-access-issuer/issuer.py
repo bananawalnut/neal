@@ -580,6 +580,7 @@ class Store:
                   phase TEXT NOT NULL,
                   attention_required INTEGER NOT NULL DEFAULT 0 CHECK (attention_required IN (0, 1)),
                   chain_signature TEXT,
+                  chain_finalized_signature TEXT,
                   chain_blockhash TEXT,
                   chain_last_valid_block_height INTEGER,
                   signed_transaction BLOB,
@@ -603,6 +604,17 @@ class Store:
                   metadata_json TEXT NOT NULL,
                   previous_hash TEXT,
                   event_hash TEXT NOT NULL UNIQUE,
+                  FOREIGN KEY(operation_id) REFERENCES claim_operations(operation_id)
+                );
+                CREATE TABLE IF NOT EXISTS claim_chain_attempts (
+                  attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  operation_id TEXT NOT NULL,
+                  signature TEXT NOT NULL,
+                  blockhash TEXT NOT NULL,
+                  last_valid_block_height INTEGER NOT NULL,
+                  transaction_sha256 TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  UNIQUE(operation_id, signature),
                   FOREIGN KEY(operation_id) REFERENCES claim_operations(operation_id)
                 );
                 CREATE INDEX IF NOT EXISTS claim_phase_age ON claim_operations(phase, updated_at);
@@ -637,10 +649,65 @@ class Store:
             claim_columns = {
                 row[1] for row in database.execute("PRAGMA table_info(claim_operations)").fetchall()
             }
+            if "chain_signature" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_signature TEXT")
+            if "chain_finalized_signature" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_finalized_signature TEXT")
+            if "signed_transaction" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN signed_transaction BLOB")
             if "chain_blockhash" not in claim_columns:
                 database.execute("ALTER TABLE claim_operations ADD COLUMN chain_blockhash TEXT")
             if "chain_last_valid_block_height" not in claim_columns:
                 database.execute("ALTER TABLE claim_operations ADD COLUMN chain_last_valid_block_height INTEGER")
+            incomplete_submissions = database.execute(
+                """SELECT receipt, operation_id, phase FROM claim_operations
+                   WHERE phase IN ('CHAIN_SUBMITTED', 'CHAIN_RETRY_REQUIRED')
+                     AND (signed_transaction IS NULL OR chain_signature IS NULL
+                          OR chain_blockhash IS NULL OR chain_last_valid_block_height IS NULL)"""
+            ).fetchall()
+            for row in incomplete_submissions:
+                database.execute(
+                    """UPDATE claim_operations
+                       SET phase = 'LEGACY_REVIEW', attention_required = 1,
+                           updated_at = ?, last_error_code = 'legacy_chain_submission_review_required'
+                       WHERE receipt = ? AND phase = ?""",
+                    (int(time.time()), row["receipt"], row["phase"]),
+                )
+                self._append_claim_event(
+                    database,
+                    row["operation_id"],
+                    row["phase"],
+                    "LEGACY_REVIEW",
+                    "legacy_chain_submission_quarantined",
+                    {"reason": "missing_recoverable_submission_metadata"},
+                )
+            recoverable_attempts = database.execute(
+                """SELECT operation_id, chain_signature, chain_blockhash,
+                          chain_last_valid_block_height, signed_transaction
+                   FROM claim_operations
+                   WHERE chain_signature IS NOT NULL AND chain_blockhash IS NOT NULL
+                     AND chain_last_valid_block_height IS NOT NULL AND signed_transaction IS NOT NULL"""
+            ).fetchall()
+            for row in recoverable_attempts:
+                database.execute(
+                    """INSERT OR IGNORE INTO claim_chain_attempts(
+                         operation_id, signature, blockhash, last_valid_block_height,
+                         transaction_sha256, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        row["operation_id"], row["chain_signature"], row["chain_blockhash"],
+                        row["chain_last_valid_block_height"],
+                        hashlib.sha256(row["signed_transaction"]).hexdigest(), int(time.time()),
+                    ),
+                )
+            database.execute(
+                """UPDATE claim_operations SET chain_finalized_signature = chain_signature
+                   WHERE chain_finalized_signature IS NULL AND chain_signature IS NOT NULL
+                     AND phase IN (
+                       'CHAIN_CONSUMED', 'MATRIX_TOKEN_ENSURING', 'ADMIN_CLEANUP_PENDING',
+                       'TOKEN_READY', 'REGISTRATION_IN_PROGRESS', 'REGISTRATION_COMPLETED'
+                     )"""
+            )
             if "legacy_claim_rows" in {
                 row[0] for row in database.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -674,7 +741,7 @@ class Store:
                     )
                 if "registration_token" in columns:
                     database.execute("UPDATE legacy_claim_rows SET registration_token = NULL")
-            database.execute("PRAGMA user_version = 4")
+            database.execute("PRAGMA user_version = 5")
 
     def enforce_storage_limit(self) -> None:
         total = sum(
@@ -833,9 +900,11 @@ class Store:
         *,
         event_type: str,
         fields: dict[str, Any] | None = None,
+        chain_attempt: dict[str, Any] | None = None,
     ) -> sqlite3.Row:
         allowed = {
             "chain_signature",
+            "chain_finalized_signature",
             "chain_blockhash",
             "chain_last_valid_block_height",
             "signed_transaction",
@@ -850,6 +919,10 @@ class Store:
         values = fields or {}
         if set(values) - allowed:
             raise IssuerError("Unsupported claim update", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if chain_attempt is not None and set(chain_attempt) != {
+            "signature", "blockhash", "last_valid_block_height", "transaction"
+        }:
+            raise IssuerError("Unsupported chain-attempt journal", HTTPStatus.INTERNAL_SERVER_ERROR)
         with self.connection() as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
@@ -876,6 +949,21 @@ class Store:
             ).rowcount
             if changed != 1:
                 raise IssuerError("Claim phase changed concurrently", HTTPStatus.CONFLICT)
+            if chain_attempt is not None:
+                transaction = chain_attempt["transaction"]
+                if not isinstance(transaction, bytes):
+                    raise IssuerError("Chain-attempt transaction is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+                database.execute(
+                    """INSERT INTO claim_chain_attempts(
+                         operation_id, signature, blockhash, last_valid_block_height,
+                         transaction_sha256, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        row["operation_id"], chain_attempt["signature"], chain_attempt["blockhash"],
+                        chain_attempt["last_valid_block_height"], hashlib.sha256(transaction).hexdigest(),
+                        int(time.time()),
+                    ),
+                )
             self._append_claim_event(database, row["operation_id"], row["phase"], next_phase, event_type)
             return database.execute(
                 "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
@@ -896,6 +984,16 @@ class Store:
         if not row:
             raise IssuerError("Unknown claim operation", HTTPStatus.NOT_FOUND, code="operation_not_found")
         return row
+
+    def chain_attempt_signatures(self, receipt: str) -> tuple[str, ...]:
+        with self.connection() as database:
+            rows = database.execute(
+                """SELECT attempt.signature FROM claim_chain_attempts AS attempt
+                   JOIN claim_operations AS claim ON claim.operation_id = attempt.operation_id
+                   WHERE claim.receipt = ? ORDER BY attempt.attempt_id""",
+                (receipt,),
+            ).fetchall()
+        return tuple(row[0] for row in rows)
 
     def clear_claim_attention(self, receipt: str) -> None:
         with self.connection() as database:
@@ -1375,6 +1473,23 @@ class SolanaVerifier:
             raise IssuerError("Solana RPC returned the wrong transaction signature", HTTPStatus.SERVICE_UNAVAILABLE)
         return self._confirm_consumption(receipt_address, expected_signature)
 
+    def _signature_finalized(self, signature: str) -> bool:
+        result = self.rpc("getSignatureStatuses", [[signature], {"searchTransactionHistory": True}])
+        values = result.get("value") if isinstance(result, dict) else None
+        status = values[0] if isinstance(values, list) and values else None
+        return (
+            isinstance(status, dict)
+            and status.get("err") is None
+            and status.get("confirmationStatus") == "finalized"
+        )
+
+    def _attributed_finalized_signature(
+        self, stored_signature: str, attempted_signatures: tuple[str, ...] | None
+    ) -> str | None:
+        signatures = tuple(dict.fromkeys((*tuple(attempted_signatures or ()), stored_signature)))
+        finalized = [signature for signature in signatures if self._signature_finalized(signature)]
+        return finalized[0] if len(finalized) == 1 else None
+
     def consume(
         self,
         address: str,
@@ -1397,7 +1512,8 @@ class SolanaVerifier:
         blockhash: str,
         last_valid_block_height: int,
         replace_signed: Callable[[bytes, str, str, int], None],
-    ) -> str:
+        attempted_signatures: tuple[str, ...] | None = None,
+    ) -> str | None:
         """Recover an ambiguously submitted consume without leaving CHAIN_SUBMITTED wedged."""
         if (
             not isinstance(stored_signature, str)
@@ -1412,14 +1528,14 @@ class SolanaVerifier:
         if not hmac.compare_digest(derived_signature, stored_signature):
             raise IssuerError("Stored claim signature does not match its transaction", HTTPStatus.SERVICE_UNAVAILABLE)
         if self.consumed(receipt_address):
-            return stored_signature
+            return self._attributed_finalized_signature(stored_signature, attempted_signatures)
         block_height = self.rpc("getBlockHeight", [{"commitment": "finalized"}])
         if not isinstance(block_height, int) or block_height < 0:
             raise IssuerError("Solana RPC returned no finalized block height", HTTPStatus.SERVICE_UNAVAILABLE)
         if block_height <= last_valid_block_height:
             return self._broadcast_consume(signed_transaction, stored_signature, receipt_address)
         if self.consumed(receipt_address):
-            return stored_signature
+            return self._attributed_finalized_signature(stored_signature, attempted_signatures)
         replacement, replacement_signature, replacement_blockhash, replacement_height = self._build_consume_transaction(
             address, receipt_address
         )
@@ -1971,10 +2087,10 @@ class Application:
         receipt = row["receipt"]
         for _step in range(8):
             phase = row["phase"]
-            if row["attention_required"] and phase in {
-                "MATRIX_TOKEN_ENSURING",
-                "ADMIN_CLEANUP_PENDING",
-            }:
+            if row["attention_required"] and (
+                phase in {"MATRIX_TOKEN_ENSURING", "ADMIN_CLEANUP_PENDING"}
+                or row["last_error_code"] == "chain_signature_ambiguous"
+            ):
                 return HTTPStatus.ACCEPTED, self.processing_response(row)
             if phase == "LEGACY_REVIEW":
                 raise IssuerError(
@@ -2033,6 +2149,12 @@ class Application:
                                 "chain_blockhash": blockhash,
                                 "chain_last_valid_block_height": last_valid_block_height,
                             },
+                            chain_attempt={
+                                "transaction": transaction,
+                                "signature": signature,
+                                "blockhash": blockhash,
+                                "last_valid_block_height": last_valid_block_height,
+                            },
                         )
 
                     signature = self.solana.consume(address, receipt, persist_signed)
@@ -2041,7 +2163,11 @@ class Application:
                         ("CHAIN_SUBMITTED",),
                         "CHAIN_CONSUMED",
                         event_type="chain_consumption_finalized",
-                        fields={"chain_signature": signature, "attention_required": 0, "last_error_code": None},
+                        fields={
+                            "chain_finalized_signature": signature,
+                            "attention_required": 0,
+                            "last_error_code": None,
+                        },
                     )
                     continue
                 except Exception as error:
@@ -2077,6 +2203,12 @@ class Application:
                                 "attention_required": 0,
                                 "last_error_code": None,
                             },
+                            chain_attempt={
+                                "transaction": transaction,
+                                "signature": signature,
+                                "blockhash": blockhash,
+                                "last_valid_block_height": last_valid_block_height,
+                            },
                         )
 
                     signature = self.solana.resume_consume(
@@ -2087,6 +2219,7 @@ class Application:
                         row["chain_blockhash"],
                         row["chain_last_valid_block_height"],
                         replace_signed,
+                        attempted_signatures=self.store.chain_attempt_signatures(receipt),
                     )
                 except Exception:
                     self.store.mark_claim_attention(receipt, "chain_finality_unavailable")
@@ -2097,9 +2230,9 @@ class Application:
                     "CHAIN_CONSUMED",
                     event_type="chain_consumption_recovered",
                     fields={
-                        "chain_signature": signature,
-                        "attention_required": 0,
-                        "last_error_code": None,
+                        "chain_finalized_signature": signature,
+                        "attention_required": 0 if signature is not None else 1,
+                        "last_error_code": None if signature is not None else "chain_signature_ambiguous",
                     },
                 )
                 continue

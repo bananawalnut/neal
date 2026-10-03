@@ -68,6 +68,7 @@ class FakeSolana:
         _blockhash: str,
         _last_valid_block_height: int,
         _replace_signed,
+        attempted_signatures=None,
     ) -> str:
         if receipt != self.receipt:
             raise AssertionError("wrong receipt")
@@ -317,7 +318,8 @@ class IssuerTests(unittest.TestCase):
                 raise RuntimeError("crash after durable journal")
 
             def resume_consume(
-                self, _address, _receipt, _transaction, _signature, _blockhash, _height, replace_signed
+                self, _address, _receipt, _transaction, _signature, _blockhash, _height, replace_signed,
+                attempted_signatures=None,
             ) -> str:
                 self.resume_calls += 1
                 replace_signed(b"replacement-transaction", "replacement-signature", "replacement-blockhash", 200)
@@ -344,12 +346,119 @@ class IssuerTests(unittest.TestCase):
         completed = app.store.claim("recoverable-receipt")
         self.assertEqual(completed["phase"], "TOKEN_READY")
         self.assertEqual(completed["chain_signature"], "replacement-signature")
+        self.assertEqual(completed["chain_finalized_signature"], "replacement-signature")
         with app.store.connection() as database:
             phases = [row[0] for row in database.execute(
                 "SELECT next_phase FROM claim_events WHERE operation_id = ? ORDER BY event_id",
                 (completed["operation_id"],),
             ).fetchall()]
+            attempts = [row[0] for row in database.execute(
+                "SELECT signature FROM claim_chain_attempts WHERE operation_id = ? ORDER BY attempt_id",
+                (completed["operation_id"],),
+            ).fetchall()]
         self.assertIn("CHAIN_RETRY_REQUIRED", phases)
+        self.assertEqual(attempts, ["first-signature", "replacement-signature"])
+
+    def test_late_prior_attempt_finality_is_recorded_as_signature_ambiguous(self) -> None:
+        class AmbiguousSolana(FakeSolana):
+            def consume(self, _address: str, _receipt: str, persist_signed=None) -> str:
+                if persist_signed:
+                    persist_signed(b"attempt-a", "signature-a", "blockhash-a", 100)
+                raise RuntimeError("submission response lost")
+
+            def resume_consume(
+                self, _address, _receipt, _transaction, _signature, _blockhash, _height, replace_signed,
+                attempted_signatures=None,
+            ) -> None:
+                replace_signed(b"attempt-b", "signature-b", "blockhash-b", 200)
+                return None
+
+        address = "11111111111111111111111111111111"
+        app = issuer.Application(self.settings, matrix=FakeMatrix(), solana=AmbiguousSolana("ambiguous-receipt"))
+        session = app.store.create_session(address, 600)
+        status, _pending = app.access_token_v2(session, "first")
+        self.assertEqual(status, HTTPStatus.ACCEPTED)
+        status, ready = app.access_token_v2(session, "second")
+        self.assertEqual(status, HTTPStatus.ACCEPTED)
+        self.assertEqual(ready["state"], "processing")
+        completed = app.store.claim("ambiguous-receipt")
+        self.assertEqual(completed["phase"], "CHAIN_CONSUMED")
+        self.assertIsNone(completed["chain_finalized_signature"])
+        self.assertEqual(completed["attention_required"], 1)
+        self.assertEqual(completed["last_error_code"], "chain_signature_ambiguous")
+        with app.store.connection() as database:
+            attempts = [row[0] for row in database.execute(
+                "SELECT signature FROM claim_chain_attempts WHERE operation_id = ? ORDER BY attempt_id",
+                (completed["operation_id"],),
+            ).fetchall()]
+        self.assertEqual(attempts, ["signature-a", "signature-b"])
+
+    def test_v3_chain_submissions_without_recovery_metadata_are_quarantined(self) -> None:
+        database = sqlite3.connect(self.settings.database)
+        database.executescript(
+            """
+            CREATE TABLE claim_operations (
+              receipt TEXT PRIMARY KEY,
+              operation_id TEXT NOT NULL UNIQUE,
+              address TEXT NOT NULL,
+              config_address TEXT,
+              config_revision INTEGER,
+              phase TEXT NOT NULL,
+              attention_required INTEGER NOT NULL DEFAULT 0,
+              chain_signature TEXT,
+              signed_transaction BLOB,
+              recovery_key_version INTEGER NOT NULL,
+              token_generation INTEGER NOT NULL DEFAULT 0,
+              token_commitment TEXT,
+              expires_at_ms INTEGER,
+              matrix_pending INTEGER,
+              matrix_completed INTEGER,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              last_error_code TEXT
+            );
+            INSERT INTO claim_operations(
+              receipt, operation_id, address, config_address, config_revision, phase,
+              attention_required, chain_signature, signed_transaction, recovery_key_version,
+              token_generation, created_at, updated_at
+            ) VALUES (
+              'old-receipt', 'old-operation', 'old-wallet', 'old-config', 0,
+              'CHAIN_SUBMITTED', 0, 'old-signature', X'0102', 1, 0, 1, 1
+            );
+            INSERT INTO claim_operations(
+              receipt, operation_id, address, config_address, config_revision, phase,
+              attention_required, chain_signature, signed_transaction, recovery_key_version,
+              token_generation, created_at, updated_at
+            ) VALUES (
+              'old-finalized-receipt', 'old-finalized-operation', 'old-wallet', 'old-config', 0,
+              'CHAIN_SUBMITTED', 0, 'old-finalized-signature', X'0304', 1, 0, 1, 1
+            );
+            PRAGMA user_version = 3;
+            """
+        )
+        database.close()
+
+        store = issuer.Store(self.settings.database)
+        migrated = store.claim("old-receipt")
+        self.assertEqual(migrated["phase"], "LEGACY_REVIEW")
+        self.assertEqual(migrated["attention_required"], 1)
+        self.assertEqual(migrated["last_error_code"], "legacy_chain_submission_review_required")
+        finalized_on_chain_but_locally_ambiguous = store.claim("old-finalized-receipt")
+        self.assertEqual(finalized_on_chain_but_locally_ambiguous["phase"], "LEGACY_REVIEW")
+        self.assertEqual(finalized_on_chain_but_locally_ambiguous["attention_required"], 1)
+        with store.connection() as connection:
+            event = connection.execute(
+                """SELECT previous_phase, next_phase, event_type, metadata_json
+                   FROM claim_events WHERE operation_id = ?""",
+                ("old-operation",),
+            ).fetchone()
+            self.assertEqual(event["previous_phase"], "CHAIN_SUBMITTED")
+            self.assertEqual(event["next_phase"], "LEGACY_REVIEW")
+            self.assertEqual(event["event_type"], "legacy_chain_submission_quarantined")
+            self.assertEqual(
+                json.loads(event["metadata_json"]),
+                {"reason": "missing_recoverable_submission_metadata"},
+            )
 
     def test_concurrent_chain_resign_compare_and_swap_converges_forward(self) -> None:
         store = issuer.Store(self.settings.database)
@@ -634,6 +743,44 @@ class IssuerTests(unittest.TestCase):
         self.assertEqual(replacements[0][2], replacement_blockhash)
         self.assertEqual(replacements[0][3], 250)
         self.assertEqual(recovered, replacements[0][1])
+
+    def test_consumed_receipt_without_finalized_current_attempt_is_signature_ambiguous(self) -> None:
+        verifier = issuer.SolanaVerifier(self.settings)
+        address = "11111111111111111111111111111111"
+        receipt = verifier.receipt_address(address)
+        blockhash = issuer.base58_encode(b"b" * 32)
+        with patch.object(verifier, "rpc", return_value={
+            "value": {"blockhash": blockhash, "lastValidBlockHeight": 100}
+        }):
+            transaction, signature, stored_blockhash, height = verifier._build_consume_transaction(address, receipt)
+        with (
+            patch.object(verifier, "consumed", return_value=True),
+            patch.object(verifier, "_signature_finalized", return_value=False),
+        ):
+            self.assertIsNone(verifier.resume_consume(
+                address, receipt, transaction, signature, stored_blockhash, height,
+                lambda *_args: self.fail("consumed receipt must not be replaced"),
+            ))
+
+    def test_late_prior_attempt_is_attributed_from_append_only_history(self) -> None:
+        verifier = issuer.SolanaVerifier(self.settings)
+        address = "11111111111111111111111111111111"
+        receipt = verifier.receipt_address(address)
+        blockhash = issuer.base58_encode(b"b" * 32)
+        with patch.object(verifier, "rpc", return_value={
+            "value": {"blockhash": blockhash, "lastValidBlockHeight": 100}
+        }):
+            transaction, current, stored_blockhash, height = verifier._build_consume_transaction(address, receipt)
+        prior = "prior-attempt-signature"
+        with (
+            patch.object(verifier, "consumed", return_value=True),
+            patch.object(verifier, "_signature_finalized", side_effect=lambda value: value == prior),
+        ):
+            self.assertEqual(verifier.resume_consume(
+                address, receipt, transaction, current, stored_blockhash, height,
+                lambda *_args: self.fail("consumed receipt must not be replaced"),
+                attempted_signatures=(prior, current),
+            ), prior)
 
     def test_consume_broadcast_rejects_minority_acceptance(self) -> None:
         verifier = issuer.SolanaVerifier(self.settings)

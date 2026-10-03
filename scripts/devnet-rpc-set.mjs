@@ -136,10 +136,12 @@ export async function rpcCall(endpoint, method, params = [], timeoutMs = RPC_TIM
   try {
     const response = await fetch(endpoint.url, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
       signal: controller.signal,
     });
+    if (response.redirected) throw new Error('RPC redirects are forbidden');
     if (!response.ok) throw new Error('RPC returned a non-success status');
     const payload = await cappedJson(response, controller);
     if (!payload || payload.jsonrpc !== '2.0' || payload.error || !('result' in payload)) {

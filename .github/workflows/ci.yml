@@ -51,6 +51,9 @@ jobs:
       - name: Build public site
         run: VITE_NEAL_SOURCE_COMMIT="$(git rev-parse HEAD)" npm run site:build
 
+      - name: Mount the reviewed manual browser build
+        run: node scripts/manual-browser-dom-smoke.mjs --dist apps/site/dist --commit "$(git rev-parse HEAD)"
+
       - name: Package exact manual-browser artifact
         run: node scripts/manual-browser-bundle.mjs --commit "$(git rev-parse HEAD)" --dist apps/site/dist --output outputs/manual-browser-bundle.json
 
