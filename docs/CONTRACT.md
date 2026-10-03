@@ -57,6 +57,17 @@ The gateway derives a temporary `neal.wallet-policy/v1` from this projection;
 the committed mainnet policy and the separate single-RPC preview policy remain
 unchanged. Older production consumers never request this runtime endpoint.
 
+`neal.devnet-manual-readiness/v1` is the sanitized acceptance handoff contract.
+It binds the exact browser commit and lease to seven fail-closed checks: lease,
+browser build, site, issuer attestation, isolated Matrix, finalized RPC quorum,
+and derived wallet policy. A ready response requires every check to be `ok` and
+records only the finalized agreement slot plus the public 2-of-3 shape. It never
+contains RPC URLs, credentials, passwords, cookies, tokens, wallet secrets, or
+filesystem paths. The manual browser refuses to render the application until a
+ready response matches `neal.devnet-manual-runtime/v1` and its own embedded
+source commit. Production and ordinary local-preview consumers never request
+this endpoint.
+
 `neal.solana-rpc-set/v1` remains a private credential contract. Executing
 manual and formal devnet tooling requires `quorum-2-of-3`, threshold two, and
 exactly three distinct IDs, hosts, registrable domains, and trust domains.

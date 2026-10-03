@@ -3,12 +3,16 @@ import { PublicKey } from '@solana/web3.js';
 import { assertPublicEvidence, TOKEN_2022_PROGRAM } from './access-stake-contracts.mjs';
 
 export const MANUAL_RUNTIME_SCHEMA = 'neal.devnet-manual-runtime/v1';
+export const MANUAL_READINESS_SCHEMA = 'neal.devnet-manual-readiness/v1';
 export const MANUAL_STATE_SCHEMA = 'neal.devnet-manual-state/v1';
 export const MANUAL_MODE = 'isolated-devnet-manual';
 export const MANUAL_AMOUNT = '69000000000';
 export const MANUAL_MINTED_AMOUNT = '69001000000';
 export const MANUAL_LOCK_SECONDS = 120;
 export const MANUAL_LEASE_SECONDS = 4 * 60 * 60;
+export const MANUAL_READINESS_CHECKS = [
+  'lease', 'browserCommit', 'site', 'issuer', 'matrix', 'rpcQuorum', 'walletPolicy',
+];
 
 const exactKeys = (value, keys, label) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -124,4 +128,69 @@ export function buildManualWalletPolicy(runtime) {
       tokenEndpoint: '/v2/access-token',
     },
   };
+}
+
+export function buildManualReadiness({ runtime = null, checkedAt = new Date().toISOString(), checks, agreement = null }) {
+  const normalizedChecks = Object.fromEntries(MANUAL_READINESS_CHECKS.map((name) => [
+    name,
+    checks?.[name] === 'ok' ? 'ok' : 'failed',
+  ]));
+  const ready = Object.values(normalizedChecks).every((value) => value === 'ok');
+  const value = {
+    schema: MANUAL_READINESS_SCHEMA,
+    status: ready ? 'ready' : 'unavailable',
+    ready,
+    checkedAt: timestamp(checkedAt, 'checkedAt'),
+    sourceCommit: runtime?.sourceCommit ?? null,
+    expiresAt: runtime?.expiresAt ?? null,
+    verification: {
+      mode: 'quorum-2-of-3',
+      providerCount: 3,
+      threshold: 2,
+      finalizedAgreementSlot: Number.isSafeInteger(agreement?.slot) && agreement.slot > 0 ? agreement.slot : null,
+    },
+    checks: normalizedChecks,
+  };
+  assertPublicEvidence(value);
+  return value;
+}
+
+export function validateManualReadiness(value, { expectedCommit = null, requireReady = false } = {}) {
+  exactKeys(value, [
+    'schema', 'status', 'ready', 'checkedAt', 'sourceCommit', 'expiresAt', 'verification', 'checks',
+  ], 'manual readiness');
+  if (value.schema !== MANUAL_READINESS_SCHEMA || !['ready', 'unavailable'].includes(value.status)) {
+    throw new Error('Manual readiness identity is unsupported');
+  }
+  if (typeof value.ready !== 'boolean' || value.ready !== (value.status === 'ready')) {
+    throw new Error('Manual readiness status is inconsistent');
+  }
+  timestamp(value.checkedAt, 'checkedAt');
+  if (value.sourceCommit !== null && !/^[0-9a-f]{40}$/u.test(value.sourceCommit)) {
+    throw new Error('Manual readiness source commit is invalid');
+  }
+  if (value.expiresAt !== null) timestamp(value.expiresAt, 'expiresAt');
+  if (expectedCommit !== null && value.sourceCommit !== expectedCommit) {
+    throw new Error('Manual readiness covers a different browser build');
+  }
+  exactKeys(value.verification, ['mode', 'providerCount', 'threshold', 'finalizedAgreementSlot'], 'readiness verification');
+  if (
+    value.verification.mode !== 'quorum-2-of-3'
+    || value.verification.providerCount !== 3
+    || value.verification.threshold !== 2
+    || !(value.verification.finalizedAgreementSlot === null
+      || (Number.isSafeInteger(value.verification.finalizedAgreementSlot) && value.verification.finalizedAgreementSlot > 0))
+  ) throw new Error('Manual readiness verification is invalid');
+  exactKeys(value.checks, MANUAL_READINESS_CHECKS, 'readiness checks');
+  for (const name of MANUAL_READINESS_CHECKS) {
+    if (!['ok', 'failed'].includes(value.checks[name])) throw new Error(`Manual readiness check ${name} is invalid`);
+  }
+  const checksReady = Object.values(value.checks).every((entry) => entry === 'ok');
+  if (checksReady !== value.ready) throw new Error('Manual readiness checks disagree with status');
+  if (value.ready && value.verification.finalizedAgreementSlot === null) {
+    throw new Error('Ready manual runtime is missing finalized quorum evidence');
+  }
+  if (requireReady && !value.ready) throw new Error('Manual acceptance stack is not ready');
+  assertPublicEvidence(value);
+  return value;
 }

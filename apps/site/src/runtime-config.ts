@@ -29,7 +29,36 @@ export type DevnetManualRuntime = {
   };
 };
 
+export type DevnetManualReadiness = {
+  schema: 'neal.devnet-manual-readiness/v1';
+  status: 'ready' | 'unavailable';
+  ready: boolean;
+  checkedAt: string;
+  sourceCommit: string | null;
+  expiresAt: string | null;
+  verification: {
+    mode: 'quorum-2-of-3';
+    providerCount: 3;
+    threshold: 2;
+    finalizedAgreementSlot: number | null;
+  };
+  checks: Record<'lease' | 'browserCommit' | 'site' | 'issuer' | 'matrix' | 'rpcQuorum' | 'walletPolicy', 'ok' | 'failed'>;
+};
+
+export type LocalSurfaceMode = 'production' | 'local-preview' | 'manual-devnet';
+
 let runtime: DevnetManualRuntime | null = null;
+let readiness: DevnetManualReadiness | null = null;
+
+const localHostname = (): boolean => ['localhost', '127.0.0.1'].includes(window.location.hostname);
+
+const detectSurfaceMode = (): LocalSurfaceMode => {
+  if (!localHostname()) return 'production';
+  if (window.location.port === '4280') return 'manual-devnet';
+  return 'local-preview';
+};
+
+const surfaceMode = detectSurfaceMode();
 
 const exact = (value: unknown, keys: readonly string[]): value is Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -96,14 +125,60 @@ const validRuntime = (value: unknown): value is DevnetManualRuntime => {
     && matrix.viaServers[0] === 'rehearsal.neal.invalid';
 };
 
+const READINESS_CHECKS = ['lease', 'browserCommit', 'site', 'issuer', 'matrix', 'rpcQuorum', 'walletPolicy'] as const;
+
+const validReadiness = (value: unknown, expectedCommit: string): value is DevnetManualReadiness => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const verification = candidate.verification as Record<string, unknown> | undefined;
+  const checks = candidate.checks as Record<string, unknown> | undefined;
+  return exact(candidate, ['schema', 'status', 'ready', 'checkedAt', 'sourceCommit', 'expiresAt', 'verification', 'checks'])
+    && candidate.schema === 'neal.devnet-manual-readiness/v1'
+    && candidate.status === 'ready'
+    && candidate.ready === true
+    && typeof candidate.checkedAt === 'string'
+    && Number.isFinite(Date.parse(candidate.checkedAt))
+    && candidate.sourceCommit === expectedCommit
+    && typeof candidate.expiresAt === 'string'
+    && Date.parse(candidate.expiresAt) > Date.now()
+    && verification !== undefined
+    && exact(verification, ['mode', 'providerCount', 'threshold', 'finalizedAgreementSlot'])
+    && verification.mode === 'quorum-2-of-3'
+    && verification.providerCount === 3
+    && verification.threshold === 2
+    && Number.isSafeInteger(verification.finalizedAgreementSlot)
+    && Number(verification.finalizedAgreementSlot) > 0
+    && checks !== undefined
+    && exact(checks, READINESS_CHECKS)
+    && READINESS_CHECKS.every((name) => checks[name] === 'ok');
+};
+
 export async function loadRuntimeConfig(): Promise<void> {
-  if (window.location.protocol !== 'https:' || !['localhost', '127.0.0.1'].includes(window.location.hostname)) return;
+  if (surfaceMode !== 'manual-devnet') return;
+  if (window.location.protocol !== 'https:') {
+    throw new Error('Manual acceptance requires HTTPS on localhost port 4280.');
+  }
   const response = await fetch('/_neal/devnet/runtime', { cache: 'no-store' });
-  if (response.status === 404 || !response.headers.get('content-type')?.includes('application/json')) return;
-  if (!response.ok) throw new Error('The isolated devnet runtime is unavailable.');
+  if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
+    throw new Error('The isolated devnet runtime is unavailable.');
+  }
   const value: unknown = await response.json();
   if (!validRuntime(value)) throw new Error('The isolated devnet runtime failed validation.');
+  const browserCommit = import.meta.env.VITE_NEAL_SOURCE_COMMIT ?? '';
+  if (!/^[0-9a-f]{40}$/u.test(browserCommit) || browserCommit !== value.sourceCommit) {
+    throw new Error('The browser build does not match the prepared devnet runtime.');
+  }
+  const readyResponse = await fetch('/_neal/devnet/ready', { cache: 'no-store' });
+  const readyValue: unknown = readyResponse.headers.get('content-type')?.includes('application/json')
+    ? await readyResponse.json()
+    : null;
+  if (!readyResponse.ok || !validReadiness(readyValue, value.sourceCommit)) {
+    throw new Error('The isolated devnet dependencies are not ready.');
+  }
   runtime = value;
+  readiness = readyValue;
 };
 
 export const getRuntimeConfig = (): DevnetManualRuntime | null => runtime;
+export const getRuntimeReadiness = (): DevnetManualReadiness | null => readiness;
+export const getLocalSurfaceMode = (): LocalSurfaceMode => surfaceMode;

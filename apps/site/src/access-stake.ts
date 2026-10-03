@@ -25,6 +25,7 @@ import { getRuntimeConfig } from './runtime-config';
 const CONFIG_DISCRIMINATOR = 'NEALACFG';
 const STAKE_DISCRIMINATOR = 'NEALSTAK';
 const NEAL_SERVER = getRuntimeConfig()?.matrix.serverName ?? 'matrix.nealtheseal.org';
+const MANUAL_BROWSER_WALLET = getRuntimeConfig()?.browserWallet ?? null;
 const UPGRADEABLE_LOADER_ID = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const ACCESS_OPERATION_KEY = 'neal.matrix-access-operation.v2';
 
@@ -179,6 +180,12 @@ const validPublicKey = (value: string | null): boolean => {
     return true;
   } catch {
     return false;
+  }
+};
+
+const assertExpectedWallet = (address: string): void => {
+  if (MANUAL_BROWSER_WALLET && address !== MANUAL_BROWSER_WALLET) {
+    throw new Error(`Wrong devnet wallet. Connect ${MANUAL_BROWSER_WALLET.slice(0, 6)}…${MANUAL_BROWSER_WALLET.slice(-6)} to continue.`);
   }
 };
 
@@ -580,6 +587,20 @@ export async function mountMatrixAccessStake(
       rendering = false;
       return;
     }
+    if (MANUAL_BROWSER_WALLET && authentication.address !== MANUAL_BROWSER_WALLET) {
+      receipt = null;
+      ui.walletButton.hidden = false;
+      ui.walletButton.textContent = 'SELECT TEST WALLET';
+      registrationBlockLabel = 'WRONG DEVNET WALLET';
+      setStatus(
+        ui,
+        `Wrong devnet wallet. Connect ${MANUAL_BROWSER_WALLET.slice(0, 6)}…${MANUAL_BROWSER_WALLET.slice(-6)}. No transaction was constructed.`,
+        'bad',
+      );
+      syncRegistrationGate();
+      rendering = false;
+      return;
+    }
     try {
       const configState = await assertConfig(true);
       accessPaused = policy.status === 'paused' || configState.paused;
@@ -634,6 +655,11 @@ export async function mountMatrixAccessStake(
 
   ui.walletButton.addEventListener('click', () => {
     void (async () => {
+      const authentication = walletController.getAuthenticationState();
+      if (MANUAL_BROWSER_WALLET && authentication.address && authentication.address !== MANUAL_BROWSER_WALLET) {
+        walletController.openWalletPicker();
+        return;
+      }
       if (accessPaused && !walletController.getAuthenticationState().connected) {
         walletController.openWalletPicker();
         return;
@@ -661,6 +687,7 @@ export async function mountMatrixAccessStake(
       try {
         const configState = await assertConfig();
         const staker = new PublicKey(session.account.address);
+        assertExpectedWallet(staker.toBase58());
         const receiptKey = receiptAddress(program, configAddress, staker);
         const sourceAccounts = await connection.getParsedTokenAccountsByOwner(staker, { mint }, 'finalized');
         const source = sourceAccounts.value.find(({ account }) => {
@@ -723,6 +750,7 @@ export async function mountMatrixAccessStake(
       try {
         await assertConfig();
         const staker = new PublicKey(session.account.address);
+        assertExpectedWallet(staker.toBase58());
         receipt = await readReceipt(connection, program, configAddress, staker);
         if (!receipt || receipt.released) throw new Error('No active stake receipt is available.');
         if (receipt.claimedAt === 0) {
@@ -816,6 +844,7 @@ export async function mountMatrixAccessStake(
       setStatus(ui, 'Preparing the full stake refund…', 'busy');
       try {
         const staker = new PublicKey(session.account.address);
+        assertExpectedWallet(staker.toBase58());
         receipt = await readReceipt(connection, program, configAddress, staker);
         if (!receipt || receipt.released) throw new Error('No active stake is available to release.');
         if (Math.floor(Date.now() / 1000) < receipt.unlockAt) throw new Error('The minimum lock has not ended yet.');

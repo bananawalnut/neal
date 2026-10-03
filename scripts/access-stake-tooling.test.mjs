@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import net from 'node:net';
 import {
   DEVNET_GENESIS,
   LIFECYCLE_AMOUNT,
@@ -18,13 +19,16 @@ import { expectProgramError, matrixAttempt, parseCli, validateReview } from './r
 import { buildSbfCommand, buildSbfEnvironment } from './reproduce-access-stake-release.mjs';
 import { createProposalManifest, validateProposalManifest } from './squads-access-authority.mjs';
 import { validateProductionReview } from './verify-production-review.mjs';
-import { validateRpcSetCredential } from './devnet-rpc-set.mjs';
+import { establishDevnetAgreement, validateRpcSetCredential } from './devnet-rpc-set.mjs';
 import {
   MANUAL_RUNTIME_SCHEMA,
   MANUAL_LEASE_SECONDS,
+  buildManualReadiness,
   buildManualWalletPolicy,
+  validateManualReadiness,
   validateManualPublicRuntime,
 } from './manual-devnet-contracts.mjs';
+import { assertAcceptancePortsAvailable } from './manual-devnet.mjs';
 
 const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -134,6 +138,25 @@ test('devnet writes require both explicit flags', () => {
   assert.equal(parseCli([...required, '--execute', '--acknowledge-devnet']).execute, true);
 });
 
+test('manual acceptance port preflight reports an occupied listener without stopping it', async () => {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    const address = server.address();
+    assert.equal(typeof address, 'object');
+    await assert.rejects(
+      () => assertAcceptancePortsAvailable([address.port]),
+      new RegExp(`Acceptance port ${address.port} is already in use`, 'u'),
+    );
+    assert.equal(server.listening, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('RPC-set contract requires three independent providers without exposing URLs in CLI parsing', () => {
   const value = {
     schema: 'neal.solana-rpc-set/v1',
@@ -154,6 +177,51 @@ test('RPC-set contract requires three independent providers without exposing URL
     id: 'unrelated-devnet', trustDomain: 'other.example', url: 'https://rpc.other.example/key',
   };
   assert.throws(() => validateRpcSetCredential(impostor), /recognized QuickNode/u);
+});
+
+test('devnet agreement tolerates one unavailable provider and fails closed without a majority', async () => {
+  const rpcSet = validateRpcSetCredential({
+    schema: 'neal.solana-rpc-set/v1', mode: 'quorum-2-of-3', threshold: 2,
+    endpoints: [
+      { id: 'helius-devnet', trustDomain: 'helius.xyz', url: 'https://devnet.helius-rpc.com/?api-key=hidden' },
+      { id: 'quicknode-devnet', trustDomain: 'quicknode.com', url: 'https://sample.solana-devnet.quiknode.pro/hidden/' },
+      { id: 'alchemy-devnet', trustDomain: 'alchemy.com', url: 'https://solana-devnet.g.alchemy.com/v2/hidden' },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  const envelope = (result) => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  });
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes('quiknode.pro')) throw new Error('provider unavailable');
+    const { method, params } = JSON.parse(options.body);
+    if (method === 'getGenesisHash') return envelope(DEVNET_GENESIS);
+    if (method === 'getSlot') return envelope(100);
+    if (method === 'getBlock') return envelope({ blockhash: `block-${params[0]}`, previousBlockhash: `block-${params[0] - 1}` });
+    throw new Error('unexpected method');
+  };
+  try {
+    const agreement = await establishDevnetAgreement(rpcSet);
+    assert.deepEqual(agreement.agreeingProviderIds, ['alchemy-devnet', 'helius-devnet']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  globalThis.fetch = async (url, options) => {
+    const { method, params } = JSON.parse(options.body);
+    if (method === 'getGenesisHash') return envelope(DEVNET_GENESIS);
+    if (method === 'getSlot') return envelope(100);
+    if (method === 'getBlock') {
+      const host = new URL(String(url)).hostname;
+      return envelope({ blockhash: `${host}-${params[0]}`, previousBlockhash: `${host}-${params[0] - 1}` });
+    }
+    throw new Error('unexpected method');
+  };
+  try {
+    await assert.rejects(() => establishDevnetAgreement(rpcSet), /could not establish 2-of-3/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('manual browser runtime produces only a localhost devnet policy', () => {
@@ -188,6 +256,36 @@ test('manual browser runtime produces only a localhost devnet policy', () => {
   assert.equal(policy.accessStake.requiredAtomicAmount, '69000000000');
   assert.equal(policy.holderProof.rpcEndpoint, '/_neal/devnet/rpc');
   assert.equal(JSON.stringify(policy).includes('secret'), false);
+});
+
+test('manual readiness is sanitized, exact-commit bound, and requires every check', () => {
+  const runtime = {
+    schema: MANUAL_RUNTIME_SCHEMA,
+    mode: 'isolated-devnet-manual',
+    sourceCommit: COMMIT,
+    generatedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    chainId: 'solana:devnet',
+    verification: { mode: 'quorum-2-of-3', providerCount: 3, threshold: 2 },
+    browserWallet: KEY, programId: KEY, programDataAddress: KEY, programSha256: SHA,
+    configAddress: KEY, configRevision: '0', issuerAuthority: KEY, mint: KEY,
+    terms: { requiredAtomicAmount: '69000000000', minimumLockSeconds: 120, tokenDecimals: 6, mintedAtomicAmount: '69001000000' },
+    matrix: {
+      serverName: 'rehearsal.neal.invalid', baseUrl: 'https://localhost:4280',
+      roomId: '!room:rehearsal.neal.invalid', roomAlias: '#neal-gc:rehearsal.neal.invalid', viaServers: ['rehearsal.neal.invalid'],
+    },
+  };
+  const checks = {
+    lease: 'ok', browserCommit: 'ok', site: 'ok', issuer: 'ok', matrix: 'ok',
+    rpcQuorum: 'ok', walletPolicy: 'ok',
+  };
+  const readiness = buildManualReadiness({ runtime, checks, agreement: { slot: 123 } });
+  assert.equal(validateManualReadiness(readiness, { expectedCommit: COMMIT, requireReady: true }), readiness);
+  assert.equal(JSON.stringify(readiness).includes('https://'), false);
+  assert.throws(() => validateManualReadiness(readiness, { expectedCommit: 'c'.repeat(40) }), /different browser build/u);
+  const unavailable = buildManualReadiness({ runtime, checks: { ...checks, issuer: 'failed' } });
+  assert.equal(validateManualReadiness(unavailable).ready, false);
+  assert.throws(() => validateManualReadiness(unavailable, { requireReady: true }), /not ready/u);
 });
 
 test('isolated review must cover the exact release with no P0-P2 findings', () => {

@@ -4,7 +4,7 @@ import { mountNealPurchase } from './buy';
 import { mountMatrixGc } from './matrix-gc';
 import { mountMatrixAccessStake } from './access-stake';
 import { formatLocalStreak, getLocalYahooStats, onLocalYahooChange, recordLocalYahoo, type LocalYahooStats } from './local-yahoos';
-import { getRuntimeConfig } from './runtime-config';
+import { getLocalSurfaceMode, getRuntimeConfig, getRuntimeReadiness } from './runtime-config';
 
 type PublicRecord = {
   schema: 'neal.public-record/v1';
@@ -127,17 +127,27 @@ const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing #app');
 
 const DEVNET_RUNTIME = getRuntimeConfig();
+const DEVNET_READINESS = getRuntimeReadiness();
+const SURFACE_MODE = getLocalSurfaceMode();
 if (DEVNET_RUNTIME) document.documentElement.dataset.devnetManual = 'true';
+if (SURFACE_MODE === 'local-preview') document.documentElement.dataset.localPreview = 'true';
 const devnetBanner = DEVNET_RUNTIME ? `
   <aside class="devnet-manual-banner" role="status">
-    <strong>ISOLATED DEVNET ACCEPTANCE · NOT PRODUCTION</strong>
-    <span>69,000 TEST NEAL · 120 SECOND REFUND · ISSUER QUORUM 2 OF 3</span>
-    <small>Expires ${new Date(DEVNET_RUNTIME.expiresAt).toLocaleString()}. The Matrix account and room exist only on this computer. Never enter a production recovery phrase.</small>
+    <strong>READY FOR MANUAL ACCEPTANCE · ISOLATED DEVNET · NOT PRODUCTION</strong>
+    <span>69,000 TEST NEAL · 120-SECOND REFUNDABLE LOCK · QUORUM 2 OF 3</span>
+    <small>Expected wallet ${DEVNET_RUNTIME.browserWallet.slice(0, 6)}…${DEVNET_RUNTIME.browserWallet.slice(-6)} · finalized agreement slot ${DEVNET_READINESS?.verification.finalizedAgreementSlot?.toLocaleString() ?? '—'} · expires ${new Date(DEVNET_RUNTIME.expiresAt).toLocaleString()}.</small>
+    <small>The Matrix account and room exist only on this computer. Never enter a production recovery phrase.</small>
     <dl>
       <div><dt>PROGRAM</dt><dd>${DEVNET_RUNTIME.programId}</dd></div>
       <div><dt>CONFIG</dt><dd>${DEVNET_RUNTIME.configAddress}</dd></div>
       <div><dt>MINT</dt><dd>${DEVNET_RUNTIME.mint}</dd></div>
     </dl>
+  </aside>
+` : '';
+const localPreviewBanner = SURFACE_MODE === 'local-preview' ? `
+  <aside class="local-preview-banner" role="status">
+    <strong>LOCAL UI PREVIEW · CHAIN AND ACCOUNT ACTIONS DISABLED</strong>
+    <span>Use the reviewed HTTPS manual-devnet launcher for stake, issuance, registration, recovery, and refund testing.</span>
   </aside>
 ` : '';
 
@@ -146,6 +156,7 @@ let localYahooMode = false;
 
 app.innerHTML = `
   <main class="shell">
+    ${localPreviewBanner}
     ${devnetBanner}
     <nav class="topbar">
       <a class="brand" href="#top" aria-label="Neal the Seal home"><span class="brand-orb"><img src="/neal-favicon.png" width="96" height="96" alt="" /></span><span>NEAL</span><small>LOCAL UNIT</small></a>
@@ -567,6 +578,23 @@ const byId = <T extends HTMLElement>(id: string): T => {
   return element;
 };
 
+const applyLocalPreviewLock = (): void => {
+  byId<HTMLButtonElement>('wallet-button').disabled = true;
+  for (const element of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>(
+    '#matrix-login-form input, #matrix-login-form button, #matrix-create-form input, #matrix-create-form button, #matrix-tab-login, #matrix-tab-create, #gc-login-toggle, #gc-create-toggle',
+  )) element.disabled = true;
+  const roomStatus = document.querySelector<HTMLElement>('#gc .gc-chat-header > strong span');
+  const dockStatus = document.querySelector<HTMLElement>('#gc-dock header > span');
+  const dockAction = document.querySelector<HTMLElement>('#gc-dock .gc-dock__open strong');
+  if (roomStatus) roomStatus.textContent = 'PREVIEW';
+  if (dockStatus) dockStatus.textContent = 'PREVIEW';
+  if (dockAction) dockAction.textContent = 'Preview chat';
+  byId<HTMLElement>('matrix-status').textContent = 'Local UI preview only. Matrix login and account creation are disabled.';
+  byId<HTMLOListElement>('matrix-public-messages').innerHTML = '<li class="matrix-empty">PUBLIC CHAT IS DISABLED IN LOCAL UI PREVIEW.</li>';
+  byId<HTMLElement>('gc-dock-state').textContent = 'Local UI preview · chat disabled';
+  byId<HTMLOListElement>('gc-dock-activity').innerHTML = '<li><b aria-hidden="true">◆</b><span>Chain and account actions disabled</span></li>';
+};
+
 const gcPortal = byId<HTMLElement>('gc');
 const gcBackdrop = byId<HTMLButtonElement>('gc-drawer-backdrop');
 const gcClose = byId<HTMLButtonElement>('gc-drawer-close');
@@ -883,7 +911,8 @@ function renderFailure() {
 }
 
 async function start() {
-  mountMatrixGc();
+  if (SURFACE_MODE === 'local-preview') applyLocalPreviewLock();
+  else mountMatrixGc();
   try {
     const response = await fetch('/launch-record.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`Public record returned ${response.status}`);
@@ -906,6 +935,7 @@ async function start() {
         renderYahooRows(byId<HTMLOListElement>('yahoo-top-rate'), [], 'LEADERBOARD UNAVAILABLE');
       }
     }
+    if (SURFACE_MODE === 'local-preview') return;
     const walletIdentity = await mountWalletIdentity(() => canonicalMintAddress);
     if (walletIdentity) {
       if (!DEVNET_RUNTIME) mountNealPurchase(() => canonicalMintAddress, walletIdentity);

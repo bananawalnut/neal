@@ -15,14 +15,14 @@ const adminMonitorProxy = {
 export default defineConfig({
   server: {
     host: '127.0.0.1',
-    port: 4280,
+    port: 4282,
     proxy: {
       '^/_neal/admin/(session|snapshot)$': adminMonitorProxy,
     },
   },
   preview: {
     host: '127.0.0.1',
-    port: 4280,
+    port: 4282,
     proxy: {
       '^/_neal/admin/(session|snapshot)$': adminMonitorProxy,
     },

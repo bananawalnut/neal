@@ -5,8 +5,14 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { buildManualWalletPolicy, validateManualPublicRuntime } from './manual-devnet-contracts.mjs';
-import { loadRpcSetCredential, selectHeliusEndpoint } from './devnet-rpc-set.mjs';
+import {
+  MANUAL_AMOUNT,
+  MANUAL_LOCK_SECONDS,
+  buildManualReadiness,
+  buildManualWalletPolicy,
+  validateManualPublicRuntime,
+} from './manual-devnet-contracts.mjs';
+import { establishDevnetAgreement, loadRpcSetCredential, selectHeliusEndpoint } from './devnet-rpc-set.mjs';
 
 const MAX_BODY = 1024 * 1024;
 const RPC_TIMEOUT_MS = 5_000;
@@ -59,6 +65,24 @@ const sendJson = (response, status, value) => {
   securityHeaders(response);
   response.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': body.length });
   response.end(body);
+};
+
+const cappedFetch = async (url, { timeoutMs = RPC_TIMEOUT_MS } = {}) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+    const payload = await readCappedResponse(response, controller);
+    let body;
+    try {
+      body = JSON.parse(payload.toString('utf8'));
+    } catch {
+      throw new Error('Loopback readiness response is malformed');
+    }
+    return { status: response.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 const safeTarget = (origin, requestUrl) => {
@@ -208,11 +232,92 @@ export async function createManualGateway(options) {
   const helius = selectHeliusEndpoint(rpcSet);
   const runtimeFile = path.resolve(options.runtime);
   const faultsFile = path.resolve(options.faults);
+  const readinessAgreement = options.readinessAgreement ?? establishDevnetAgreement;
+  const readinessFetch = options.readinessFetch ?? cappedFetch;
+  const readiness = async () => {
+    const checks = {};
+    let runtime = null;
+    let agreement = null;
+    const check = async (name, operation) => {
+      try {
+        await operation();
+        checks[name] = 'ok';
+      } catch {
+        checks[name] = 'failed';
+      }
+    };
+    await check('lease', async () => {
+      runtime = validateManualPublicRuntime(JSON.parse(await fs.readFile(runtimeFile, 'utf8')));
+    });
+    await Promise.all([
+      check('browserCommit', async () => {
+        if (!runtime) throw new Error('runtime unavailable');
+        const result = await readinessFetch(`${options['site-origin']}/_neal-build.json`);
+        if (
+          result.status !== 200
+          || result.body?.schema !== 'neal.devnet-browser-build/v1'
+          || result.body?.sourceCommit !== runtime.sourceCommit
+        ) throw new Error('browser build mismatch');
+      }),
+      check('site', async () => {
+        const result = await readinessFetch(`${options['site-origin']}/_neal-build.json`);
+        if (result.status !== 200) throw new Error('site unavailable');
+      }),
+      check('issuer', async () => {
+        if (!runtime) throw new Error('runtime unavailable');
+        const result = await readinessFetch(`${options['issuer-origin']}/readyz`);
+        const issuer = result.body;
+        if (
+          result.status !== 200
+          || issuer?.schema !== 'neal.issuer-readiness/v2'
+          || issuer.status !== 'ready'
+          || issuer.verificationMode !== 'quorum-2-of-3'
+          || issuer.chainId !== 'solana:devnet'
+          || issuer.programId !== runtime.programId
+          || issuer.programDataAddress !== runtime.programDataAddress
+          || issuer.programSha256 !== runtime.programSha256
+          || issuer.configAddress !== runtime.configAddress
+          || issuer.mint !== runtime.mint
+          || issuer.requiredAtomicAmount !== MANUAL_AMOUNT
+          || issuer.minimumLockSeconds !== MANUAL_LOCK_SECONDS
+          || issuer.configRevision !== runtime.configRevision
+        ) throw new Error('issuer attestation mismatch');
+      }),
+      check('matrix', async () => {
+        const result = await readinessFetch(`${options['matrix-origin']}/_matrix/client/versions`);
+        if (result.status !== 200 || !Array.isArray(result.body?.versions)) throw new Error('matrix unavailable');
+      }),
+      check('rpcQuorum', async () => {
+        agreement = await readinessAgreement(rpcSet);
+        if (!Number.isSafeInteger(agreement?.slot) || agreement.slot <= 0) throw new Error('quorum unavailable');
+      }),
+      check('walletPolicy', async () => {
+        if (!runtime) throw new Error('runtime unavailable');
+        const policy = buildManualWalletPolicy(runtime);
+        if (
+          policy.chain !== 'solana:devnet'
+          || policy.accessStake?.status !== 'active'
+          || policy.accessStake?.programId !== runtime.programId
+          || policy.accessStake?.configAddress !== runtime.configAddress
+          || policy.accessStake?.mint !== runtime.mint
+          || policy.accessStake?.requiredAtomicAmount !== MANUAL_AMOUNT
+          || policy.accessStake?.minimumLockSeconds !== MANUAL_LOCK_SECONDS
+          || typeof runtime.browserWallet !== 'string'
+        ) throw new Error('wallet policy mismatch');
+      }),
+    ]);
+    return buildManualReadiness({ runtime, checks, agreement });
+  };
   const server = https.createServer({ key, cert }, async (request, response) => {
     try {
       const pathname = new URL(request.url, 'https://localhost').pathname;
       if (pathname === '/_neal/devnet/health' && request.method === 'GET') {
         sendJson(response, 200, { schema: 'neal.devnet-manual-health/v1', status: 'ok' });
+        return;
+      }
+      if (pathname === '/_neal/devnet/ready' && request.method === 'GET') {
+        const result = await readiness();
+        sendJson(response, result.ready ? 200 : 503, result);
         return;
       }
       const runtime = validateManualPublicRuntime(JSON.parse(await fs.readFile(runtimeFile, 'utf8')));

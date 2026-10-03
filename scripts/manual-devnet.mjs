@@ -3,6 +3,8 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import net from 'node:net';
+import https from 'node:https';
 import { createHmac, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -25,12 +27,14 @@ import {
   MANUAL_LOCK_SECONDS,
   MANUAL_MINTED_AMOUNT,
   MANUAL_MODE,
+  MANUAL_READINESS_SCHEMA,
   MANUAL_RUNTIME_SCHEMA,
   MANUAL_STATE_SCHEMA,
+  validateManualReadiness,
   validateManualPublicRuntime,
 } from './manual-devnet-contracts.mjs';
 import { establishDevnetAgreement, loadRpcSetCredential, rpcCall } from './devnet-rpc-set.mjs';
-import { DEVNET_GENESIS, PRODUCTION_LOCK_SECONDS, readAndValidateReleaseManifest, sha256File } from './access-stake-contracts.mjs';
+import { DEVNET_GENESIS, PRODUCTION_LOCK_SECONDS, assertPublicEvidence, readAndValidateReleaseManifest, sha256File } from './access-stake-contracts.mjs';
 import {
   attestProgram,
   atomicWrite,
@@ -55,11 +59,14 @@ const COMPOSE = path.join(ROOT, 'infra/neal-access-rehearsal/compose.yaml');
 const MANUAL_COMPOSE = path.join(ROOT, 'infra/neal-access-rehearsal/compose.manual.yaml');
 const UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const DEFAULT_RUNTIME_ROOT = path.join(os.homedir(), 'Library/Application Support/NEAL/devnet-manual');
+const ACCEPTANCE_URL = 'https://localhost:4280/#gc';
+const ACCEPTANCE_PORTS = [4280, 4281];
+const CHROME = '/Applications/Google Chrome.app';
 
 const parseCli = (argv) => {
   const command = argv[0];
-  if (!['prepare', 'start', 'status', 'fault', 'stop', 'guardian'].includes(command)) {
-    throw new Error('Usage: manual-devnet <prepare|start|status|fault|stop> [options]');
+  if (!['doctor', 'prepare', 'start', 'verify', 'status', 'fault', 'stop', 'guardian'].includes(command)) {
+    throw new Error('Usage: manual-devnet <doctor|prepare|start|verify|status|fault|stop> [options]');
   }
   const options = { command, execute: false, acknowledgeDevnet: false, acknowledgeCertificateTrusted: false };
   for (let index = 1; index < argv.length; index += 1) {
@@ -81,6 +88,7 @@ const stateFile = (runtime) => path.join(runtime, 'state.json');
 const publicRuntimeFile = (runtime) => path.join(runtime, 'public-runtime.json');
 const faultsFile = (runtime) => path.join(runtime, 'faults.json');
 const environmentFile = (runtime) => path.join(runtime, 'issuer.env');
+const handoffFile = (runtime) => path.join(runtime, 'acceptance-handoff.json');
 
 const readState = async (runtime) => {
   const absolute = path.resolve(runtime);
@@ -168,6 +176,32 @@ const processAlive = (pid) => {
   }
 };
 
+const portAvailable = (port) => new Promise((resolve, reject) => {
+  const server = net.createServer();
+  server.unref();
+  server.once('error', (error) => {
+    if (error?.code === 'EADDRINUSE') resolve(false);
+    else reject(error);
+  });
+  server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+});
+
+const portOccupant = async (port) => {
+  try {
+    return await run('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], { capture: true });
+  } catch {
+    return 'listener details unavailable';
+  }
+};
+
+export const assertAcceptancePortsAvailable = async (ports = ACCEPTANCE_PORTS) => {
+  for (const port of ports) {
+    if (await portAvailable(port)) continue;
+    const occupant = await portOccupant(port);
+    throw new Error(`Acceptance port ${port} is already in use. Stop that process before retrying. Listener: ${occupant.replaceAll(/\s+/gu, ' ').trim()}`);
+  }
+};
+
 const terminatePid = async (pid) => {
   if (!processAlive(pid) || pid === process.pid) return;
   try { process.kill(pid, 'SIGTERM'); } catch { return; }
@@ -186,21 +220,51 @@ const spawnDetached = (command, args, { cwd = ROOT, env = process.env, log }) =>
   return child.pid;
 };
 
-const waitHttps = async (pathname, attempts = 60) => {
-  const https = await import('node:https');
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const okay = await new Promise((resolve) => {
-      const request = https.get({ hostname: 'localhost', port: 4280, path: pathname, rejectUnauthorized: false }, (response) => {
-        response.resume();
-        resolve(response.statusCode === 200);
+const gatewayJson = async (state, pathname) => {
+  const ca = await fs.readFile(state.certificate.certificate);
+  return new Promise((resolve, reject) => {
+    const request = https.get({ hostname: 'localhost', port: 4280, path: pathname, ca, servername: 'localhost' }, (response) => {
+      const chunks = [];
+      let size = 0;
+      response.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > 1024 * 1024) request.destroy(new Error('Gateway response is too large'));
+        else chunks.push(chunk);
       });
-      request.on('error', () => resolve(false));
-      request.setTimeout(1_000, () => request.destroy());
+      response.on('end', () => {
+        try {
+          resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+        } catch {
+          reject(new Error('Gateway returned malformed JSON'));
+        }
+      });
     });
-    if (okay) return;
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    request.on('error', reject);
+    request.setTimeout(15_000, () => request.destroy(new Error('Gateway request timed out')));
+  });
+};
+
+const verifyReady = async (state) => {
+  const result = await gatewayJson(state, '/_neal/devnet/ready');
+  const readiness = validateManualReadiness(result.body, {
+    expectedCommit: state.sourceCommit,
+    requireReady: true,
+  });
+  if (result.status !== 200 || readiness.schema !== MANUAL_READINESS_SCHEMA) {
+    throw new Error('Local HTTPS acceptance gateway is not ready');
   }
-  throw new Error('Local HTTPS acceptance gateway did not become ready');
+  return readiness;
+};
+
+const waitReady = async (state, attempts = 60) => {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await verifyReady(state);
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error('Local HTTPS acceptance gateway did not pass deep readiness');
 };
 
 const certificateFingerprint = async (certificate) => {
@@ -250,11 +314,64 @@ const createManualMint = async (connection, deployer, browserWallet) => {
   return mint;
 };
 
+const verifyTrustedCertificate = async (state) => run('/usr/bin/security', [
+  'verify-cert', '-c', state.certificate.certificate, '-p', 'ssl', '-n', 'localhost', '-L', '-q',
+  '-k', path.join(os.homedir(), 'Library/Keychains/login.keychain-db'),
+], { capture: true, failure: 'The emitted localhost certificate is not trusted; import it into the login keychain and mark it trusted first' });
+
+const doctor = async (options) => {
+  requireOptions(options, ['release-manifest', 'rpc-set-file', 'review-file', 'wallet']);
+  await assertAcceptancePortsAvailable();
+  await fs.access(CHROME).catch(() => { throw new Error('Google Chrome is required at /Applications/Google Chrome.app'); });
+  await run('docker', ['version', '--format', '{{.Server.Version}}'], { capture: true, failure: 'Docker Desktop must be running' });
+  const pythonVersion = await run('python3.12', ['--version'], { capture: true, failure: 'Python 3.12 is required' });
+  if (!/^Python 3\.12\./u.test(pythonVersion)) throw new Error('Python 3.12 is required');
+  await run('gh', ['auth', 'status', '--hostname', 'github.com'], { capture: true, failure: 'GitHub CLI authentication is required' });
+  const [head, dirty] = await Promise.all([
+    run('git', ['rev-parse', 'HEAD'], { capture: true }),
+    run('git', ['status', '--porcelain', '--untracked-files=all'], { capture: true }),
+  ]);
+  if (dirty) throw new Error('Manual devnet doctor requires a clean checkout');
+  const release = await readAndValidateReleaseManifest(options['release-manifest']);
+  if (release.manifest.sourceCommit !== head) throw new Error('Release manifest must cover the exact checkout commit');
+  const review = validateReview(JSON.parse(await fs.readFile(path.resolve(options['review-file']), 'utf8')), head);
+  const rpcSet = await loadRpcSetCredential(options['rpc-set-file']);
+  const agreement = await establishDevnetAgreement(rpcSet);
+  const browserWallet = new PublicKey(options.wallet).toBase58();
+  await assertGreenCi(head);
+  let certificate = 'pending-prepare';
+  if (options.runtime) {
+    const state = await readState(path.resolve(options.runtime));
+    if (state.sourceCommit !== head || state.browserWallet !== browserWallet) {
+      throw new Error('Prepared runtime does not match the exact checkout and browser wallet');
+    }
+    await verifyTrustedCertificate(state);
+    certificate = 'trusted';
+  }
+  const result = {
+    schema: 'neal.devnet-manual-doctor/v1',
+    status: 'ok',
+    sourceCommit: head,
+    browserWallet,
+    releaseManifestSha256: await sha256File(path.resolve(options['release-manifest'])),
+    reviewSchema: review.schema,
+    finalizedAgreementSlot: agreement.slot,
+    providerCount: rpcSet.endpoints.length,
+    threshold: rpcSet.threshold,
+    certificate,
+    ports: { gateway: 4280, site: 4281, status: 'available' },
+  };
+  assertPublicEvidence(result);
+  console.log(JSON.stringify(result, null, 2));
+};
+
 const prepare = async (options) => {
   requireOptions(options, ['release-manifest', 'rpc-set-file', 'review-file', 'wallet']);
   if (options.execute !== true || options.acknowledgeDevnet !== true) {
     throw new Error('Devnet preparation requires --execute --acknowledge-devnet');
   }
+  await assertAcceptancePortsAvailable();
+  await fs.access(CHROME).catch(() => { throw new Error('Google Chrome is required at /Applications/Google Chrome.app'); });
   await run('docker', ['version', '--format', '{{.Server.Version}}'], { capture: true, failure: 'Docker Desktop must be running' });
   const pythonVersion = await run('python3.12', ['--version'], { capture: true, failure: 'Python 3.12 is required' });
   if (!/^Python 3\.12\./u.test(pythonVersion)) throw new Error('Python 3.12 is required');
@@ -442,10 +559,8 @@ const start = async (options) => {
   const runtime = path.resolve(options.runtime);
   const state = await readState(runtime);
   if (Object.values(state.pids ?? {}).some(processAlive)) throw new Error('Manual acceptance processes are already running');
-  await run('/usr/bin/security', [
-    'verify-cert', '-c', state.certificate.certificate, '-p', 'ssl', '-n', 'localhost', '-L', '-q',
-    '-k', path.join(os.homedir(), 'Library/Keychains/login.keychain-db'),
-  ], { capture: true, failure: 'The emitted localhost certificate is not trusted; import it into the login keychain and mark it trusted first' });
+  await assertAcceptancePortsAvailable();
+  await verifyTrustedCertificate(state);
   await run('docker', ['version', '--format', '{{.Server.Version}}'], { capture: true, failure: 'Docker Desktop must be running' });
   const environment = issuerEnvironment(runtime, state);
   await writeEnvironment(runtime, environment);
@@ -482,7 +597,14 @@ const start = async (options) => {
     },
   });
   await atomicWrite(publicRuntimeFile(runtime), `${JSON.stringify(publicRuntime, null, 2)}\n`, 0o644);
-  await run('npm', ['run', 'site:build'], { cwd: ROOT, failure: 'Could not build the local acceptance site' });
+  await run('npm', ['run', 'site:build'], {
+    cwd: ROOT,
+    env: { ...process.env, VITE_NEAL_SOURCE_COMMIT: state.sourceCommit },
+    failure: 'Could not build the local acceptance site',
+  });
+  await atomicWrite(path.join(ROOT, 'apps/site/dist/_neal-build.json'), `${JSON.stringify({
+    schema: 'neal.devnet-browser-build/v1', sourceCommit: state.sourceCommit,
+  })}\n`, 0o644);
   const pids = {};
   try {
     pids.site = spawnDetached(path.join(ROOT, 'node_modules/.bin/vite'), [
@@ -496,21 +618,45 @@ const start = async (options) => {
       '--faults', faultsFile(runtime), '--site-origin', 'http://127.0.0.1:4281',
       '--issuer-origin', 'http://127.0.0.1:18009', '--matrix-origin', 'http://127.0.0.1:18008',
     ], { log: path.join(runtime, 'gateway.log') });
-    await waitHttps('/_neal/devnet/health');
+    const readiness = await waitReady(state);
     state.status = 'running';
     state.pids = pids;
     await writeState(runtime, state);
     pids.guardian = spawnDetached(process.execPath, [SCRIPT, 'guardian', '--runtime', runtime], { log: path.join(runtime, 'guardian.log') });
     state.pids = pids;
     await writeState(runtime, state);
+    const handoff = {
+      schema: 'neal.devnet-manual-handoff/v1',
+      createdAt: new Date().toISOString(),
+      sourceCommit: state.sourceCommit,
+      url: ACCEPTANCE_URL,
+      expiresAt: state.expiresAt,
+      browserWallet: state.browserWallet,
+      programId: state.programId,
+      configAddress: state.manualConfigAddress,
+      mint: state.mint,
+      requiredAtomicAmount: MANUAL_AMOUNT,
+      minimumLockSeconds: MANUAL_LOCK_SECONDS,
+      finalizedAgreementSlot: readiness.verification.finalizedAgreementSlot,
+      readinessChecks: readiness.checks,
+    };
+    assertPublicEvidence(handoff);
+    await atomicWrite(handoffFile(runtime), `${JSON.stringify(handoff, null, 2)}\n`, 0o644);
+    await run('/usr/bin/open', ['-a', 'Google Chrome', ACCEPTANCE_URL], {
+      capture: true,
+      failure: 'The acceptance stack is ready, but Google Chrome could not be opened',
+    });
   } catch (error) {
     await Promise.all(Object.values(pids).map(terminatePid));
     await manualCompose(state.project, runtime, ['stop']).catch(() => {});
+    state.status = 'unavailable';
+    state.pids = {};
+    await writeState(runtime, state).catch(() => {});
     throw error;
   }
   console.log(JSON.stringify({
-    schema: 'neal.devnet-manual-start-result/v1', status: 'running',
-    url: 'https://localhost:4280/#gc', expiresAt: state.expiresAt,
+    schema: 'neal.devnet-manual-start-result/v1', status: 'ready', acceptanceReady: true,
+    url: ACCEPTANCE_URL, expiresAt: state.expiresAt,
     browserWallet: state.browserWallet, mint: state.mint, configAddress: state.manualConfigAddress,
   }, null, 2));
 };
@@ -534,18 +680,64 @@ const guardian = async (options) => {
   await writeState(runtime, current);
 };
 
+const verify = async (options) => {
+  requireOptions(options, ['runtime']);
+  const runtime = path.resolve(options.runtime);
+  const state = await readState(runtime);
+  if (state.status !== 'running' || !processAlive(state.pids?.gateway)) {
+    throw new Error('Manual acceptance stack is not running');
+  }
+  const readiness = await verifyReady(state);
+  const result = {
+    ...readiness,
+    url: ACCEPTANCE_URL,
+    browserWallet: state.browserWallet,
+    programId: state.programId,
+    configAddress: state.manualConfigAddress,
+    mint: state.mint,
+    requiredAtomicAmount: MANUAL_AMOUNT,
+    minimumLockSeconds: MANUAL_LOCK_SECONDS,
+  };
+  assertPublicEvidence(result);
+  console.log(JSON.stringify(result, null, 2));
+};
+
 const status = async (options) => {
   requireOptions(options, ['runtime']);
   const runtime = path.resolve(options.runtime);
   const state = await readState(runtime);
   const publicRuntime = await fs.readFile(publicRuntimeFile(runtime), 'utf8').then(JSON.parse).catch(() => null);
-  console.log(JSON.stringify({
-    schema: 'neal.devnet-manual-status/v1', status: state.status, sourceCommit: state.sourceCommit,
-    expiresAt: state.expiresAt, services: Object.fromEntries(Object.entries(state.pids ?? {}).map(([name, pid]) => [name, processAlive(pid)])),
+  let runtimeValid = false;
+  try {
+    runtimeValid = Boolean(publicRuntime && validateManualPublicRuntime(publicRuntime, { allowExpired: true }));
+  } catch { /* Reported below as false. */ }
+  const services = Object.fromEntries(Object.entries(state.pids ?? {}).map(([name, pid]) => [name, processAlive(pid)]));
+  let readiness = null;
+  if (services.gateway) {
+    try {
+      const result = await gatewayJson(state, '/_neal/devnet/ready');
+      readiness = validateManualReadiness(result.body, { expectedCommit: state.sourceCommit });
+    } catch { /* A running PID is not sufficient for readiness. */ }
+  }
+  const acceptanceReady = readiness?.ready === true && Object.values(services).every(Boolean);
+  const result = {
+    schema: 'neal.devnet-manual-status/v1',
+    status: acceptanceReady ? 'ready' : state.status === 'running' ? 'unavailable' : state.status,
+    acceptanceReady,
+    sourceCommit: state.sourceCommit,
+    url: ACCEPTANCE_URL,
+    expiresAt: state.expiresAt,
+    services,
     browserWallet: state.browserWallet, programId: state.programId, mint: state.mint,
     configAddress: state.manualConfigAddress, roomId: state.roomId,
-    runtimeValid: publicRuntime ? Boolean(validateManualPublicRuntime(publicRuntime, { allowExpired: true })) : false,
-  }, null, 2));
+    requiredAtomicAmount: MANUAL_AMOUNT,
+    minimumLockSeconds: MANUAL_LOCK_SECONDS,
+    runtimeValid,
+    readinessChecks: readiness?.checks ?? null,
+    finalizedAgreementSlot: readiness?.verification.finalizedAgreementSlot ?? null,
+  };
+  assertPublicEvidence(result);
+  console.log(JSON.stringify(result, null, 2));
 };
 
 const fault = async (options) => {
@@ -647,8 +839,10 @@ const stop = async (options) => {
 
 async function main() {
   const options = parseCli(process.argv.slice(2));
-  if (options.command === 'prepare') await prepare(options);
+  if (options.command === 'doctor') await doctor(options);
+  else if (options.command === 'prepare') await prepare(options);
   else if (options.command === 'start') await start(options);
+  else if (options.command === 'verify') await verify(options);
   else if (options.command === 'status') await status(options);
   else if (options.command === 'fault') await fault(options);
   else if (options.command === 'stop') await stop(options);
