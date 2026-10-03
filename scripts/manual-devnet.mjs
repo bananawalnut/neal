@@ -564,49 +564,49 @@ const start = async (options) => {
   await run('docker', ['version', '--format', '{{.Server.Version}}'], { capture: true, failure: 'Docker Desktop must be running' });
   const environment = issuerEnvironment(runtime, state);
   await writeEnvironment(runtime, environment);
-  await manualCompose(state.project, runtime, ['up', '--detach', '--wait']);
-  await waitHttp('http://127.0.0.1:18008/_matrix/client/versions', [200]);
-  await waitHttp('http://127.0.0.1:18009/readyz', [200]);
-  state.roomId = await seedRoom(runtime, state);
-  await writeState(runtime, state);
-  const generatedAt = new Date();
-  state.expiresAt = new Date(generatedAt.getTime() + MANUAL_LEASE_SECONDS * 1000).toISOString();
-  const publicRuntime = validateManualPublicRuntime({
-    schema: MANUAL_RUNTIME_SCHEMA,
-    mode: MANUAL_MODE,
-    sourceCommit: state.sourceCommit,
-    generatedAt: generatedAt.toISOString(),
-    expiresAt: state.expiresAt,
-    chainId: 'solana:devnet',
-    verification: { mode: 'quorum-2-of-3', providerCount: 3, threshold: 2 },
-    browserWallet: state.browserWallet,
-    programId: state.programId,
-    programDataAddress: state.programDataAddress,
-    programSha256: state.programSha256,
-    configAddress: state.manualConfigAddress,
-    configRevision: state.configRevision,
-    issuerAuthority: state.issuerAuthority,
-    mint: state.mint,
-    terms: {
-      requiredAtomicAmount: MANUAL_AMOUNT, minimumLockSeconds: MANUAL_LOCK_SECONDS,
-      tokenDecimals: 6, mintedAtomicAmount: MANUAL_MINTED_AMOUNT,
-    },
-    matrix: {
-      serverName: 'rehearsal.neal.invalid', baseUrl: 'https://localhost:4280',
-      roomId: state.roomId, roomAlias: '#neal-gc:rehearsal.neal.invalid', viaServers: ['rehearsal.neal.invalid'],
-    },
-  });
-  await atomicWrite(publicRuntimeFile(runtime), `${JSON.stringify(publicRuntime, null, 2)}\n`, 0o644);
-  await run('npm', ['run', 'site:build'], {
-    cwd: ROOT,
-    env: { ...process.env, VITE_NEAL_SOURCE_COMMIT: state.sourceCommit },
-    failure: 'Could not build the local acceptance site',
-  });
-  await atomicWrite(path.join(ROOT, 'apps/site/dist/_neal-build.json'), `${JSON.stringify({
-    schema: 'neal.devnet-browser-build/v1', sourceCommit: state.sourceCommit,
-  })}\n`, 0o644);
   const pids = {};
   try {
+    await manualCompose(state.project, runtime, ['up', '--detach', '--wait']);
+    await waitHttp('http://127.0.0.1:18008/_matrix/client/versions', [200]);
+    await waitHttp('http://127.0.0.1:18009/readyz', [200]);
+    state.roomId = await seedRoom(runtime, state);
+    await writeState(runtime, state);
+    const generatedAt = new Date();
+    state.expiresAt = new Date(generatedAt.getTime() + MANUAL_LEASE_SECONDS * 1000).toISOString();
+    const publicRuntime = validateManualPublicRuntime({
+      schema: MANUAL_RUNTIME_SCHEMA,
+      mode: MANUAL_MODE,
+      sourceCommit: state.sourceCommit,
+      generatedAt: generatedAt.toISOString(),
+      expiresAt: state.expiresAt,
+      chainId: 'solana:devnet',
+      verification: { mode: 'quorum-2-of-3', providerCount: 3, threshold: 2 },
+      browserWallet: state.browserWallet,
+      programId: state.programId,
+      programDataAddress: state.programDataAddress,
+      programSha256: state.programSha256,
+      configAddress: state.manualConfigAddress,
+      configRevision: state.configRevision,
+      issuerAuthority: state.issuerAuthority,
+      mint: state.mint,
+      terms: {
+        requiredAtomicAmount: MANUAL_AMOUNT, minimumLockSeconds: MANUAL_LOCK_SECONDS,
+        tokenDecimals: 6, mintedAtomicAmount: MANUAL_MINTED_AMOUNT,
+      },
+      matrix: {
+        serverName: 'rehearsal.neal.invalid', baseUrl: 'https://localhost:4280',
+        roomId: state.roomId, roomAlias: '#neal-gc:rehearsal.neal.invalid', viaServers: ['rehearsal.neal.invalid'],
+      },
+    });
+    await atomicWrite(publicRuntimeFile(runtime), `${JSON.stringify(publicRuntime, null, 2)}\n`, 0o644);
+    await run('npm', ['run', 'site:build'], {
+      cwd: ROOT,
+      env: { ...process.env, VITE_NEAL_SOURCE_COMMIT: state.sourceCommit },
+      failure: 'Could not build the local acceptance site',
+    });
+    await atomicWrite(path.join(ROOT, 'apps/site/dist/_neal-build.json'), `${JSON.stringify({
+      schema: 'neal.devnet-browser-build/v1', sourceCommit: state.sourceCommit,
+    })}\n`, 0o644);
     pids.site = spawnDetached(path.join(ROOT, 'node_modules/.bin/vite'), [
       'preview', '--host', '127.0.0.1', '--port', '4281', '--strictPort',
     ], { cwd: path.join(ROOT, 'apps/site'), log: path.join(runtime, 'site.log') });
