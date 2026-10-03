@@ -179,6 +179,15 @@ it read-only to the service. Mainnet requires the three-provider template and
 strict two-of-three agreement. The one-provider template is accepted only when
 `NEAL_ACCESS_CHAIN_ID=solana:devnet`.
 
+Formal devnet acceptance uses
+`solana-rpc-set.devnet-quorum.example.json`: Helius, QuickNode, and Alchemy are
+separate trust domains with distinct endpoint hosts. Replace each placeholder
+only in the root-owned credential file, never in Git. Before starting the
+issuer, run `getGenesisHash` through every endpoint and require the Solana
+devnet genesis; readiness then requires identical finalized raw account state
+from any two providers. The browser may use a public or proxied endpoint, but
+these credential-bearing URLs remain issuer-only.
+
 For isolated local testing, omit `NEAL_ACCESS_SOCKET` and use the loopback-only
 `NEAL_ACCESS_BIND`/`NEAL_ACCESS_PORT` fallback. The process rejects non-loopback
 TCP binds.

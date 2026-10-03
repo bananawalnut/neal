@@ -449,6 +449,23 @@ class IssuerTests(unittest.TestCase):
         with self.assertRaisesRegex(issuer.IssuerError, "devnet"):
             issuer.RpcSet.load(preview, "solana:mainnet")
 
+        example = Path(__file__).with_name("solana-rpc-set.devnet-quorum.example.json")
+        devnet = issuer.RpcSet.load(example, "solana:devnet")
+        self.assertEqual(devnet.mode, issuer.RPC_QUORUM_MODE)
+        self.assertEqual(devnet.threshold, 2)
+        self.assertEqual(
+            {endpoint.id for endpoint in devnet.endpoints},
+            {"helius-devnet", "quicknode-devnet", "alchemy-devnet"},
+        )
+        self.assertEqual(
+            {endpoint.host for endpoint in devnet.endpoints},
+            {
+                "devnet.helius-rpc.com",
+                "neal.solana-devnet.quiknode.pro",
+                "solana-devnet.g.alchemy.com",
+            },
+        )
+
     def test_issuer_keypair_rejects_mismatched_public_half(self) -> None:
         self.settings.issuer_keypair_file.write_text(str([0] * 64))
         with self.assertRaisesRegex(issuer.IssuerError, "does not match"):

@@ -40,6 +40,7 @@ RUNTIME_FILES = (
     "s3-append-only-policy.example.json",
     "s3-restore-policy.example.json",
     "solana-rpc-set.mainnet.example.json",
+    "solana-rpc-set.devnet-quorum.example.json",
     "solana-rpc-set.devnet-preview.example.json",
     "README.md",
 )

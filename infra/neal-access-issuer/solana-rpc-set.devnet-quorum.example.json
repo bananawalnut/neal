@@ -1,0 +1,22 @@
+{
+  "schema": "neal.solana-rpc-set/v1",
+  "mode": "quorum-2-of-3",
+  "threshold": 2,
+  "endpoints": [
+    {
+      "id": "helius-devnet",
+      "trustDomain": "helius.xyz",
+      "url": "https://devnet.helius-rpc.com/?api-key=HELIUS_API_KEY"
+    },
+    {
+      "id": "quicknode-devnet",
+      "trustDomain": "quicknode.com",
+      "url": "https://NEAL.solana-devnet.quiknode.pro/QUICKNODE_TOKEN/"
+    },
+    {
+      "id": "alchemy-devnet",
+      "trustDomain": "alchemy.com",
+      "url": "https://solana-devnet.g.alchemy.com/v2/ALCHEMY_API_KEY"
+    }
+  ]
+}
