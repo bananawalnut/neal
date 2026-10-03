@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   DEVNET_GENESIS,
   LIFECYCLE_AMOUNT,
@@ -15,6 +16,8 @@ import {
 } from './access-stake-contracts.mjs';
 import { expectProgramError, matrixAttempt, parseCli, validateReview } from './rehearse-access-stake-devnet.mjs';
 import { buildSbfCommand, buildSbfEnvironment } from './reproduce-access-stake-release.mjs';
+import { createProposalManifest, validateProposalManifest } from './squads-access-authority.mjs';
+import { validateProductionReview } from './verify-production-review.mjs';
 
 const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -114,7 +117,7 @@ test('public evidence rejects credential-shaped keys and values', () => {
 });
 
 test('devnet writes require both explicit flags', () => {
-  const required = ['--release-manifest', 'release.json', '--rpc-primary', 'https://one.invalid', '--rpc-secondary', 'https://two.invalid', '--review-file', 'review.json'];
+  const required = ['--release-manifest', 'release.json', '--rpc-primary', 'https://one.invalid', '--rpc-secondary', 'https://two.invalid', '--rpc-tertiary', 'https://three.invalid', '--review-file', 'review.json'];
   assert.equal(parseCli(required).execute, false);
   assert.throws(() => parseCli([...required, '--execute']), /acknowledge-devnet/u);
   assert.equal(parseCli([...required, '--execute', '--acknowledge-devnet']).execute, true);
@@ -206,4 +209,78 @@ test('release builds use the pinned cache without rustup or network resolution',
   ]);
   assert.equal(command.filter((argument) => argument === '--offline').length, 2);
   assert.ok(command.includes('--locked'));
+});
+
+test('Squads authority manifest pins autonomous vault index zero and exact inner instruction', () => {
+  const manifest = createProposalManifest({
+    cluster: 'devnet',
+    action: 'pause',
+    multisig: KEY,
+    transactionIndex: '4',
+    programId: KEY,
+    configAddress: KEY,
+    expectedRevision: '8',
+  });
+  assert.equal(validateProposalManifest(manifest), manifest);
+  assert.equal(manifest.vaultIndex, 0);
+  assert.equal(manifest.innerInstruction.dataBase64, Buffer.from([1, 1]).toString('base64'));
+  const changed = structuredClone(manifest);
+  changed.messageHash = SHA;
+  assert.throws(() => validateProposalManifest(changed), /does not reproduce/u);
+});
+
+test('production review binds commit and every release artifact with zero P0-P2', () => {
+  const expected = {
+    sourceCommit: COMMIT,
+    reviewerIdentity: 'reviewer@example.test',
+    releaseManifestSha256: SHA,
+    sbfSha256: SHA,
+    issuerBundleSha256: SHA,
+  };
+  const review = {
+    schema: 'neal.production-review/v2',
+    sourceCommit: COMMIT,
+    reviewedAt: '2026-10-02T00:00:00.000Z',
+    reviewerIdentity: expected.reviewerIdentity,
+    releaseManifestSha256: SHA,
+    sbfSha256: SHA,
+    issuerBundleSha256: SHA,
+    findings: { p0: 0, p1: 0, p2: 0, p3: 1 },
+    signatureType: 'sigstore-keyless',
+  };
+  assert.equal(validateProductionReview(review, expected), review);
+  assert.throws(
+    () => validateProductionReview({ ...review, findings: { ...review.findings, p2: 1 } }, expected),
+    /unresolved/u,
+  );
+});
+
+test('direct authority tools structurally reject mainnet in favor of Squads', () => {
+  const initialize = spawnSync(process.execPath, [
+    'scripts/initialize-access-stake-config.mjs',
+    '--cluster', 'mainnet',
+    '--rpc', 'https://rpc.invalid',
+    '--program-id', KEY,
+    '--program-data-address', KEY,
+    '--program-sha256', SHA,
+    '--authority-keypair', '/does/not/exist',
+    '--issuer-authority', KEY,
+    '--config-id', '0',
+    '--required-atomic-amount', PRODUCTION_AMOUNT,
+    '--minimum-lock-seconds', String(PRODUCTION_LOCK_SECONDS),
+  ], { encoding: 'utf8' });
+  assert.equal(initialize.status, 1);
+  assert.match(initialize.stderr, /Direct mainnet initialization is disabled/u);
+
+  const manage = spawnSync(process.execPath, [
+    'scripts/manage-access-stake-config.mjs',
+    '--action', 'pause',
+    '--cluster', 'mainnet',
+    '--rpc', 'https://rpc.invalid',
+    '--program-id', KEY,
+    '--config-address', KEY,
+    '--authority-keypair', '/does/not/exist',
+  ], { encoding: 'utf8' });
+  assert.equal(manage.status, 1);
+  assert.match(manage.stderr, /Direct mainnet authority changes are disabled/u);
 });

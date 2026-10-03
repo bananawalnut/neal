@@ -27,12 +27,13 @@ Activation is intentionally split into independently verifiable stages.
    final `.so`.
 4. Record the artifact SHA-256, program key, program-data address, upgrade
    authority, reviewer, and reviewed commit outside the mutable policy file.
-5. Back up the deployment/config authority using the operator's approved key
-   custody process. Never commit or copy a keypair into this repository.
+5. Record the autonomous Squads v4 multisig, vault-index-zero PDA, 2-of-3
+   threshold, and three reviewed custodian public keys. No unilateral mainnet
+   config authority or repository-stored keypair is permitted.
 
 ## 2. Devnet rehearsal
 
-The supported end-to-end executor is dry-run by default. It requires two HTTPS
+The supported end-to-end executor is dry-run by default. It requires three HTTPS
 RPCs on distinct hosts and a `neal.access-stake-isolated-review/v1` attestation
 covering the exact release commit with zero unresolved P0-P2 findings:
 
@@ -41,6 +42,7 @@ npm run access-stake:rehearse-devnet -- \
   --release-manifest outputs/access-stake-release/release-manifest.json \
   --rpc-primary https://api.devnet.solana.com \
   --rpc-secondary "$NEAL_DEVNET_RPC_SECONDARY" \
+  --rpc-tertiary "$NEAL_DEVNET_RPC_TERTIARY" \
   --review-file outputs/isolated-review.json
 ```
 
@@ -100,7 +102,7 @@ the service rejects an ID/genesis mismatch.
 
 The repository also provides a manually dispatched `Access-stake devnet
 rehearsal` workflow. It requires the exact source commit, explicit devnet
-acknowledgement, `NEAL_DEVNET_RPC_SECONDARY`, and a base64-encoded isolated
+acknowledgement, two separately managed RPC secrets, and a base64-encoded isolated
 review attestation in `NEAL_ACCESS_REVIEW_ATTESTATION_B64`. It uploads the
 release manifest, `.so`, public review attestation, receipt, and sanitized log,
 and creates GitHub build-provenance attestations for each file; it never commits
@@ -123,10 +125,19 @@ node scripts/manage-access-stake-config.mjs \
 
 ## 3. Mainnet program and config
 
-Deploy the same reviewed artifact with the official Solana CLI. Re-run the
-initializer against the approved mainnet RPC. Mainnet submission requires both
-`--send` and `--acknowledge-mainnet`; the script prints only public receipt
-data. Independently decode the finalized config and compare every term.
+Mainnet remains outside this delivery. The direct initializer and config manager
+reject `--cluster mainnet`; they are devnet rehearsal tools only. A later,
+separately authorized ceremony must use an autonomous Squads v4 multisig with
+three hardware-wallet custodians and threshold two.
+
+Before the custodians create or approve a Squads transaction, emit the exact
+vault-index-zero inner-instruction manifest with
+`scripts/squads-access-authority.mjs plan`. Independently compare its message
+hash, program/config addresses, terms, and expected revision. After two distinct
+custodians approve, use `inspect` before execution; repeat with
+`--post-execution` to prove finalized execution and exact config state. The tool
+verifies the autonomous authority, 2-of-3 membership, vault PDA, stored message,
+approvals, status, revision, and pause state.
 
 Do not continue if the upgrade authority, program-data address, artifact hash,
 canonical mint, config PDA, amount, or lock differs from the release record.
@@ -162,9 +173,9 @@ node scripts/stage-access-stake-policy.mjs \
   --issuer-authority REVIEWED_ISSUER_AUTHORITY \
   --required-atomic-amount REVIEWED_AMOUNT \
   --minimum-lock-seconds REVIEWED_LOCK \
-  --challenge-endpoint https://matrix.nealtheseal.org/v1/challenge \
-  --verify-endpoint https://matrix.nealtheseal.org/v1/verify \
-  --token-endpoint https://matrix.nealtheseal.org/v1/access-token
+  --challenge-endpoint https://matrix.nealtheseal.org/v2/challenge \
+  --verify-endpoint https://matrix.nealtheseal.org/v2/verify \
+  --token-endpoint https://matrix.nealtheseal.org/v2/access-token
 ```
 
 Review the dry-run receipt, repeat with `--write`, build the site, and merge the
@@ -177,16 +188,15 @@ the reporting-only `--informational-planned` mode.
 
 ## Pause and recovery
 
-On incident, stop the issuer, then use `manage-access-stake-config.mjs --action
-pause`. Mainnet submission requires `--send --acknowledge-mainnet`; adding
-`--write-policy` updates the policy to the finalized revision only after the
-chain transition is verified. Never remove the unstake UI or revoke a user's
-release path. Before restarting an unpaused issuer, update
+On incident, stop the issuer, read chain state through quorum, then create,
+inspect, approve, and execute an exact Squads `pause` proposal. Never remove the
+unstake UI or revoke a user's release path. Publish paused status only after the
+new revision is finalized. Before restarting an unpaused issuer, update
 `NEAL_ACCESS_EXPECTED_REVISION` to the newly finalized revision and require
 `/readyz` to pass again.
 
 Preserve the issuer database and logs. List unresolved ephemeral-admin cleanup
-records with `reconcile.py --list`; reconcile one exact ID with
-`reconcile.py --user-id '@user:server'`. The command revokes a possibly-created
-registration token, deactivates the orphan admin, and also deactivates its own
-temporary reconciliation admin before issuance can resume.
+records with `reconcile.py --list`; inspect and resume one exact operation ID.
+Cancel-before-consumption and revoke-and-replace are explicit commands with
+phase and Synapse counter checks. Post-restore reconciliation must clear the
+durable restore marker before readiness can resume.

@@ -107,12 +107,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
       - name: Install issuer dependencies
-        run: "python -m pip install --only-binary=:all: --require-hashes --requirement requirements-deploy.txt"
+        run: "python -m pip install --no-index --find-links wheelhouse --only-binary=:all: --require-hashes --requirement requirements-deploy.txt"
         working-directory: infra/neal-access-issuer
 
       - name: Run issuer tests
-        run: python -m unittest -v test_issuer.py
+        run: python -m unittest -v test_issuer.py test_admin_broker.py
+        working-directory: infra/neal-access-issuer
+
+      - name: Build and verify offline issuer bundle
+        run: |
+          python build_bundle.py build \
+            --source . \
+            --output ../../outputs/issuer-bundle \
+            --archive ../../outputs/issuer-bundle.tar
+          python build_bundle.py verify --bundle ../../outputs/issuer-bundle
         working-directory: infra/neal-access-issuer

@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InspectRequiredBucketProtection",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketVersioning", "s3:GetBucketObjectLockConfiguration"],
+      "Resource": "arn:aws:s3:::BUCKET"
+    },
+    {
+      "Sid": "AppendImmutableEncryptedBackups",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::BUCKET/neal-access-issuer/*",
+      "Condition": {
+        "StringEquals": {"s3:object-lock-mode": "COMPLIANCE"}
+      }
+    },
+    {
+      "Sid": "ForbidReadListMutationAndRetentionBypass",
+      "Effect": "Deny",
+      "Action": [
+        "s3:GetObject*",
+        "s3:ListBucket*",
+        "s3:DeleteObject*",
+        "s3:PutObjectRetention",
+        "s3:PutObjectLegalHold",
+        "s3:BypassGovernanceRetention"
+      ],
+      "Resource": ["arn:aws:s3:::BUCKET", "arn:aws:s3:::BUCKET/neal-access-issuer/*"]
+    }
+  ]
+}

@@ -3,5 +3,17 @@
   "framework": "vite",
   "installCommand": "npm ci",
   "buildCommand": "npm run site:build",
-  "outputDirectory": "apps/site/dist"
+  "outputDirectory": "apps/site/dist",
+  "headers": [
+    {
+      "source": "/admin/:path*",
+      "headers": [
+        {"key": "Cache-Control", "value": "private, no-store, max-age=0"},
+        {"key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://matrix.nealtheseal.org; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'"},
+        {"key": "X-Content-Type-Options", "value": "nosniff"},
+        {"key": "Referrer-Policy", "value": "no-referrer"},
+        {"key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=()"}
+      ]
+    }
+  ]
 }

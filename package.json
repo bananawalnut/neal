@@ -24,6 +24,11 @@
     "access-stake:reproduce": "node scripts/reproduce-access-stake-release.mjs",
     "access-stake:rehearse-devnet": "node scripts/rehearse-access-stake-devnet.mjs",
     "access-stake:validate-evidence": "node scripts/validate-access-stake-evidence.mjs",
+    "access-stake:squads": "node scripts/squads-access-authority.mjs",
+    "access-stake:verify-production-review": "node scripts/verify-production-review.mjs",
     "access-stake:test-tooling": "node --test scripts/access-stake-tooling.test.mjs"
+  },
+  "devDependencies": {
+    "@sqds/multisig": "^2.1.4"
   }
 }

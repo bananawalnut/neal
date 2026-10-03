@@ -13,7 +13,6 @@ import { verifyAccessStake } from './verify-access-stake-readiness.mjs';
 const CONFIG_SIZE = 171;
 const CONFIG_DISCRIMINATOR = Buffer.from('NEALACFG');
 const CONFIG_SEED = Buffer.from('access-config');
-const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 
 const parseCli = (argv) => {
@@ -37,11 +36,9 @@ const parseCli = (argv) => {
   }
   if (!['pause', 'unpause'].includes(values.action)) throw new Error('--action must be pause or unpause');
   if (!['devnet', 'mainnet'].includes(values.cluster)) throw new Error('--cluster must be devnet or mainnet');
+  if (values.cluster === 'mainnet') throw new Error('Direct mainnet authority changes are disabled; create and inspect an autonomous Squads v4 proposal');
   if (values.writePolicy && !values.send) throw new Error('--write-policy requires --send');
-  if (values.cluster !== 'mainnet' && values.writePolicy) throw new Error('Only the mainnet policy may be written');
-  if (values.cluster === 'mainnet' && values.send && !values.acknowledgeMainnet) {
-    throw new Error('Mainnet submission requires --acknowledge-mainnet');
-  }
+  if (values.writePolicy) throw new Error('Direct authority tooling never writes production policy');
   return values;
 };
 
@@ -69,7 +66,7 @@ async function main() {
   const rpc = new URL(options.rpc);
   if (rpc.protocol !== 'https:') throw new Error('--rpc must use HTTPS');
   const connection = new Connection(rpc.toString(), 'finalized');
-  const expectedGenesis = options.cluster === 'mainnet' ? MAINNET_GENESIS : DEVNET_GENESIS;
+  const expectedGenesis = DEVNET_GENESIS;
   if (await connection.getGenesisHash() !== expectedGenesis) throw new Error(`RPC genesis does not match ${options.cluster}`);
 
   const secret = JSON.parse(await fs.readFile(path.resolve(options['authority-keypair']), 'utf8'));

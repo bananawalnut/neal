@@ -17,14 +17,14 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 4280,
     proxy: {
-      '^/_neal/admin/(users|server)$': adminMonitorProxy,
+      '^/_neal/admin/(session|snapshot)$': adminMonitorProxy,
     },
   },
   preview: {
     host: '127.0.0.1',
     port: 4280,
     proxy: {
-      '^/_neal/admin/(users|server)$': adminMonitorProxy,
+      '^/_neal/admin/(session|snapshot)$': adminMonitorProxy,
     },
   },
   build: {

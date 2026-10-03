@@ -1,0 +1,34 @@
+[Unit]
+Description=NEAL encrypted immutable issuer backup upload
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neal-access-issuer
+Group=neal-access-issuer
+DynamicUser=yes
+StateDirectory=neal-access-issuer
+StateDirectoryMode=0700
+LoadCredential=s3-target:/etc/neal-access-issuer-backup-s3.json
+LoadCredential=recovery-public-key:/etc/neal-access-issuer-recovery-public.pem
+ExecStart=/opt/neal-access-issuer/current/venv/bin/python /opt/neal-access-issuer/current/s3_backup.py upload --target-credential %d/s3-target --recipient-public-key %d/recovery-public-key --database /var/lib/neal-access-issuer/issuer.sqlite3 --source-commit-file /opt/neal-access-issuer/current/SOURCE_COMMIT --receipt-output /var/lib/neal-access-issuer/last-backup-receipt.json
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

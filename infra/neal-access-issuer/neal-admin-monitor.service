@@ -1,0 +1,37 @@
+[Unit]
+Description=NEAL administrator monitor broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=neal-admin-monitor
+RuntimeDirectoryMode=0750
+StateDirectory=neal-admin-monitor
+StateDirectoryMode=0700
+WorkingDirectory=/opt/neal-access-issuer/current
+EnvironmentFile=/etc/neal-access-issuer.env
+LoadCredential=broker-session-key:/etc/neal-admin-monitor-session-key.bin
+Environment=NEAL_ADMIN_MONITOR_KEY_PATH=%d/broker-session-key
+ExecStart=/opt/neal-access-issuer/current/venv/bin/python /opt/neal-access-issuer/current/admin_broker.py serve
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

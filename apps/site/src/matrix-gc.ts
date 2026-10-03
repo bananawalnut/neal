@@ -18,6 +18,7 @@ const PUBLIC_REFRESH_MS = 10_000;
 const NEAL_HOMESERVER_DOMAIN = 'matrix.nealtheseal.org';
 const SESSION_KEY = 'neal.matrix.session.v1';
 const SSO_PENDING_KEY = 'neal.matrix.sso.pending.v1';
+const REGISTRATION_RECOVERY_KEY = 'neal.matrix.registration-recovery.v2';
 const SSO_MAX_AGE_MS = 20 * 60 * 1000;
 const MATRIX_SDK_LOAD_FAILURE = 'The chat client could not load. Check your connection, reload the page, then sign in again.';
 
@@ -36,6 +37,15 @@ type PendingSso = {
   action: 'login' | 'register';
   state: string;
   createdAt: number;
+};
+
+type RegistrationRecovery = {
+  schema: 'neal.matrix-registration-recovery/v2';
+  baseUrl: string;
+  provider: string;
+  username: string;
+  uiaSession: string;
+  completed: string[];
 };
 
 type PublicMessage = {
@@ -200,6 +210,36 @@ const readPendingSso = (): PendingSso | null => {
   }
   sessionStorage.removeItem(SSO_PENDING_KEY);
   return null;
+};
+
+const saveRegistrationRecovery = (recovery: RegistrationRecovery): void => {
+  sessionStorage.setItem(REGISTRATION_RECOVERY_KEY, JSON.stringify(recovery));
+};
+
+const readRegistrationRecovery = (): RegistrationRecovery | null => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(REGISTRATION_RECOVERY_KEY) ?? 'null') as Partial<RegistrationRecovery> | null;
+    if (
+      value?.schema !== 'neal.matrix-registration-recovery/v2'
+      || typeof value.baseUrl !== 'string'
+      || typeof value.provider !== 'string'
+      || typeof value.username !== 'string'
+      || typeof value.uiaSession !== 'string'
+      || !Array.isArray(value.completed)
+      || !value.completed.every((stage) => typeof stage === 'string')
+    ) return null;
+    return value as RegistrationRecovery;
+  } catch {
+    return null;
+  }
+};
+
+const clearRegistrationRecovery = (): void => {
+  sessionStorage.removeItem(REGISTRATION_RECOVERY_KEY);
+};
+
+const publishRegistrationStage = (stage: 'registration_in_progress' | 'registration_completed'): void => {
+  document.dispatchEvent(new CustomEvent('neal:matrix-registration-stage', { detail: { stage } }));
 };
 
 const setStatus = (ui: ClientUi, message: string, state: 'idle' | 'working' | 'good' | 'bad' = 'idle'): void => {
@@ -675,73 +715,127 @@ const registrationSession = (payload: RegistrationResponse, baseUrl: string): Ma
 const completeNativeRegistration = async (
   ui: ClientUi,
   baseUrl: string,
+  provider: string,
   username: string,
   password: string,
   token: string,
 ): Promise<void> => {
-  const availability = await fetch(
-    `${baseUrl}/_matrix/client/v3/register/available?username=${encodeURIComponent(username)}`,
-    { headers: { Accept: 'application/json' } },
-  );
-  const availabilityPayload = await availability.json() as { available?: unknown; error?: unknown };
-  if (!availability.ok || availabilityPayload.available !== true) {
-    throw new Error(typeof availabilityPayload.error === 'string' ? availabilityPayload.error : 'That Matrix username is unavailable.');
-  }
-
   const registrationBody = {
     username,
     password,
     initial_device_display_name: 'NEAL web GC',
   };
-  const started = await registrationRequest(baseUrl, registrationBody);
-  let session = registrationSession(started.payload, baseUrl);
-  if (session) {
-    saveSession(session);
-    await connectSession(ui, session);
-    return;
+  const existing = readRegistrationRecovery();
+  let recovery: RegistrationRecovery;
+  let session: MatrixSession | null = null;
+  if (existing?.baseUrl === baseUrl && existing.provider === provider && existing.username === username) {
+    recovery = existing;
+  } else {
+    clearRegistrationRecovery();
+    const availability = await fetch(
+      `${baseUrl}/_matrix/client/v3/register/available?username=${encodeURIComponent(username)}`,
+      { headers: { Accept: 'application/json' } },
+    );
+    const availabilityPayload = await availability.json() as { available?: unknown; error?: unknown };
+    if (!availability.ok || availabilityPayload.available !== true) {
+      throw new Error(typeof availabilityPayload.error === 'string' ? availabilityPayload.error : 'That Matrix username is unavailable.');
+    }
+    const started = await registrationRequest(baseUrl, registrationBody);
+    session = registrationSession(started.payload, baseUrl);
+    if (session) {
+      saveSession(session);
+      await connectSession(ui, session);
+      publishRegistrationStage('registration_completed');
+      return;
+    }
+    if (started.response.status !== 401) {
+      throw new Error(typeof started.payload.error === 'string' ? started.payload.error : 'The homeserver rejected account creation.');
+    }
+    const supportsTokenFlow = started.payload.flows?.some((flow) => (
+      Array.isArray(flow.stages)
+      && flow.stages.includes('m.login.registration_token')
+      && flow.stages.includes('m.login.dummy')
+    ));
+    if (!supportsTokenFlow) {
+      throw new Error('That homeserver does not offer NEAL\'s access-token registration flow.');
+    }
+    recovery = {
+      schema: 'neal.matrix-registration-recovery/v2',
+      baseUrl,
+      provider,
+      username,
+      uiaSession: requireRegistrationSession(started.payload),
+      completed: Array.isArray(started.payload.completed)
+        ? started.payload.completed.filter((stage): stage is string => typeof stage === 'string')
+        : [],
+    };
+    saveRegistrationRecovery(recovery);
   }
-  if (started.response.status !== 401) {
-    throw new Error(typeof started.payload.error === 'string' ? started.payload.error : 'The homeserver rejected account creation.');
-  }
+  publishRegistrationStage('registration_in_progress');
 
-  const uiaSession = requireRegistrationSession(started.payload);
-  const supportsTokenFlow = started.payload.flows?.some((flow) => (
-    Array.isArray(flow.stages)
-    && flow.stages.includes('m.login.registration_token')
-    && flow.stages.includes('m.login.dummy')
-  ));
-  if (!supportsTokenFlow) {
-    throw new Error('That homeserver does not offer NEAL\'s access-token registration flow.');
-  }
-
-  const tokenStage = await registrationRequest(baseUrl, {
+  if (!recovery.completed.includes('m.login.registration_token')) {
+    const tokenStage = await registrationRequest(baseUrl, {
       ...registrationBody,
       auth: {
         type: 'm.login.registration_token',
         token,
-        session: uiaSession,
+        session: recovery.uiaSession,
       },
     });
-  session = registrationSession(tokenStage.payload, baseUrl);
-  if (!session) {
-    if (tokenStage.response.status !== 401) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The homeserver rejected that access token.');
-    }
-    const completed = Array.isArray(tokenStage.payload.completed) ? tokenStage.payload.completed : [];
-    if (!completed.includes('m.login.registration_token')) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The one-use access token was not accepted.');
-    }
-    const finalStage = await registrationRequest(baseUrl, {
-      ...registrationBody,
-      auth: { type: 'm.login.dummy', session: uiaSession },
-    });
-    session = registrationSession(finalStage.payload, baseUrl);
+    session = registrationSession(tokenStage.payload, baseUrl);
     if (!session) {
-      throw new Error(typeof finalStage.payload.error === 'string' ? finalStage.payload.error : 'The homeserver did not finish account creation.');
+      if (tokenStage.response.status !== 401) {
+        throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The homeserver rejected that access token.');
+      }
+      const completed = Array.isArray(tokenStage.payload.completed)
+        ? tokenStage.payload.completed.filter((stage): stage is string => typeof stage === 'string')
+        : [];
+      if (!completed.includes('m.login.registration_token')) {
+        throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The one-use access token was not accepted.');
+      }
+      recovery = { ...recovery, completed };
+      saveRegistrationRecovery(recovery);
+    }
+  }
+
+  if (!session) {
+    let finalFailure = 'The homeserver did not finish account creation.';
+    try {
+      const finalStage = await registrationRequest(baseUrl, {
+      ...registrationBody,
+        auth: { type: 'm.login.dummy', session: recovery.uiaSession },
+      });
+      session = registrationSession(finalStage.payload, baseUrl);
+      if (!session && typeof finalStage.payload.error === 'string') finalFailure = finalStage.payload.error;
+    } catch {
+      // A lost final response is ambiguous. The ordinary login below safely
+      // distinguishes an account that completed from one still needing UIA.
+    }
+    if (!session) {
+      try {
+        const sdk = await loadSdk();
+        const client = sdk.createClient({ baseUrl });
+        const response = await client.loginRequest({
+          type: 'm.login.password',
+          identifier: { type: 'm.id.user', user: username },
+          password,
+          initial_device_display_name: 'NEAL web GC',
+        });
+        session = {
+          baseUrl,
+          accessToken: response.access_token,
+          userId: response.user_id,
+          deviceId: response.device_id,
+        };
+      } catch {
+        throw new Error(`${finalFailure} Enter the password again to resume this same registration.`);
+      }
     }
   }
 
   saveSession(session);
+  clearRegistrationRecovery();
+  publishRegistrationStage('registration_completed');
   await connectSession(ui, session);
 };
 
@@ -950,7 +1044,7 @@ export const mountMatrixGc = (): void => {
         const sdk = await loadSdk();
         setStatus(ui, `Creating an email-free account directly with ${domain}…`, 'working');
         const baseUrl = await discoverHomeserver(sdk, domain);
-        await completeNativeRegistration(ui, baseUrl, username, password, token);
+        await completeNativeRegistration(ui, baseUrl, domain, username, password, token);
         ui.createPasswordInput.value = '';
         ui.createConfirmInput.value = '';
         ui.createTokenInput.value = '';

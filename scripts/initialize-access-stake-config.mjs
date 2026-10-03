@@ -12,7 +12,6 @@ import {
 } from '@solana/web3.js';
 
 const TOKEN_2022_PROGRAM = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
-const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 
@@ -29,9 +28,7 @@ const parseCli = (argv) => {
     if (!values[required]) throw new Error(`Missing --${required}`);
   }
   if (!['devnet', 'mainnet'].includes(values.cluster)) throw new Error('--cluster must be devnet or mainnet');
-  if (values.cluster === 'mainnet' && values.send && !values.acknowledgeMainnet) {
-    throw new Error('Mainnet submission requires --acknowledge-mainnet');
-  }
+  if (values.cluster === 'mainnet') throw new Error('Direct mainnet initialization is disabled; create and inspect an autonomous Squads v4 proposal');
   return values;
 };
 
@@ -45,7 +42,7 @@ async function main() {
   const options = parseCli(process.argv.slice(2));
   const connection = new Connection(new URL(options.rpc).toString(), 'finalized');
   const genesis = await connection.getGenesisHash();
-  const expectedGenesis = options.cluster === 'mainnet' ? MAINNET_GENESIS : DEVNET_GENESIS;
+  const expectedGenesis = DEVNET_GENESIS;
   if (genesis !== expectedGenesis) throw new Error(`RPC genesis does not match ${options.cluster}`);
 
   const secret = JSON.parse(await fs.readFile(path.resolve(options['authority-keypair']), 'utf8'));

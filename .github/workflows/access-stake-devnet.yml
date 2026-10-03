@@ -61,10 +61,10 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.12
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
       - name: Install JavaScript dependencies
         run: npm ci
@@ -88,14 +88,17 @@ jobs:
       - name: Execute isolated devnet and Matrix lifecycle
         env:
           NEAL_DEVNET_RPC_SECONDARY: ${{ secrets.NEAL_DEVNET_RPC_SECONDARY }}
+          NEAL_DEVNET_RPC_TERTIARY: ${{ secrets.NEAL_DEVNET_RPC_TERTIARY }}
         shell: bash
         run: |
           set -euo pipefail
           test -n "$NEAL_DEVNET_RPC_SECONDARY" || { echo 'NEAL_DEVNET_RPC_SECONDARY is required' >&2; exit 1; }
+          test -n "$NEAL_DEVNET_RPC_TERTIARY" || { echo 'NEAL_DEVNET_RPC_TERTIARY is required' >&2; exit 1; }
           npm run access-stake:rehearse-devnet -- \
             --release-manifest outputs/access-stake-release/release-manifest.json \
             --rpc-primary https://api.devnet.solana.com \
             --rpc-secondary "$NEAL_DEVNET_RPC_SECONDARY" \
+            --rpc-tertiary "$NEAL_DEVNET_RPC_TERTIARY" \
             --review-file outputs/isolated-review.json \
             --receipt outputs/devnet-receipt.json \
             --log outputs/devnet-log.json \

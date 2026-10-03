@@ -1,0 +1,10 @@
+{
+  "schema": "neal.solana-rpc-set/v1",
+  "mode": "quorum-2-of-3",
+  "threshold": 2,
+  "endpoints": [
+    {"id": "provider-a", "trustDomain": "operator-a", "url": "https://CREDENTIAL_BEARING_PROVIDER_A_URL"},
+    {"id": "provider-b", "trustDomain": "operator-b", "url": "https://CREDENTIAL_BEARING_PROVIDER_B_URL"},
+    {"id": "provider-c", "trustDomain": "operator-c", "url": "https://CREDENTIAL_BEARING_PROVIDER_C_URL"}
+  ]
+}

@@ -25,6 +25,61 @@ const CONFIG_DISCRIMINATOR = 'NEALACFG';
 const STAKE_DISCRIMINATOR = 'NEALSTAK';
 const NEAL_SERVER = 'matrix.nealtheseal.org';
 const UPGRADEABLE_LOADER_ID = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
+const ACCESS_OPERATION_KEY = 'neal.matrix-access-operation.v2';
+
+type AccessOperation = {
+  schema: 'neal.matrix-access-operation-tab/v1';
+  endpoint: string;
+  operationId: string;
+  receipt: string;
+};
+
+const saveAccessOperation = (value: AccessOperation): void => {
+  sessionStorage.setItem(ACCESS_OPERATION_KEY, JSON.stringify(value));
+};
+
+const readAccessOperation = (): AccessOperation | null => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(ACCESS_OPERATION_KEY) ?? 'null') as Partial<AccessOperation> | null;
+    if (
+      value?.schema !== 'neal.matrix-access-operation-tab/v1'
+      || typeof value.endpoint !== 'string'
+      || typeof value.operationId !== 'string'
+      || typeof value.receipt !== 'string'
+    ) return null;
+    return value as AccessOperation;
+  } catch {
+    return null;
+  }
+};
+
+const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+const registrationStageEndpoint = (endpoint: string): string => {
+  const url = new URL(endpoint, window.location.origin);
+  url.pathname = url.pathname.replace(/\/v2\/access-token$/u, '/v2/registration-stage');
+  if (!url.pathname.endsWith('/v2/registration-stage')) throw new Error('Invalid account-access endpoint.');
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+};
+
+const reportRegistrationStage = async (stage: 'registration_in_progress' | 'registration_completed'): Promise<void> => {
+  const operation = readAccessOperation();
+  if (!operation) return;
+  const response = await fetch(registrationStageEndpoint(operation.endpoint), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      schema: 'neal.matrix-registration-stage/v2',
+      operationId: operation.operationId,
+      stage,
+    }),
+  });
+  if (!response.ok && response.status !== 409) return;
+  if (stage === 'registration_completed') sessionStorage.removeItem(ACCESS_OPERATION_KEY);
+};
 
 type AccessStakePolicy = {
   status: 'planned' | 'active' | 'paused';
@@ -46,6 +101,7 @@ type AccessStakePolicy = {
 type WalletPolicy = {
   schema: 'neal.wallet-policy/v1';
   identity: { challengeEndpoint: string | null; verifyEndpoint: string | null };
+  verification: { mode: 'single-rpc-devnet-preview' | 'quorum-2-of-3'; providerCount: number; threshold: number };
   holderProof: { rpcEndpoint: string; commitment: 'confirmed' | 'finalized' };
   accessStake?: AccessStakePolicy;
 };
@@ -60,6 +116,18 @@ type ConfiguredPolicy = AccessStakePolicy & {
   issuerAuthority: string;
   requiredAtomicAmount: string;
   minimumLockSeconds: number;
+};
+
+type TokenOperationResponse = {
+  schema?: unknown;
+  state?: unknown;
+  operationId?: unknown;
+  receipt?: unknown;
+  token?: unknown;
+  expiresAt?: unknown;
+  retryAfterMs?: unknown;
+  code?: unknown;
+  message?: unknown;
 };
 
 type ConfigState = {
@@ -119,6 +187,9 @@ const parseConfiguredPolicy = (walletPolicy: WalletPolicy, canonicalMint: string
   try {
     if (
       !['active', 'paused'].includes(policy.status)
+      || walletPolicy.verification?.mode !== 'quorum-2-of-3'
+      || walletPolicy.verification?.providerCount !== 3
+      || walletPolicy.verification?.threshold !== 2
       || policy.contractVersion !== 2
       || !validPublicKey(policy.programId)
       || !validPublicKey(policy.programDataAddress)
@@ -667,22 +738,64 @@ export async function mountMatrixAccessStake(
           });
           await sendInstructions(connection, session, [claim]);
         }
-        setStatus(ui, 'Finalized claim found. Creating one short-lived registration token…', 'busy');
-        const tokenResponse = await fetch(policy.tokenEndpoint, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v1' }),
-        });
-        const body = await tokenResponse.json() as { token?: unknown; error?: unknown };
-        if (tokenResponse.status === 401) {
-          walletController.invalidateServerAuthentication();
-          throw new Error('Wallet session expired. Verify the wallet again; the stake will not be repeated.');
+        setStatus(ui, 'Finalized claim found. Recovering the registration operation…', 'busy');
+        let ready: TokenOperationResponse | null = null;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const tokenResponse = await fetch(policy.tokenEndpoint, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v2' }),
+          });
+          const body = await tokenResponse.json() as TokenOperationResponse;
+          if (tokenResponse.status === 401) {
+            walletController.invalidateServerAuthentication();
+            throw new Error('Wallet session expired. Verify the wallet again; the stake will not be repeated.');
+          }
+          if (
+            tokenResponse.status === 202
+            && body.state === 'processing'
+            && typeof body.operationId === 'string'
+            && typeof body.receipt === 'string'
+          ) {
+            saveAccessOperation({
+              schema: 'neal.matrix-access-operation-tab/v1',
+              endpoint: policy.tokenEndpoint,
+              operationId: body.operationId,
+              receipt: body.receipt,
+            });
+            const headerSeconds = Number(tokenResponse.headers.get('Retry-After'));
+            const bodyDelay = typeof body.retryAfterMs === 'number' ? body.retryAfterMs : 2_000;
+            const wait = Number.isFinite(headerSeconds) && headerSeconds > 0
+              ? headerSeconds * 1_000
+              : bodyDelay;
+            setStatus(ui, 'The claim is safely processing. Waiting for finalized recovery…', 'busy');
+            await delay(Math.min(8_000, Math.max(500, wait * 2 ** Math.min(attempt, 2))));
+            continue;
+          }
+          if (
+            tokenResponse.ok
+            && body.state === 'token_ready'
+            && typeof body.token === 'string'
+            && body.token
+            && typeof body.operationId === 'string'
+            && typeof body.receipt === 'string'
+          ) {
+            saveAccessOperation({
+              schema: 'neal.matrix-access-operation-tab/v1',
+              endpoint: policy.tokenEndpoint,
+              operationId: body.operationId,
+              receipt: body.receipt,
+            });
+            ready = body;
+            break;
+          }
+          throw new Error(typeof body.message === 'string' ? body.message : 'The access-token issuer rejected this receipt.');
         }
-        if (!tokenResponse.ok || typeof body.token !== 'string' || !body.token) {
-          throw new Error(typeof body.error === 'string' ? body.error : 'The access-token issuer rejected this receipt.');
+        if (!ready || typeof ready.token !== 'string') {
+          throw new Error('The claim is still processing. Use GET ACCESS TOKEN again; the stake will not be repeated.');
         }
-        ui.tokenInput.value = body.token;
+        ui.tokenInput.value = ready.token;
         ui.tokenInput.dispatchEvent(new Event('input', { bubbles: true }));
         setStatus(ui, 'One-use access token ready. Choose a username and password to create the account.', 'good');
       } catch (error) {
@@ -739,5 +852,11 @@ export async function mountMatrixAccessStake(
 
   ui.domainInput.addEventListener('input', () => void render());
   document.addEventListener('neal:wallet-session-change', () => void render());
+  document.addEventListener('neal:matrix-registration-stage', (event) => {
+    const stage = (event as CustomEvent<{ stage?: unknown }>).detail?.stage;
+    if (stage === 'registration_in_progress' || stage === 'registration_completed') {
+      void reportRegistrationStage(stage);
+    }
+  });
   await render();
 }

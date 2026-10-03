@@ -17,6 +17,11 @@
     "challengeEndpoint": null,
     "verifyEndpoint": null
   },
+  "verification": {
+    "mode": "quorum-2-of-3",
+    "providerCount": 3,
+    "threshold": 2
+  },
   "holderProof": {
     "rpcEndpoint": "https://solana-rpc.publicnode.com",
     "commitment": "finalized",

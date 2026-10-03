@@ -71,7 +71,7 @@ export const parseCli = (argv) => {
     else if (argument.startsWith('--')) values[argument.slice(2)] = argv[++index];
     else throw new Error(`Unexpected argument: ${argument}`);
   }
-  for (const required of ['release-manifest', 'rpc-primary', 'rpc-secondary', 'review-file']) {
+  for (const required of ['release-manifest', 'rpc-primary', 'rpc-secondary', 'rpc-tertiary', 'review-file']) {
     if (!values[required]) throw new Error(`Missing --${required}`);
   }
   if (values.acknowledgeDevnet && !values.execute) throw new Error('--acknowledge-devnet requires --execute');
@@ -152,22 +152,21 @@ const assertPlannedPolicy = async () => {
   }
 };
 
-const agreement = async (primary, secondary) => {
-  const [firstGenesis, secondGenesis] = await Promise.all([primary.getGenesisHash(), secondary.getGenesisHash()]);
-  if (firstGenesis !== DEVNET_GENESIS || secondGenesis !== DEVNET_GENESIS) throw new Error('Both RPCs must report Solana devnet genesis');
-  const slots = await Promise.all([primary.getSlot('finalized'), secondary.getSlot('finalized')]);
+const agreement = async (connections) => {
+  const genesis = await Promise.all(connections.map((connection) => connection.getGenesisHash()));
+  if (genesis.some((value) => value !== DEVNET_GENESIS)) throw new Error('All RPCs must report Solana devnet genesis');
+  const slots = await Promise.all(connections.map((connection) => connection.getSlot('finalized')));
   for (let offset = 0; offset < 64; offset += 1) {
     const slot = Math.min(...slots) - offset;
     if (slot <= 0) break;
-    const blocks = await Promise.all([
-      primary.getBlock(slot, { commitment: 'finalized', transactionDetails: 'none', rewards: false, maxSupportedTransactionVersion: 0 }),
-      secondary.getBlock(slot, { commitment: 'finalized', transactionDetails: 'none', rewards: false, maxSupportedTransactionVersion: 0 }),
-    ]);
-    if (blocks[0] && blocks[1]) {
-      if (blocks[0].blockhash !== blocks[1].blockhash || blocks[0].previousBlockhash !== blocks[1].previousBlockhash) {
+    const blocks = await Promise.all(connections.map((connection) => connection.getBlock(
+      slot, { commitment: 'finalized', transactionDetails: 'none', rewards: false, maxSupportedTransactionVersion: 0 },
+    )));
+    if (blocks.every(Boolean)) {
+      if (blocks.some((block) => block.blockhash !== blocks[0].blockhash || block.previousBlockhash !== blocks[0].previousBlockhash)) {
         throw new Error('Independent RPCs disagree on a finalized devnet block');
       }
-      return { genesisHash: firstGenesis, slot };
+      return { genesisHash: genesis[0], slot };
     }
   }
   throw new Error('Independent RPCs could not establish a shared finalized devnet block');
@@ -291,8 +290,8 @@ const siwsMessage = (input) => {
 const issuerSession = async (wallet) => {
   const address = wallet.publicKey.toBase58();
   const common = { Origin: 'https://rehearsal.neal.invalid', 'Content-Type': 'application/json' };
-  const challengeResponse = await fetch('http://127.0.0.1:18009/v1/challenge', {
-    method: 'POST', headers: common, body: JSON.stringify({ schema: 'neal.wallet-challenge-request/v1', address, chain: 'solana:devnet' }),
+  const challengeResponse = await fetch('http://127.0.0.1:18009/v2/challenge', {
+    method: 'POST', headers: common, body: JSON.stringify({ schema: 'neal.wallet-challenge-request/v2', address, chain: 'solana:devnet' }),
   });
   if (!challengeResponse.ok) throw new Error('Rehearsal issuer rejected the wallet challenge');
   const challenge = await challengeResponse.json();
@@ -301,7 +300,7 @@ const issuerSession = async (wallet) => {
   const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]), format: 'der', type: 'pkcs8' });
   const signature = signBytes(null, message, privateKey);
   const verification = {
-    schema: 'neal.wallet-verification/v1',
+    schema: 'neal.wallet-verification/v2',
     method: 'solana:signIn',
     signInInput: challenge.signInInput,
     output: {
@@ -311,7 +310,7 @@ const issuerSession = async (wallet) => {
       signatureType: 'ed25519',
     },
   };
-  const response = await fetch('http://127.0.0.1:18009/v1/verify', { method: 'POST', headers: common, body: JSON.stringify(verification) });
+  const response = await fetch('http://127.0.0.1:18009/v2/verify', { method: 'POST', headers: common, body: JSON.stringify(verification) });
   if (!response.ok) throw new Error('Rehearsal issuer rejected the signed wallet challenge');
   const cookie = response.headers.get('set-cookie')?.split(';', 1)[0];
   if (!cookie) throw new Error('Rehearsal issuer did not create a wallet session');
@@ -319,13 +318,29 @@ const issuerSession = async (wallet) => {
 };
 
 const requestAccessToken = async (cookie) => {
-  const response = await fetch('http://127.0.0.1:18009/v1/access-token', {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const response = await fetch('http://127.0.0.1:18009/v2/access-token', {
+      method: 'POST',
+      headers: { Origin: 'https://rehearsal.neal.invalid', 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v2' }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.status !== 202) return { response, body };
+    if (body.state !== 'processing' || typeof body.operationId !== 'string' || 'token' in body) {
+      throw new Error('Issuer returned an invalid v2 processing response');
+    }
+    await sleep(Math.min(5_000, Math.max(250, Number(body.retryAfterMs) || 2_000)));
+  }
+  throw new Error('Issuer v2 operation did not converge within the rehearsal retry bound');
+};
+
+const recordRegistrationStage = async (cookie, operationId, stage) => {
+  const response = await fetch('http://127.0.0.1:18009/v2/registration-stage', {
     method: 'POST',
     headers: { Origin: 'https://rehearsal.neal.invalid', 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v1' }),
+    body: JSON.stringify({ schema: 'neal.matrix-registration-stage/v2', operationId, stage }),
   });
-  const body = await response.json().catch(() => ({}));
-  return { response, body };
+  if (!response.ok) throw new Error(`Issuer rejected durable registration stage ${stage}`);
 };
 
 export const matrixAttempt = async (registrationToken, shouldSucceed) => {
@@ -546,11 +561,18 @@ const attestProgram = async (connection, programId, programData, expectedHash) =
   return deployedHash;
 };
 
-const startIssuer = async ({ python, runtime, rpcPrimary, rpcSecondary, programId, programData, programHash, config, mint }) => {
+const startIssuer = async ({ python, runtime, rpcEndpoints, programId, programData, programHash, config, mint }) => {
+  const rpcSet = path.join(runtime, 'solana-rpc-set.json');
+  await writePrivate(rpcSet, `${JSON.stringify({
+    schema: 'neal.solana-rpc-set/v1',
+    mode: 'quorum-2-of-3',
+    threshold: 2,
+    endpoints: rpcEndpoints.map((url, index) => ({ id: `provider-${index + 1}`, trustDomain: `rehearsal-${index + 1}`, url })),
+  })}\n`);
   const environment = {
     ...process.env,
     NEAL_ACCESS_DATABASE: path.join(runtime, 'issuer.sqlite3'),
-    NEAL_ACCESS_SOLANA_RPCS: `${rpcPrimary},${rpcSecondary}`,
+    NEAL_ACCESS_SOLANA_RPC_SET_FILE: rpcSet,
     NEAL_ACCESS_CHAIN_ID: 'solana:devnet',
     NEAL_ACCESS_SOLANA_GENESIS_HASH: DEVNET_GENESIS,
     NEAL_ACCESS_PROGRAM_ID: programId.toBase58(),
@@ -565,6 +587,9 @@ const startIssuer = async ({ python, runtime, rpcPrimary, rpcSecondary, programI
     NEAL_ACCESS_PUBLIC_ORIGIN: 'https://rehearsal.neal.invalid',
     NEAL_ACCESS_MATRIX_URL: 'http://127.0.0.1:18010',
     NEAL_ACCESS_MATRIX_SECRET_FILE: path.join(runtime, 'matrix-registration-secret'),
+    NEAL_ACCESS_RECOVERY_KEY_FILE: path.join(runtime, 'issuer-recovery-key'),
+    NEAL_ACCESS_RECOVERY_KEY_VERSION: '1',
+    NEAL_ACCESS_MATRIX_SERVER_NAME: 'rehearsal.neal.invalid',
     NEAL_ACCESS_BIND: '127.0.0.1',
     NEAL_ACCESS_PORT: '18009',
   };
@@ -574,10 +599,11 @@ const startIssuer = async ({ python, runtime, rpcPrimary, rpcSecondary, programI
 };
 
 const installPython = async (runtime) => {
-  await run('python3.13', ['-m', 'venv', path.join(runtime, 'venv')], { failure: 'Python 3.13 is required for the rehearsal issuer' });
+  await run('python3.12', ['-m', 'venv', path.join(runtime, 'venv')], { failure: 'Python 3.12 is required for the rehearsal issuer' });
   const python = path.join(runtime, 'venv/bin/python');
   await run(python, [
-    '-m', 'pip', 'install', '--disable-pip-version-check', '--only-binary=:all:', '--require-hashes',
+    '-m', 'pip', 'install', '--disable-pip-version-check', '--no-index',
+    '--find-links', path.join(ISSUER_DIR, 'wheelhouse'), '--only-binary=:all:', '--require-hashes',
     '--requirement', path.join(ISSUER_DIR, 'requirements-deploy.txt'),
   ], { failure: 'Could not install the hash-locked issuer dependencies' });
   return python;
@@ -646,6 +672,7 @@ async function execute(options, release, review, rpcAgreement) {
       writeKeypair(path.join(runtime, 'deployer.json'), deployer),
       writeKeypair(path.join(runtime, 'issuer.json'), issuer),
       writeKeypair(path.join(runtime, 'program.json'), programKeypair),
+      writePrivate(path.join(runtime, 'issuer-recovery-key'), randomBytes(32)),
       ...Object.entries(wallets).map(([name, wallet]) => writeKeypair(path.join(runtime, `${name}.json`), wallet)),
     ]);
     const matrixSecret = randomBytes(48).toString('base64url');
@@ -699,7 +726,7 @@ async function execute(options, release, review, rpcAgreement) {
     mark('two-configs-finalized');
 
     ({ child: issuerProcess, environment: issuerEnvironment } = await startIssuer({
-      python, runtime, rpcPrimary: options['rpc-primary'], rpcSecondary: options['rpc-secondary'],
+      python, runtime, rpcEndpoints: [options['rpc-primary'], options['rpc-secondary'], options['rpc-tertiary']],
       programId, programData, programHash, config: parityConfig, mint,
     }));
     await waitHttp('http://127.0.0.1:18009/readyz', [200]);
@@ -721,7 +748,9 @@ async function execute(options, release, review, rpcAgreement) {
     });
     const issued = await requestAccessToken(cookieOne);
     if (!issued.response.ok || typeof issued.body.token !== 'string') throw new Error('Issuer did not return the first one-use token');
+    await recordRegistrationStage(cookieOne, issued.body.operationId, 'registration_in_progress');
     await matrixAttempt(issued.body.token, true);
+    await recordRegistrationStage(cookieOne, issued.body.operationId, 'registration_completed');
     await matrixAttempt(issued.body.token, false);
     const consumed = await readReceipt(connection, parityOneStake.receipt);
     if (consumed.issuedAt <= 0) throw new Error('Issuer did not finalize on-chain consumption before Matrix issuance');
@@ -733,12 +762,17 @@ async function execute(options, release, review, rpcAgreement) {
       cwd: ISSUER_DIR, failure: 'Encrypted issuer restore failed',
     });
     ({ child: issuerProcess, environment: issuerEnvironment } = await startIssuer({
-      python, runtime, rpcPrimary: options['rpc-primary'], rpcSecondary: options['rpc-secondary'],
+      python, runtime, rpcEndpoints: [options['rpc-primary'], options['rpc-secondary'], options['rpc-tertiary']],
       programId, programData, programHash, config: parityConfig, mint,
     }));
+    await waitHttp('http://127.0.0.1:18009/readyz', [503]);
+    await jsonCommand(python, [
+      RECONCILE, '--environment-file', path.join(runtime, 'no-environment-file'), '--post-restore',
+    ], { cwd: ISSUER_DIR, env: issuerEnvironment, failure: 'Post-restore reconciliation failed' });
     await waitHttp('http://127.0.0.1:18009/readyz', [200]);
-    const replay = await requestAccessToken(cookieOne);
-    if (replay.response.status !== 422 || replay.body.error !== 'Finalized stake receipt is not eligible') {
+    const replayCookie = await issuerSession(wallets.parityOne);
+    const replay = await requestAccessToken(replayCookie);
+    if (replay.response.status !== 422 || replay.body.message !== 'Finalized stake receipt is not eligible') {
       throw new Error('Stale restore did not fail specifically on finalized on-chain consumption');
     }
     mark('encrypted-stale-restore-replay-rejected');
@@ -888,7 +922,10 @@ async function main() {
   const options = parseCli(process.argv.slice(2));
   const primaryUrl = checkedUrl(options['rpc-primary'], '--rpc-primary');
   const secondaryUrl = checkedUrl(options['rpc-secondary'], '--rpc-secondary');
-  if (primaryUrl.hostname === secondaryUrl.hostname) throw new Error('Primary and secondary RPCs must use independent hostnames');
+  const tertiaryUrl = checkedUrl(options['rpc-tertiary'], '--rpc-tertiary');
+  if (new Set([primaryUrl.hostname, secondaryUrl.hostname, tertiaryUrl.hostname]).size !== 3) {
+    throw new Error('All three RPCs must use independent hostnames');
+  }
   const release = await readAndValidateReleaseManifest(options['release-manifest']);
   const review = validateReview(JSON.parse(await fs.readFile(path.resolve(options['review-file']), 'utf8')), release.manifest.sourceCommit);
   await assertPlannedPolicy();
@@ -899,10 +936,11 @@ async function main() {
   }
   let rpcAgreement;
   try {
-    rpcAgreement = await agreement(
+    rpcAgreement = await agreement([
       new Connection(primaryUrl.toString(), 'finalized'),
       new Connection(secondaryUrl.toString(), 'finalized'),
-    );
+      new Connection(tertiaryUrl.toString(), 'finalized'),
+    ]);
   } catch {
     throw new Error('Independent RPC devnet/finality preflight failed');
   }

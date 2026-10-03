@@ -1,0 +1,126 @@
+name: Access-stake release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact protected main commit to package
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: access-stake-release-candidate
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    environment: access-stake-release
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require exact current protected main
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-parse origin/main)" = "$SOURCE_COMMIT"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Reproduce SBF twice
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: npm run access-stake:reproduce -- --commit "$SOURCE_COMMIT" --output outputs/access-stake-release
+
+      - name: Build verified issuer bundle
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          python infra/neal-access-issuer/build_bundle.py build \
+            --source infra/neal-access-issuer \
+            --output "outputs/neal-access-issuer-$SOURCE_COMMIT" \
+            --archive "outputs/neal-access-issuer-$SOURCE_COMMIT.tar"
+
+      - name: Restore independent review and Sigstore bundle
+        env:
+          REVIEW_B64: ${{ secrets.NEAL_PRODUCTION_REVIEW_B64 }}
+          REVIEW_SIGSTORE_B64: ${{ secrets.NEAL_PRODUCTION_REVIEW_SIGSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_B64"
+          test -n "$REVIEW_SIGSTORE_B64"
+          printf '%s' "$REVIEW_B64" | base64 --decode > outputs/production-review.json
+          printf '%s' "$REVIEW_SIGSTORE_B64" | base64 --decode > outputs/production-review.sigstore.json
+          chmod 600 outputs/production-review.json outputs/production-review.sigstore.json
+
+      - name: Verify signed exact-artifact review
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          REVIEWER_IDENTITY: ${{ secrets.NEAL_PRODUCTION_REVIEWER_IDENTITY }}
+          REVIEWER_ISSUER: ${{ secrets.NEAL_PRODUCTION_REVIEWER_OIDC_ISSUER }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEWER_IDENTITY"
+          test -n "$REVIEWER_ISSUER"
+          npm run access-stake:verify-production-review -- \
+            --review outputs/production-review.json \
+            --sigstore-bundle outputs/production-review.sigstore.json \
+            --release-manifest outputs/access-stake-release/release-manifest.json \
+            --sbf outputs/access-stake-release/neal_access_stake.so \
+            --issuer-bundle "outputs/neal-access-issuer-$SOURCE_COMMIT.tar" \
+            --source-commit "$SOURCE_COMMIT" \
+            --expected-identity "$REVIEWER_IDENTITY" \
+            --expected-issuer "$REVIEWER_ISSUER"
+
+      - name: Attest release lineage
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            outputs/access-stake-release/release-manifest.json
+            outputs/access-stake-release/neal_access_stake.so
+            outputs/neal-access-issuer-${{ inputs.source_commit }}.tar
+            outputs/production-review.json
+            outputs/production-review.sigstore.json
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: neal-access-release-${{ inputs.source_commit }}
+          path: |
+            outputs/access-stake-release/release-manifest.json
+            outputs/access-stake-release/neal_access_stake.so
+            outputs/neal-access-issuer-${{ inputs.source_commit }}.tar
+            outputs/production-review.json
+            outputs/production-review.sigstore.json
+          if-no-files-found: error

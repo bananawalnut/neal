@@ -1,0 +1,13 @@
+{
+  "schema": "neal.s3-backup-target/v1",
+  "endpointUrl": "https://S3_ENDPOINT",
+  "region": "REGION",
+  "bucket": "BUCKET",
+  "prefix": "neal-access-issuer",
+  "accessKeyId": "READ_ONLY_RESTORE_ACCESS_KEY",
+  "secretAccessKey": "READ_ONLY_RESTORE_SECRET_KEY",
+  "sessionToken": null,
+  "retentionDays": 30,
+  "credentialMode": "read-only-restore",
+  "addressingStyle": "virtual"
+}
