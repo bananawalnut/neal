@@ -512,7 +512,7 @@ export const configCommand = async ({ runtime, artifactFile, rpcSetFile, program
   return { ...result, address: new PublicKey(result.configAddress) };
 };
 
-const pauseCommand = async ({ runtime, rpcSetFile, programId, config, action }) => jsonCommand(process.execPath, [
+export const pauseCommand = async ({ runtime, rpcSetFile, programId, config, action }) => jsonCommand(process.execPath, [
   path.join(ROOT, 'scripts/manage-access-stake-config.mjs'),
   '--action', action, '--cluster', 'devnet', '--rpc-set-file', rpcSetFile,
   '--program-id', programId.toBase58(), '--config-address', config.toBase58(),

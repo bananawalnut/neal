@@ -67,6 +67,7 @@ Durable claim phases are monotonic:
 ```text
 RESERVED
 → CHAIN_SUBMITTED
+→ CHAIN_RETRY_REQUIRED (only after finalized quorum proves the stored blockhash expired)
 → CHAIN_CONSUMED
 → MATRIX_TOKEN_ENSURING
 → ADMIN_CLEANUP_PENDING
@@ -78,7 +79,8 @@ RESERVED
 `attention_required` is independent of phase. Legacy rows become
 `LEGACY_REVIEW`; they are never reinterpreted or automatically reissued. Each
 claim persists an opaque operation ID, receipt, wallet, config/revision,
-transaction signature and signed bytes, recovery-key version, token generation
+transaction signature, signed bytes, blockhash and last-valid block height,
+recovery-key version, token generation
 and commitment, expiry, Matrix counters, timestamps, and stable error code.
 
 Registration tokens are derived with domain-separated HMAC from a dedicated

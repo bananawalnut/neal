@@ -53,12 +53,18 @@ RPC_TIMEOUT_SECONDS = 5
 RPC_SET_SCHEMA = "neal.solana-rpc-set/v1"
 RPC_PREVIEW_MODE = "single-rpc-devnet-preview"
 RPC_QUORUM_MODE = "quorum-2-of-3"
+APPROVED_RPC_PROVIDERS = (
+    ("helius", "helius.xyz", "helius-rpc.com"),
+    ("quicknode", "quicknode.com", "quiknode.pro"),
+    ("alchemy", "alchemy.com", "alchemy.com"),
+)
 MAX_CHALLENGES = 10_000
 MAX_SESSIONS = 10_000
 MAX_RATE_KEYS = 50_000
 CLAIM_PHASES = (
     "RESERVED",
     "CHAIN_SUBMITTED",
+    "CHAIN_RETRY_REQUIRED",
     "CHAIN_CONSUMED",
     "MATRIX_TOKEN_ENSURING",
     "ADMIN_CLEANUP_PENDING",
@@ -278,6 +284,25 @@ class RpcSet:
                 raise IssuerError("Solana RPC provider hosts must be distinct", HTTPStatus.INTERNAL_SERVER_ERROR)
             if len({endpoint.trust_domain for endpoint in endpoints}) != 3:
                 raise IssuerError("Solana RPC trust domains must be distinct", HTTPStatus.INTERNAL_SERVER_ERROR)
+            approved_providers: set[str] = set()
+            for endpoint in endpoints:
+                matches = [
+                    provider
+                    for provider, trust_domain, host_suffix in APPROVED_RPC_PROVIDERS
+                    if (
+                        endpoint.id == provider or endpoint.id.startswith(f"{provider}-")
+                    )
+                    and endpoint.trust_domain == trust_domain
+                    and (endpoint.host == host_suffix or endpoint.host.endswith(f".{host_suffix}"))
+                ]
+                if len(matches) != 1:
+                    raise IssuerError(
+                        "Solana RPC provider identity is not in the approved trust registry",
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                approved_providers.add(matches[0])
+            if len(approved_providers) != 3:
+                raise IssuerError("Solana RPC providers are not independently approved", HTTPStatus.INTERNAL_SERVER_ERROR)
         else:
             raise IssuerError("Solana RPC verification mode is unsupported", HTTPStatus.INTERNAL_SERVER_ERROR)
         return cls(mode=mode, threshold=threshold, endpoints=tuple(endpoints))
@@ -555,6 +580,8 @@ class Store:
                   phase TEXT NOT NULL,
                   attention_required INTEGER NOT NULL DEFAULT 0 CHECK (attention_required IN (0, 1)),
                   chain_signature TEXT,
+                  chain_blockhash TEXT,
+                  chain_last_valid_block_height INTEGER,
                   signed_transaction BLOB,
                   recovery_key_version INTEGER NOT NULL,
                   token_generation INTEGER NOT NULL DEFAULT 0,
@@ -607,6 +634,13 @@ class Store:
                 "INSERT OR IGNORE INTO schema_metadata(key, value) VALUES ('ledger_generation', ?)",
                 (secrets.token_hex(16),),
             )
+            claim_columns = {
+                row[1] for row in database.execute("PRAGMA table_info(claim_operations)").fetchall()
+            }
+            if "chain_blockhash" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_blockhash TEXT")
+            if "chain_last_valid_block_height" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_last_valid_block_height INTEGER")
             if "legacy_claim_rows" in {
                 row[0] for row in database.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -640,7 +674,7 @@ class Store:
                     )
                 if "registration_token" in columns:
                     database.execute("UPDATE legacy_claim_rows SET registration_token = NULL")
-            database.execute("PRAGMA user_version = 3")
+            database.execute("PRAGMA user_version = 4")
 
     def enforce_storage_limit(self) -> None:
         total = sum(
@@ -802,6 +836,8 @@ class Store:
     ) -> sqlite3.Row:
         allowed = {
             "chain_signature",
+            "chain_blockhash",
+            "chain_last_valid_block_height",
             "signed_transaction",
             "token_commitment",
             "expires_at_ms",
@@ -1062,6 +1098,9 @@ class SolanaVerifier:
         )
         try:
             with urllib.request.urlopen(request, timeout=RPC_TIMEOUT_SECONDS) as response:
+                response_host = urllib.parse.urlsplit(response.geturl()).hostname
+                if not response_host or response_host.rstrip(".").lower().encode("idna").decode("ascii") != endpoint.host:
+                    raise IssuerError("Solana RPC redirect changed the approved provider host", HTTPStatus.SERVICE_UNAVAILABLE)
                 raw = response.read(MAX_RPC_RESPONSE_BYTES + 1)
                 if len(raw) > MAX_RPC_RESPONSE_BYTES:
                     raise IssuerError("Solana RPC response exceeds the size limit", HTTPStatus.SERVICE_UNAVAILABLE)
@@ -1252,18 +1291,22 @@ class SolanaVerifier:
             if not value:
                 return bytes(encoded)
 
-    def consume(
-        self,
-        address: str,
-        receipt_address: str,
-        persist_signed: Callable[[bytes], None] | None = None,
-    ) -> str:
+    def _build_consume_transaction(
+        self, address: str, receipt_address: str
+    ) -> tuple[bytes, str, str, int]:
         expected = self.receipt_address(address)
         if receipt_address != expected:
             raise IssuerError("Stake receipt address changed", HTTPStatus.CONFLICT)
         latest = self.rpc("getLatestBlockhash", [{"commitment": "finalized"}])
-        blockhash = latest.get("value", {}).get("blockhash") if isinstance(latest, dict) else None
-        if not isinstance(blockhash, str) or len(base58_decode(blockhash)) != 32:
+        value = latest.get("value", {}) if isinstance(latest, dict) else {}
+        blockhash = value.get("blockhash")
+        last_valid_block_height = value.get("lastValidBlockHeight")
+        if (
+            not isinstance(blockhash, str)
+            or len(base58_decode(blockhash)) != 32
+            or not isinstance(last_valid_block_height, int)
+            or last_valid_block_height <= 0
+        ):
             raise IssuerError("Solana RPC returned no usable blockhash", HTTPStatus.SERVICE_UNAVAILABLE)
         receipt_key = public_key(receipt_address)
         clock_key = public_key("SysvarC1ock11111111111111111111111111111111")
@@ -1281,11 +1324,37 @@ class SolanaVerifier:
         message.append(5)
         signature = self.issuer_private.sign(bytes(message))
         transaction = self.shortvec(1) + signature + bytes(message)
-        if persist_signed:
-            persist_signed(transaction)
-        tx_signature = self.broadcast(transaction)
-        if not isinstance(tx_signature, str):
-            raise IssuerError("Solana RPC returned no transaction signature", HTTPStatus.SERVICE_UNAVAILABLE)
+        return transaction, base58_encode(signature), blockhash, last_valid_block_height
+
+    def _stored_consume_signature(
+        self, address: str, receipt_address: str, transaction: bytes, blockhash: str
+    ) -> str:
+        if not isinstance(transaction, bytes) or len(transaction) != 270 or transaction[0] != 1:
+            raise IssuerError("Stored claim transaction is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
+        signature = transaction[1:65]
+        message = transaction[65:]
+        expected_keys = b"".join((
+            self.issuer_public,
+            public_key(receipt_address),
+            self.config_key,
+            public_key("SysvarC1ock11111111111111111111111111111111"),
+            self.program,
+        ))
+        if (
+            receipt_address != self.receipt_address(address)
+            or message[:4] != bytes((1, 0, 3, 5))
+            or message[4:164] != expected_keys
+            or message[164:196] != base58_decode(blockhash)
+            or message[196:] != bytes((1, 4, 4, 0, 2, 1, 3, 1, 5))
+        ):
+            raise IssuerError("Stored claim transaction does not match the claim", HTTPStatus.SERVICE_UNAVAILABLE)
+        try:
+            Ed25519PublicKey.from_public_bytes(self.issuer_public).verify(signature, message)
+        except (InvalidSignature, ValueError) as error:
+            raise IssuerError("Stored claim transaction signature is invalid", HTTPStatus.SERVICE_UNAVAILABLE) from error
+        return base58_encode(signature)
+
+    def _confirm_consumption(self, receipt_address: str, tx_signature: str) -> str:
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             result = self.rpc("getSignatureStatuses", [[tx_signature], {"searchTransactionHistory": True}])
@@ -1299,6 +1368,63 @@ class SolanaVerifier:
                     return tx_signature
             time.sleep(0.5)
         raise IssuerError("On-chain claim consumption did not finalize", HTTPStatus.SERVICE_UNAVAILABLE)
+
+    def _broadcast_consume(self, transaction: bytes, expected_signature: str, receipt_address: str) -> str:
+        tx_signature = self.broadcast(transaction)
+        if tx_signature != expected_signature:
+            raise IssuerError("Solana RPC returned the wrong transaction signature", HTTPStatus.SERVICE_UNAVAILABLE)
+        return self._confirm_consumption(receipt_address, expected_signature)
+
+    def consume(
+        self,
+        address: str,
+        receipt_address: str,
+        persist_signed: Callable[[bytes, str, str, int], None] | None = None,
+    ) -> str:
+        transaction, expected_signature, blockhash, last_valid_block_height = self._build_consume_transaction(
+            address, receipt_address
+        )
+        if persist_signed:
+            persist_signed(transaction, expected_signature, blockhash, last_valid_block_height)
+        return self._broadcast_consume(transaction, expected_signature, receipt_address)
+
+    def resume_consume(
+        self,
+        address: str,
+        receipt_address: str,
+        signed_transaction: bytes,
+        stored_signature: str,
+        blockhash: str,
+        last_valid_block_height: int,
+        replace_signed: Callable[[bytes, str, str, int], None],
+    ) -> str:
+        """Recover an ambiguously submitted consume without leaving CHAIN_SUBMITTED wedged."""
+        if (
+            not isinstance(stored_signature, str)
+            or not isinstance(blockhash, str)
+            or not isinstance(last_valid_block_height, int)
+            or last_valid_block_height <= 0
+        ):
+            raise IssuerError("Stored claim submission metadata is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
+        derived_signature = self._stored_consume_signature(
+            address, receipt_address, signed_transaction, blockhash
+        )
+        if not hmac.compare_digest(derived_signature, stored_signature):
+            raise IssuerError("Stored claim signature does not match its transaction", HTTPStatus.SERVICE_UNAVAILABLE)
+        if self.consumed(receipt_address):
+            return stored_signature
+        block_height = self.rpc("getBlockHeight", [{"commitment": "finalized"}])
+        if not isinstance(block_height, int) or block_height < 0:
+            raise IssuerError("Solana RPC returned no finalized block height", HTTPStatus.SERVICE_UNAVAILABLE)
+        if block_height <= last_valid_block_height:
+            return self._broadcast_consume(signed_transaction, stored_signature, receipt_address)
+        if self.consumed(receipt_address):
+            return stored_signature
+        replacement, replacement_signature, replacement_blockhash, replacement_height = self._build_consume_transaction(
+            address, receipt_address
+        )
+        replace_signed(replacement, replacement_signature, replacement_blockhash, replacement_height)
+        return self._broadcast_consume(replacement, replacement_signature, receipt_address)
 
     def consumed(self, receipt_address: str) -> bool:
         owner, data = self.account(receipt_address)
@@ -1893,13 +2019,20 @@ class Application:
                 }
             if phase == "RESERVED":
                 try:
-                    def persist_signed(transaction: bytes) -> None:
+                    def persist_signed(
+                        transaction: bytes, signature: str, blockhash: str, last_valid_block_height: int
+                    ) -> None:
                         self.store.transition_claim(
                             receipt,
                             ("RESERVED",),
                             "CHAIN_SUBMITTED",
                             event_type="chain_transaction_signed",
-                            fields={"signed_transaction": transaction},
+                            fields={
+                                "signed_transaction": transaction,
+                                "chain_signature": signature,
+                                "chain_blockhash": blockhash,
+                                "chain_last_valid_block_height": last_valid_block_height,
+                            },
                         )
 
                     signature = self.solana.consume(address, receipt, persist_signed)
@@ -1926,20 +2059,48 @@ class Application:
                         self.store.mark_claim_attention(receipt, "chain_finality_ambiguous")
                         return HTTPStatus.ACCEPTED, self.processing_response(row)
                     raise
-            if phase == "CHAIN_SUBMITTED":
+            if phase in {"CHAIN_SUBMITTED", "CHAIN_RETRY_REQUIRED"}:
                 try:
-                    consumed = self.solana.consumed(receipt)
+                    def replace_signed(
+                        transaction: bytes, signature: str, blockhash: str, last_valid_block_height: int
+                    ) -> None:
+                        self.store.transition_claim(
+                            receipt,
+                            (phase,),
+                            "CHAIN_RETRY_REQUIRED",
+                            event_type="chain_transaction_replaced",
+                            fields={
+                                "signed_transaction": transaction,
+                                "chain_signature": signature,
+                                "chain_blockhash": blockhash,
+                                "chain_last_valid_block_height": last_valid_block_height,
+                                "attention_required": 0,
+                                "last_error_code": None,
+                            },
+                        )
+
+                    signature = self.solana.resume_consume(
+                        address,
+                        receipt,
+                        row["signed_transaction"],
+                        row["chain_signature"],
+                        row["chain_blockhash"],
+                        row["chain_last_valid_block_height"],
+                        replace_signed,
+                    )
                 except Exception:
                     self.store.mark_claim_attention(receipt, "chain_finality_unavailable")
                     return HTTPStatus.ACCEPTED, self.processing_response(row)
-                if not consumed:
-                    return HTTPStatus.ACCEPTED, self.processing_response(row)
                 row = self.store.transition_claim(
                     receipt,
-                    ("CHAIN_SUBMITTED",),
+                    ("CHAIN_SUBMITTED", "CHAIN_RETRY_REQUIRED"),
                     "CHAIN_CONSUMED",
                     event_type="chain_consumption_recovered",
-                    fields={"attention_required": 0, "last_error_code": None},
+                    fields={
+                        "chain_signature": signature,
+                        "attention_required": 0,
+                        "last_error_code": None,
+                    },
                 )
                 continue
             if phase == "CHAIN_CONSUMED":

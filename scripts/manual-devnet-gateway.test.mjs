@@ -101,6 +101,16 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
         return '4'.repeat(88);
       }
       const providerIndex = ['helius-devnet', 'quicknode-devnet', 'alchemy-devnet'].indexOf(endpoint.id);
+      if (method === 'getSignatureStatuses') {
+        if (rpcMode === 'no-majority') {
+          return { context: { slot: 123 + providerIndex }, value: [{ confirmationStatus: ['finalized', 'processed', 'confirmed'][providerIndex], err: null }] };
+        }
+        if (rpcMode === 'chain-error') return { context: { slot: 123 }, value: [{ confirmationStatus: 'finalized', err: { InstructionError: [0, 'Custom'] } }] };
+        if (rpcMode === 'expired') return { context: { slot: 123 }, value: [null] };
+        if (rpcMode === 'one-liar' && endpoint.id.startsWith('alchemy')) return { context: { slot: 999 }, value: [null] };
+        return { context: { slot: 123 }, value: [{ confirmationStatus: 'finalized', err: null }] };
+      }
+      if (method === 'getBlockHeight') return rpcMode === 'expired' ? 201 : 100;
       if (rpcMode === 'no-majority') return { context: { slot: 123 + providerIndex }, value: 456 + providerIndex };
       if (rpcMode === 'one-liar' && endpoint.id.startsWith('alchemy')) return { context: { slot: 999 }, value: 999 };
       return { context: { slot: 123 }, value: 456 };
@@ -159,6 +169,26 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
     assert.equal(sent.status, 200);
     assert.equal(sent.body.result, '4'.repeat(88));
     assert.equal(rpcCalls.filter((call) => call.method === 'sendTransaction').length, 3);
+    const statusBody = JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'getSignatureStatuses', params: [['4'.repeat(88)], { searchTransactionHistory: true }] });
+    const finalized = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: statusBody });
+    assert.equal(finalized.status, 200);
+    assert.equal(finalized.body.result.value[0].confirmationStatus, 'finalized');
+    rpcMode = 'chain-error';
+    const chainError = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: statusBody });
+    assert.equal(chainError.status, 200);
+    assert.deepEqual(chainError.body.result.value[0].err, { InstructionError: [0, 'Custom'] });
+    rpcMode = 'expired';
+    const expiredStatus = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: statusBody });
+    assert.equal(expiredStatus.status, 200);
+    assert.equal(expiredStatus.body.result.value[0], null);
+    const heightBody = JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'getBlockHeight', params: [{ commitment: 'finalized' }] });
+    const expiredHeight = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: heightBody });
+    assert.equal(expiredHeight.status, 200);
+    assert.equal(expiredHeight.body.result, 201);
+    rpcMode = 'no-majority';
+    const statusDisagreement = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: statusBody });
+    assert.equal(statusDisagreement.status, 503);
+    rpcMode = 'agreement';
     const crossOrigin = await request(port, '/_neal/devnet/rpc', {
       method: 'POST', headers: { ...rpcHeaders, Origin: 'https://attacker.invalid' }, body: rpcBody,
     });
@@ -187,4 +217,13 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
     await new Promise((resolve) => server.close(resolve));
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('manual browser finality uses only HTTP quorum polling before any production confirmation path', async () => {
+  const source = await fs.readFile(path.join(process.cwd(), 'apps/site/src/access-stake.ts'), 'utf8');
+  const manualBranch = source.slice(source.indexOf('if (MANUAL_BROWSER_WALLET) {'), source.indexOf('const confirmation = await connection.confirmTransaction'));
+  assert.match(manualBranch, /getSignatureStatuses/u);
+  assert.match(manualBranch, /getBlockHeight/u);
+  assert.match(manualBranch, /lastValidBlockHeight/u);
+  assert.doesNotMatch(manualBranch, /confirmTransaction/u);
 });

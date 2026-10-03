@@ -15,6 +15,7 @@ key. Never provide the wallet recovery phrase or private key.
 npm run access-stake:manual-devnet -- doctor \
   --release-manifest /path/to/release-manifest.json \
   --issuer-bundle /path/to/issuer-bundle.tar \
+  --browser-bundle /path/to/manual-browser-bundle.json \
   --review-file /path/to/isolated-review.json \
   --review-signature-file /path/to/isolated-review-signature.json \
   --rpc-set-file "$HOME/Library/Application Support/NEAL/devnet-rpc-set.json" \
@@ -23,6 +24,7 @@ npm run access-stake:manual-devnet -- doctor \
 npm run access-stake:manual-devnet -- prepare \
   --release-manifest /path/to/release-manifest.json \
   --issuer-bundle /path/to/issuer-bundle.tar \
+  --browser-bundle /path/to/manual-browser-bundle.json \
   --review-file /path/to/isolated-review.json \
   --review-signature-file /path/to/isolated-review-signature.json \
   --rpc-set-file "$HOME/Library/Application Support/NEAL/devnet-rpc-set.json" \
@@ -31,8 +33,10 @@ npm run access-stake:manual-devnet -- prepare \
 ```
 
 `prepare` prints the runtime directory, certificate path, and SHA-1 fingerprint.
-It builds and hashes the browser bundle and issuer image at the reviewed commit;
-`start` serves only those prepared bytes and rejects source, dependency, image,
+The browser bundle is built by exact-head CI after a clean `npm ci`; its source,
+Node toolchain, package-lock hash, and file bytes are covered by the independent
+review signature. `prepare` only validates and extracts that reviewed bundle.
+`start` serves only those prepared bytes and rejects source, bundle, image,
 certificate, or commit drift.
 If preparation fails after its first devnet write, the command stops local
 containers and preserves the mode-`0700` runtime plus an operator-recovery
@@ -59,5 +63,9 @@ program, config, mint, expected wallet, lease, and 2-of-3 quorum. Production
 Use `status` for a sanitized snapshot and
 `fault --name matrix-final-response-once` before the registration recovery
 step. After the full refund and reconciliation, `stop` removes the local stack,
-volumes, runtime secrets, and trusted certificate. It refuses cleanup while a
-stake or privileged reconciliation remains active.
+volumes, runtime secrets, and trusted certificate. It first records a draining
+state and pauses the disposable config at finalized 2-of-3 quorum. If a stake
+is still active, services remain available for the wallet's refund while new
+stake and claim instructions are blocked. Cleanup proceeds only after the
+gateway and issuer are stopped, a finalized barrier passes, all receipts are
+released, and privileged reconciliation is empty.

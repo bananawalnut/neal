@@ -35,6 +35,7 @@ import {
 import {
   assertAcceptancePortsAvailable,
   directoryDigest,
+  enforceTeardownBarrier,
   processAlive,
   reviewSignaturePayload,
   validateSignedIsolatedReview,
@@ -179,6 +180,25 @@ test('prepared browser artifact digest changes on any file mutation and rejects 
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('teardown barrier catches a receipt that finalizes during quiescence', async () => {
+  const events = [];
+  let scans = 0;
+  const data = Buffer.alloc(163);
+  Buffer.from('NEALSTAK').copy(data, 0);
+  data.writeBigInt64LE(123n, 129);
+  data.writeBigInt64LE(0n, 153);
+  await assert.rejects(() => enforceTeardownBarrier({
+    pause: async () => { events.push('pause'); },
+    scan: async () => {
+      events.push(`scan-${++scans}`);
+      return scans === 1 ? [] : [{ pubkey: KEY, data }];
+    },
+    quiesce: async () => { events.push('quiesce'); },
+    finalizedBarrier: async () => { events.push('barrier'); },
+  }), /not released/u);
+  assert.deepEqual(events, ['pause', 'scan-1', 'quiesce', 'barrier', 'scan-2']);
 });
 
 test('manual process identity rejects a live PID with the wrong ownership nonce', async () => {
@@ -362,32 +382,45 @@ test('manual acceptance requires a signed review bound to the exact release byte
     const signatureFile = path.join(directory, 'review-signature.json');
     const publicKeyFile = path.join(directory, 'reviewer-public.pem');
     const issuerBundleFile = path.join(directory, 'issuer-bundle.tar');
+    const browserBundleFile = path.join(directory, 'manual-browser-bundle.json');
     const review = {
       schema: 'neal.access-stake-isolated-review/v1', sourceCommit: COMMIT,
       reviewedAt: '2026-10-03T00:00:00.000Z', reviewerType: 'isolated-agent',
       findings: { p0: 0, p1: 0, p2: 0 },
+    };
+    const browserMarker = Buffer.from(`${JSON.stringify({ schema: 'neal.devnet-browser-build/v1', sourceCommit: COMMIT })}\n`);
+    const browserBundle = {
+      schema: 'neal.devnet-browser-bundle/v1', sourceCommit: COMMIT,
+      toolchain: { nodeVersion: 'v24.0.0', platform: 'linux', architecture: 'x64' },
+      packageLockSha256: createHash('sha256').update(await fs.readFile(path.join(process.cwd(), 'package-lock.json'))).digest('hex'),
+      files: [{
+        path: '_neal-build.json', mode: 0o644, size: browserMarker.length,
+        sha256: createHash('sha256').update(browserMarker).digest('hex'), dataBase64: browserMarker.toString('base64'),
+      }],
     };
     await Promise.all([
       fs.writeFile(artifactFile, artifact),
       fs.writeFile(manifestFile, `${JSON.stringify(manifest)}\n`),
       fs.writeFile(reviewFile, `${JSON.stringify(review)}\n`),
       fs.writeFile(issuerBundleFile, Buffer.from('reviewed issuer bundle')),
+      fs.writeFile(browserBundleFile, `${JSON.stringify(browserBundle)}\n`),
     ]);
     const releaseManifestSha256 = createHash('sha256').update(await fs.readFile(manifestFile)).digest('hex');
     const reviewSha256 = createHash('sha256').update(await fs.readFile(reviewFile)).digest('hex');
     const issuerBundleSha256 = createHash('sha256').update(await fs.readFile(issuerBundleFile)).digest('hex');
+    const browserBundleSha256 = createHash('sha256').update(await fs.readFile(browserBundleFile)).digest('hex');
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
     await fs.writeFile(publicKeyFile, publicKey.export({ type: 'spki', format: 'pem' }));
     const publicKeySha256 = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
     const envelope = {
-      schema: 'neal.access-stake-isolated-review-signature/v1', sourceCommit: COMMIT,
-      reviewSha256, releaseManifestSha256, artifactSha256, issuerBundleSha256,
+      schema: 'neal.access-stake-isolated-review-signature/v2', sourceCommit: COMMIT,
+      reviewSha256, releaseManifestSha256, artifactSha256, issuerBundleSha256, browserBundleSha256,
       reviewerIdentity: 'independent-review-agent', reviewedAt: review.reviewedAt, unacceptedP3: 0,
     };
     const signed = { ...envelope, signature: sign(null, reviewSignaturePayload(envelope), privateKey).toString('base64url') };
     await fs.writeFile(signatureFile, `${JSON.stringify(signed)}\n`);
     const validated = await validateSignedIsolatedReview({
-      reviewFile, signatureFile, issuerBundleFile, reviewerPublicKeyFile: publicKeyFile, sourceCommit: COMMIT,
+      reviewFile, signatureFile, issuerBundleFile, browserBundleFile, reviewerPublicKeyFile: publicKeyFile, sourceCommit: COMMIT,
       authorizedReviewerIdentity: envelope.reviewerIdentity, authorizedPublicKeySha256: publicKeySha256,
       release: { manifest, manifestFile, artifactFile },
     });
@@ -395,7 +428,7 @@ test('manual acceptance requires a signed review bound to the exact release byte
     const tampered = { ...signed, artifactSha256: SHA };
     await fs.writeFile(signatureFile, `${JSON.stringify(tampered)}\n`);
     await assert.rejects(() => validateSignedIsolatedReview({
-      reviewFile, signatureFile, issuerBundleFile, reviewerPublicKeyFile: publicKeyFile, sourceCommit: COMMIT,
+      reviewFile, signatureFile, issuerBundleFile, browserBundleFile, reviewerPublicKeyFile: publicKeyFile, sourceCommit: COMMIT,
       authorizedReviewerIdentity: envelope.reviewerIdentity, authorizedPublicKeySha256: publicKeySha256,
       release: { manifest, manifestFile, artifactFile },
     }), /does not bind/u);
@@ -413,6 +446,16 @@ test('manual compose keeps Synapse internal while giving only the issuer RPC egr
   assert.match(base, /rehearsal-internal:\n\s+internal: true/u);
   assert.doesNotMatch(manual, /^\s{2}synapse:/mu);
   assert.match(manual, /issuer:[\s\S]*?networks:\n\s+- rehearsal-internal\n\s+- manual-egress/u);
+});
+
+test('port 4282 admin surface is inert and Vite has no production admin proxy', async () => {
+  const [bootstrap, vite] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), 'apps/site/src/admin-bootstrap.ts'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'apps/site/vite.config.ts'), 'utf8'),
+  ]);
+  assert.match(bootstrap, /surface !== 'production'/u);
+  assert.match(bootstrap, /ADMIN ACTIONS DISABLED/u);
+  assert.doesNotMatch(vite, /matrix\.nealtheseal\.org|_neal\/admin|proxy:/u);
 });
 
 test('Matrix rehearsal completes token and dummy UIA stages and rejects token replay', async () => {

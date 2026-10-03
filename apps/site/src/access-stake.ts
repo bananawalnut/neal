@@ -404,6 +404,25 @@ const sendInstructions = async (
     });
   }
 
+  if (MANUAL_BROWSER_WALLET) {
+    const wallDeadline = Date.now() + 120_000;
+    while (Date.now() < wallDeadline) {
+      const statuses = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      const status = statuses.value[0];
+      if (status?.err) throw new Error(`Stake transaction failed: ${JSON.stringify(status.err)}`);
+      if (status?.confirmationStatus === 'finalized') return signature;
+      const finalizedHeight = await connection.getBlockHeight('finalized');
+      if (finalizedHeight > lastValidBlockHeight) {
+        const finalStatuses = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+        const finalStatus = finalStatuses.value[0];
+        if (finalStatus?.err) throw new Error(`Stake transaction failed: ${JSON.stringify(finalStatus.err)}`);
+        if (finalStatus?.confirmationStatus === 'finalized') return signature;
+        throw new Error('Stake transaction expired before finalized quorum confirmation. Re-read the receipt before retrying.');
+      }
+      await delay(500);
+    }
+    throw new Error('Stake transaction finality remained unavailable. Re-read the receipt before retrying.');
+  }
   const confirmation = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'finalized');
   if (confirmation.value.err) throw new Error(`Stake transaction failed: ${JSON.stringify(confirmation.value.err)}`);
   return signature;
@@ -542,11 +561,15 @@ export async function mountMatrixAccessStake(
       programAttested = true;
     }
     const state = await readConfig(connection, program, configAddress);
+    const expectedRevision = BigInt(policy.configRevision);
+    const drainingPause = Boolean(
+      MANUAL_BROWSER_WALLET && allowPaused && state.paused && state.revision === expectedRevision + 1n
+    );
     if (
       !state.mint.equals(mint)
       || !state.tokenProgram.equals(TOKEN_2022_PROGRAM_ID)
       || !state.issuerAuthority.equals(new PublicKey(policy.issuerAuthority))
-      || state.revision !== BigInt(policy.configRevision)
+      || (state.revision !== expectedRevision && !drainingPause)
       || state.requiredAmount !== requiredAmount
       || state.minimumLockSeconds !== policy.minimumLockSeconds
     ) throw new Error('Published stake terms do not match the finalized on-chain config.');
@@ -848,7 +871,8 @@ export async function mountMatrixAccessStake(
       ui.releaseButton.disabled = true;
       setStatus(ui, 'Preparing the full stake refund…', 'busy');
       try {
-        await refreshRuntimeReadiness();
+        const configState = await assertConfig(true);
+        if (!configState.paused) await refreshRuntimeReadiness();
         const staker = new PublicKey(session.account.address);
         assertExpectedWallet(staker.toBase58());
         receipt = await readReceipt(connection, program, configAddress, staker);

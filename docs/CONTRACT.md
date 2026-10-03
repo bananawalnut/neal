@@ -72,21 +72,26 @@ ready response matches `neal.devnet-manual-runtime/v1` and its own embedded
 source commit. Production and ordinary local-preview consumers never request
 this endpoint.
 
-`neal.access-stake-isolated-review-signature/v1` is the detached Ed25519
+`neal.access-stake-isolated-review-signature/v2` is the detached Ed25519
 signature envelope for manual acceptance. It binds the exact source commit,
 review JSON SHA-256, release-manifest SHA-256, SBF artifact SHA-256, issuer
-bundle SHA-256 (including its manifest and SBOM), reviewer identity, and review
-time. Manual `doctor` and `prepare` accept signatures only
+bundle SHA-256 (including its manifest and SBOM), CI-built manual-browser bundle
+SHA-256 (including its exact Node toolchain, package-lock hash, and every output
+file), reviewer identity, and review time. Manual `doctor` and `prepare` accept signatures only
 from the independent reviewer public key pinned in
 `infra/neal-access-rehearsal/independent-reviewer-public.pem`; an arbitrary
 operator-supplied public key cannot authorize a build. The underlying
 `neal.access-stake-isolated-review/v1` remains required and must report zero
 P0–P2 findings; the signed envelope must also report zero unaccepted P3
 findings.
+The former v1 envelope remains identifiable as historical evidence but cannot
+authorize manual acceptance because it did not bind a browser bundle.
 
 `neal.solana-rpc-set/v1` remains a private credential contract. Executing
 manual and formal devnet tooling requires `quorum-2-of-3`, threshold two, and
-exactly three distinct IDs, hosts, registrable domains, and trust domains.
+exactly three distinct IDs, hosts, registrable domains, and trust domains. The
+issuer additionally binds Helius, QuickNode, and Alchemy IDs and host suffixes
+to its compiled approved trust-domain registry and rejects cross-host redirects.
 Tooling receives only the mode-`0600` credential path. URLs may contain provider
 credentials but must never appear in command arguments, browser contracts,
 logs, receipts, or GitHub artifacts.

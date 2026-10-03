@@ -35,6 +35,7 @@ import {
 } from './manual-devnet-contracts.mjs';
 import { establishDevnetAgreement, loadRpcSetCredential, rpcCall } from './devnet-rpc-set.mjs';
 import { DEVNET_GENESIS, PRODUCTION_LOCK_SECONDS, assertPublicEvidence, readAndValidateReleaseManifest, sha256File } from './access-stake-contracts.mjs';
+import { extractManualBrowserBundle, validateManualBrowserBundle } from './manual-browser-bundle.mjs';
 import {
   attestProgram,
   atomicWrite,
@@ -43,6 +44,7 @@ import {
   dockerSolana,
   fundSigners,
   fundWithAirdrop,
+  pauseCommand,
   renderSynapse,
   run,
   validateReview,
@@ -63,7 +65,7 @@ const DEFAULT_RUNTIME_ROOT = path.join(os.homedir(), 'Library/Application Suppor
 const ACCEPTANCE_URL = 'https://localhost:4280/#gc';
 const ACCEPTANCE_PORTS = [4280, 4281];
 const CHROME = '/Applications/Google Chrome.app';
-const REVIEW_SIGNATURE_SCHEMA = 'neal.access-stake-isolated-review-signature/v1';
+const REVIEW_SIGNATURE_SCHEMA = 'neal.access-stake-isolated-review-signature/v2';
 const REVIEWER_IDENTITY = 'neal-independent-reviewer:ed25519:sha256:676df1e3181d1541bf6351a7dae066fb19370b94161f0b5b9006e99db15edbed';
 const REVIEWER_PUBLIC_KEY_SHA256 = '676df1e3181d1541bf6351a7dae066fb19370b94161f0b5b9006e99db15edbed';
 
@@ -134,27 +136,6 @@ export const directoryDigest = async (directory, { allowInternalSymlinks = false
   return createHash('sha256').update(`${entries.sort().join('\n')}\n`).digest('hex');
 };
 
-export const dependencyProof = async () => {
-  const sourceLock = path.join(ROOT, 'package-lock.json');
-  const installedLock = path.join(ROOT, 'node_modules/.package-lock.json');
-  const dependencyDirectories = [
-    path.join(ROOT, 'node_modules'),
-    path.join(ROOT, 'apps/site/node_modules'),
-    path.join(ROOT, 'apps/launcher/node_modules'),
-  ];
-  return {
-    sourceLockSha256: await sha256File(sourceLock),
-    installedLockSha256: await sha256File(installedLock),
-    dependencyDirectories: Object.fromEntries(await Promise.all(dependencyDirectories.map(async (directory) => [
-      path.relative(ROOT, directory),
-      await directoryDigest(directory, { allowInternalSymlinks: true }),
-    ]))),
-    nodeVersion: process.version,
-    platform: process.platform,
-    architecture: process.arch,
-  };
-};
-
 export const reviewSignaturePayload = (value) => Buffer.from(JSON.stringify({
   schema: value.schema,
   sourceCommit: value.sourceCommit,
@@ -162,13 +143,15 @@ export const reviewSignaturePayload = (value) => Buffer.from(JSON.stringify({
   releaseManifestSha256: value.releaseManifestSha256,
   artifactSha256: value.artifactSha256,
   issuerBundleSha256: value.issuerBundleSha256,
+  browserBundleSha256: value.browserBundleSha256,
   reviewerIdentity: value.reviewerIdentity,
   reviewedAt: value.reviewedAt,
   unacceptedP3: value.unacceptedP3,
 }));
 
 export const validateSignedIsolatedReview = async ({
-  reviewFile, signatureFile, issuerBundleFile, reviewerPublicKeyFile = REVIEWER_PUBLIC_KEY, sourceCommit, release,
+  reviewFile, signatureFile, issuerBundleFile, browserBundleFile,
+  reviewerPublicKeyFile = REVIEWER_PUBLIC_KEY, sourceCommit, release,
   authorizedReviewerIdentity = REVIEWER_IDENTITY,
   authorizedPublicKeySha256 = REVIEWER_PUBLIC_KEY_SHA256,
 }) => {
@@ -176,6 +159,7 @@ export const validateSignedIsolatedReview = async ({
   const signaturePath = path.resolve(signatureFile);
   const publicKeyPath = path.resolve(reviewerPublicKeyFile);
   const issuerBundlePath = path.resolve(issuerBundleFile);
+  const browserBundle = await validateManualBrowserBundle(browserBundleFile, sourceCommit);
   const issuerBundleMetadata = await fs.lstat(issuerBundlePath).catch(() => null);
   if (
     !issuerBundleMetadata?.isFile() || issuerBundleMetadata.isSymbolicLink()
@@ -187,7 +171,7 @@ export const validateSignedIsolatedReview = async ({
   const envelope = JSON.parse(await fs.readFile(signaturePath, 'utf8'));
   const keys = [
     'schema', 'sourceCommit', 'reviewSha256', 'releaseManifestSha256', 'artifactSha256',
-    'issuerBundleSha256', 'reviewerIdentity', 'reviewedAt', 'unacceptedP3', 'signature',
+    'issuerBundleSha256', 'browserBundleSha256', 'reviewerIdentity', 'reviewedAt', 'unacceptedP3', 'signature',
   ];
   if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope) || Object.keys(envelope).sort().join() !== keys.sort().join()) {
     throw new Error('Signed isolated review envelope has unsupported fields');
@@ -198,6 +182,7 @@ export const validateSignedIsolatedReview = async ({
     releaseManifestSha256: await sha256File(path.resolve(release.manifestFile)),
     artifactSha256: release.manifest.artifact.sha256,
     issuerBundleSha256: await sha256File(issuerBundlePath),
+    browserBundleSha256: browserBundle.sha256,
   };
   if (
     envelope.schema !== REVIEW_SIGNATURE_SCHEMA
@@ -206,6 +191,7 @@ export const validateSignedIsolatedReview = async ({
     || envelope.releaseManifestSha256 !== expected.releaseManifestSha256
     || envelope.artifactSha256 !== expected.artifactSha256
     || envelope.issuerBundleSha256 !== expected.issuerBundleSha256
+    || envelope.browserBundleSha256 !== expected.browserBundleSha256
     || envelope.reviewedAt !== review.reviewedAt
     || envelope.reviewerIdentity !== authorizedReviewerIdentity
     || envelope.unacceptedP3 !== 0
@@ -227,7 +213,8 @@ export const validateSignedIsolatedReview = async ({
   }
   assertPublicEvidence(envelope);
   return {
-    review, envelope, reviewPath, signaturePath, issuerBundlePath, publicKeyPath, publicKeySha256: keyFingerprint,
+    review, envelope, reviewPath, signaturePath, issuerBundlePath,
+    browserBundle, publicKeyPath, publicKeySha256: keyFingerprint,
   };
 };
 
@@ -500,7 +487,7 @@ const verifyTrustedCertificate = async (state) => run('/usr/bin/security', [
 
 const doctor = async (options) => {
   requireOptions(options, [
-    'release-manifest', 'issuer-bundle', 'rpc-set-file', 'review-file', 'review-signature-file', 'wallet',
+    'release-manifest', 'issuer-bundle', 'browser-bundle', 'rpc-set-file', 'review-file', 'review-signature-file', 'wallet',
   ]);
   await assertAcceptancePortsAvailable();
   await fs.access(CHROME).catch(() => { throw new Error('Google Chrome is required at /Applications/Google Chrome.app'); });
@@ -516,6 +503,7 @@ const doctor = async (options) => {
     reviewFile: options['review-file'],
     signatureFile: options['review-signature-file'],
     issuerBundleFile: options['issuer-bundle'],
+    browserBundleFile: options['browser-bundle'],
     sourceCommit: head,
     release,
   });
@@ -539,6 +527,7 @@ const doctor = async (options) => {
     browserWallet,
     releaseManifestSha256: await sha256File(path.resolve(options['release-manifest'])),
     issuerBundleSha256: signedReview.envelope.issuerBundleSha256,
+    browserBundleSha256: signedReview.envelope.browserBundleSha256,
     reviewSchema: signedReview.review.schema,
     reviewSignatureSchema: signedReview.envelope.schema,
     finalizedAgreementSlot: agreement.slot,
@@ -553,7 +542,7 @@ const doctor = async (options) => {
 
 const prepare = async (options) => {
   requireOptions(options, [
-    'release-manifest', 'issuer-bundle', 'rpc-set-file', 'review-file', 'review-signature-file', 'wallet',
+    'release-manifest', 'issuer-bundle', 'browser-bundle', 'rpc-set-file', 'review-file', 'review-signature-file', 'wallet',
   ]);
   if (options.execute !== true || options.acknowledgeDevnet !== true) {
     throw new Error('Devnet preparation requires --execute --acknowledge-devnet');
@@ -571,6 +560,7 @@ const prepare = async (options) => {
     reviewFile: options['review-file'],
     signatureFile: options['review-signature-file'],
     issuerBundleFile: options['issuer-bundle'],
+    browserBundleFile: options['browser-bundle'],
     sourceCommit: head,
     release,
   });
@@ -613,25 +603,18 @@ const prepare = async (options) => {
     const evidenceReview = path.join(evidenceDirectory, 'isolated-review.json');
     const evidenceSignature = path.join(evidenceDirectory, 'isolated-review-signature.json');
     const evidenceIssuerBundle = path.join(evidenceDirectory, 'issuer-bundle.tar');
+    const evidenceBrowserBundle = path.join(evidenceDirectory, 'manual-browser-bundle.json');
     await Promise.all([
       copyPrivateFile(release.manifestFile, evidenceManifest),
       copyPrivateFile(release.artifactFile, evidenceArtifact),
       copyPrivateFile(signedReview.reviewPath, evidenceReview),
       copyPrivateFile(signedReview.signaturePath, evidenceSignature),
       copyPrivateFile(signedReview.issuerBundlePath, evidenceIssuerBundle),
+      copyPrivateFile(signedReview.browserBundle.file, evidenceBrowserBundle),
     ]);
-    await run('npm', ['run', 'site:build'], {
-      cwd: ROOT,
-      env: { ...process.env, VITE_NEAL_SOURCE_COMMIT: head },
-      failure: 'Could not build the exact manual acceptance browser artifact',
-    });
-    await atomicWrite(path.join(ROOT, 'apps/site/dist/_neal-build.json'), `${JSON.stringify({
-      schema: 'neal.devnet-browser-build/v1', sourceCommit: head,
-    })}\n`, 0o644);
     const browserArtifactDirectory = path.join(runtime, 'site-dist');
-    await fs.cp(path.join(ROOT, 'apps/site/dist'), browserArtifactDirectory, { recursive: true, force: false });
+    await extractManualBrowserBundle(signedReview.browserBundle, browserArtifactDirectory);
     const browserArtifactSha256 = await directoryDigest(browserArtifactDirectory);
-    const javascriptDependencies = await dependencyProof();
     const matrixSecret = randomBytes(48).toString('base64url');
     await renderSynapse(runtime, matrixSecret);
     const certificate = await createCertificate(runtime);
@@ -692,14 +675,18 @@ const prepare = async (options) => {
       processNonce: randomBytes(16).toString('hex'),
       rpcSetFile,
       requestNonce: randomBytes(32).toString('hex'),
-      browserArtifact: { directory: browserArtifactDirectory, sha256: browserArtifactSha256 },
-      javascriptDependencies,
+      browserArtifact: {
+        directory: browserArtifactDirectory,
+        sha256: browserArtifactSha256,
+        bundleSha256: signedReview.browserBundle.sha256,
+      },
       releaseEvidence: {
         manifest: evidenceManifest,
         artifact: evidenceArtifact,
         review: evidenceReview,
         signature: evidenceSignature,
         issuerBundle: evidenceIssuerBundle,
+        browserBundle: evidenceBrowserBundle,
       },
       browserWallet: browserWallet.toBase58(),
       programId: programId.toBase58(),
@@ -846,6 +833,7 @@ const start = async (options) => {
     reviewFile: state.releaseEvidence.review,
     signatureFile: state.releaseEvidence.signature,
     issuerBundleFile: state.releaseEvidence.issuerBundle,
+    browserBundleFile: state.releaseEvidence.browserBundle,
     sourceCommit: state.sourceCommit,
     release: preparedRelease,
   });
@@ -854,12 +842,10 @@ const start = async (options) => {
     || await sha256File(preparedReview.signaturePath) !== state.reviewSignatureSha256
     || preparedReview.publicKeySha256 !== state.reviewerPublicKeySha256
   ) throw new Error('Prepared independent-review evidence has changed');
-  if (JSON.stringify(await dependencyProof()) !== JSON.stringify(state.javascriptDependencies)) {
-    throw new Error('Installed JavaScript dependencies differ from the prepared dependency graph');
-  }
   if (
     state.browserArtifact?.directory !== path.join(runtime, 'site-dist')
     || !/^[0-9a-f]{64}$/u.test(state.browserArtifact?.sha256 ?? '')
+    || preparedReview.browserBundle.sha256 !== state.browserArtifact?.bundleSha256
     || await directoryDigest(state.browserArtifact.directory) !== state.browserArtifact.sha256
   ) throw new Error('Prepared browser artifact digest is invalid');
   const browserMarker = JSON.parse(await fs.readFile(path.join(state.browserArtifact.directory, '_neal-build.json'), 'utf8'));
@@ -1140,6 +1126,62 @@ const manualReceiptState = (account) => {
   };
 };
 
+const quorumConfigPauseState = async (rpcSet, programId, configAddress) => {
+  await establishDevnetAgreement(rpcSet);
+  const results = await Promise.all(rpcSet.endpoints.map(async (endpoint) => {
+    try {
+      const result = await rpcCall(endpoint, 'getAccountInfo', [configAddress.toBase58(), {
+        commitment: 'finalized', encoding: 'base64',
+      }]);
+      const value = result?.value;
+      if (
+        value?.owner !== programId.toBase58() || !Array.isArray(value?.data)
+        || value.data[1] !== 'base64' || typeof value.data[0] !== 'string'
+      ) throw new Error('config unavailable');
+      const data = Buffer.from(value.data[0], 'base64');
+      if (data.length !== 171 || !data.subarray(0, 8).equals(Buffer.from('NEALACFG'))) {
+        throw new Error('config wire shape invalid');
+      }
+      return {
+        identity: data.toString('base64'),
+        paused: data[169] !== 0,
+        revision: data.readBigUInt64LE(145).toString(),
+      };
+    } catch {
+      return null;
+    }
+  }));
+  const groups = new Map();
+  for (const result of results.filter(Boolean)) {
+    const group = groups.get(result.identity) ?? [];
+    group.push(result);
+    groups.set(result.identity, group);
+  }
+  const agreement = [...groups.values()].find((group) => group.length >= rpcSet.threshold);
+  if (!agreement) throw new Error('Refusing teardown: RPC providers do not agree on the manual config');
+  return agreement[0];
+};
+
+const assertReleasedReceipts = (receipts) => {
+  for (const account of receipts) {
+    const receipt = manualReceiptState({ data: account.data });
+    if (receipt.releasedAt <= 0) {
+      throw new Error(
+        `Refusing teardown: config is paused but receipt ${account.pubkey} is not released `
+        + `(unlock timestamp ${receipt.unlockAt}). Refund remains available while paused.`,
+      );
+    }
+  }
+};
+
+export const enforceTeardownBarrier = async ({ pause, scan, quiesce, finalizedBarrier }) => {
+  await pause();
+  assertReleasedReceipts(await scan());
+  await quiesce();
+  await finalizedBarrier();
+  assertReleasedReceipts(await scan());
+};
+
 const stop = async (options) => {
   requireOptions(options, ['runtime']);
   const runtime = path.resolve(options.runtime);
@@ -1147,22 +1189,47 @@ const stop = async (options) => {
   const rpcSet = await loadRpcSetCredential(state.rpcSetFile);
   const programId = new PublicKey(state.programId);
   const configAddress = new PublicKey(state.manualConfigAddress);
-  const receipts = await quorumConfigReceipts(rpcSet, programId, configAddress);
-  for (const account of receipts) {
-    const receipt = manualReceiptState({ data: account.data });
-    if (receipt.releasedAt <= 0) {
-      throw new Error(`Refusing teardown: receipt ${account.pubkey} is not released (unlock timestamp ${receipt.unlockAt})`);
-    }
-  }
+  state.status = 'draining';
+  state.drainingStartedAt ??= new Date().toISOString();
+  await writeState(runtime, state);
+  await enforceTeardownBarrier({
+    pause: async () => {
+      let configState = await quorumConfigPauseState(rpcSet, programId, configAddress);
+      if (!configState.paused) {
+        const paused = await pauseCommand({
+          runtime, rpcSetFile: state.rpcSetFile, programId, config: configAddress, action: 'pause',
+        });
+        configState = await quorumConfigPauseState(rpcSet, programId, configAddress);
+        if (!configState.paused || configState.revision !== paused.finalizedRevision) {
+          throw new Error('Refusing teardown: manual config pause lacks finalized 2-of-3 agreement');
+        }
+      }
+      state.pausedConfigRevision = configState.revision;
+      await writeState(runtime, state);
+    },
+    scan: () => quorumConfigReceipts(rpcSet, programId, configAddress),
+    quiesce: async () => {
+      await stopLocalServices(runtime, state);
+      await writeState(runtime, state);
+    },
+    finalizedBarrier: () => establishDevnetAgreement(rpcSet),
+  });
+
   if (fsSync.existsSync(environmentFile(runtime)) && fsSync.existsSync(path.join(runtime, 'issuer.sqlite3'))) {
-    await manualCompose(state.project, runtime, ['up', '--detach']);
-    await waitHttp('http://127.0.0.1:18008/_matrix/client/versions', [200]);
-    const reconciliation = await reconciliationState(runtime, state);
-    if (reconciliation.incomplete.length || reconciliation.administrators.length) {
-      throw new Error('Refusing teardown: issuer registration or administrator reconciliation remains incomplete');
+    try {
+      await manualCompose(state.project, runtime, ['up', '--detach']);
+      await waitHttp('http://127.0.0.1:18008/_matrix/client/versions', [200]);
+      await waitHttp('http://127.0.0.1:18009/healthz', [200]);
+      const reconciliation = await reconciliationState(runtime, state);
+      if (reconciliation.incomplete.length || reconciliation.administrators.length) {
+        throw new Error('Refusing teardown: issuer registration or administrator reconciliation remains incomplete');
+      }
+    } finally {
+      await manualCompose(state.project, runtime, ['stop']).catch(() => {});
     }
   }
-  await stopLocalServices(runtime, state);
+  await establishDevnetAgreement(rpcSet);
+  assertReleasedReceipts(await quorumConfigReceipts(rpcSet, programId, configAddress));
   await manualCompose(state.project, runtime, ['down', '--volumes', '--remove-orphans']);
   if (state.certificate?.fingerprint) {
     const keychain = path.join(os.homedir(), 'Library/Keychains/login.keychain-db');

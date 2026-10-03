@@ -53,11 +53,26 @@ class FakeSolana:
         if receipt != self.receipt:
             raise AssertionError("wrong receipt")
         if persist_signed:
-            persist_signed(b"signed-transaction")
+            persist_signed(b"signed-transaction", "consume-signature", "blockhash", 100)
         return "consume-signature"
 
     def consumed(self, _receipt: str) -> bool:
         return self.consume_calls > 0
+
+    def resume_consume(
+        self,
+        _address: str,
+        receipt: str,
+        _signed_transaction: bytes,
+        _stored_signature: str,
+        _blockhash: str,
+        _last_valid_block_height: int,
+        _replace_signed,
+    ) -> str:
+        if receipt != self.receipt:
+            raise AssertionError("wrong receipt")
+        self.consume_calls += 1
+        return "consume-signature"
 
     def config(self) -> dict[str, int]:
         return {"required_amount": 25_000_000, "minimum_lock_seconds": 604_800, "revision": 0}
@@ -289,6 +304,96 @@ class IssuerTests(unittest.TestCase):
         self.assertEqual(matrix.calls, 1)
         self.assertEqual(solana.consume_calls, 1)
 
+    def test_chain_submitted_recovers_after_crash_and_forward_only_resign(self) -> None:
+        class RecoveringSolana(FakeSolana):
+            def __init__(self, receipt: str):
+                super().__init__(receipt)
+                self.resume_calls = 0
+
+            def consume(self, _address: str, receipt: str, persist_signed=None) -> str:
+                self.consume_calls += 1
+                if persist_signed:
+                    persist_signed(b"first-transaction", "first-signature", "first-blockhash", 100)
+                raise RuntimeError("crash after durable journal")
+
+            def resume_consume(
+                self, _address, _receipt, _transaction, _signature, _blockhash, _height, replace_signed
+            ) -> str:
+                self.resume_calls += 1
+                replace_signed(b"replacement-transaction", "replacement-signature", "replacement-blockhash", 200)
+                return "replacement-signature"
+
+        address = "11111111111111111111111111111111"
+        solana = RecoveringSolana("recoverable-receipt")
+        app = issuer.Application(self.settings, matrix=FakeMatrix(), solana=solana)
+        session = app.store.create_session(address, 600)
+
+        status, pending = app.access_token_v2(session, "first")
+        self.assertEqual(status, HTTPStatus.ACCEPTED)
+        self.assertEqual(pending["state"], "processing")
+        journaled = app.store.claim("recoverable-receipt")
+        self.assertEqual(journaled["phase"], "CHAIN_SUBMITTED")
+        self.assertEqual(journaled["chain_signature"], "first-signature")
+        self.assertEqual(journaled["chain_last_valid_block_height"], 100)
+
+        app.store.clear_claim_attention("recoverable-receipt")
+        status, recovered = app.access_token_v2(session, "second")
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(recovered["state"], "token_ready")
+        self.assertEqual(solana.resume_calls, 1)
+        completed = app.store.claim("recoverable-receipt")
+        self.assertEqual(completed["phase"], "TOKEN_READY")
+        self.assertEqual(completed["chain_signature"], "replacement-signature")
+        with app.store.connection() as database:
+            phases = [row[0] for row in database.execute(
+                "SELECT next_phase FROM claim_events WHERE operation_id = ? ORDER BY event_id",
+                (completed["operation_id"],),
+            ).fetchall()]
+        self.assertIn("CHAIN_RETRY_REQUIRED", phases)
+
+    def test_concurrent_chain_resign_compare_and_swap_converges_forward(self) -> None:
+        store = issuer.Store(self.settings.database)
+        row = store.reserve_claim("concurrent-receipt", "wallet", "config", 0, 1)
+        store.transition_claim(
+            row["receipt"], ("RESERVED",), "CHAIN_SUBMITTED",
+            event_type="chain_transaction_signed",
+            fields={
+                "signed_transaction": b"first", "chain_signature": "first",
+                "chain_blockhash": "blockhash", "chain_last_valid_block_height": 100,
+            },
+        )
+        barrier = threading.Barrier(2)
+        results: list[str] = []
+
+        def replace(label: str) -> None:
+            barrier.wait()
+            try:
+                store.transition_claim(
+                    row["receipt"], ("CHAIN_SUBMITTED",), "CHAIN_RETRY_REQUIRED",
+                    event_type="chain_transaction_replaced",
+                    fields={
+                        "signed_transaction": label.encode(), "chain_signature": label,
+                        "chain_blockhash": f"{label}-blockhash", "chain_last_valid_block_height": 200,
+                    },
+                )
+                results.append("won")
+            except issuer.IssuerError:
+                results.append("lost")
+
+        threads = [threading.Thread(target=replace, args=(label,)) for label in ("one", "two")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertCountEqual(results, ["won", "lost"])
+        recovered = store.claim(row["receipt"])
+        self.assertEqual(recovered["phase"], "CHAIN_RETRY_REQUIRED")
+        store.transition_claim(
+            row["receipt"], ("CHAIN_RETRY_REQUIRED",), "CHAIN_CONSUMED",
+            event_type="chain_consumption_recovered",
+        )
+        self.assertEqual(store.claim(row["receipt"])["phase"], "CHAIN_CONSUMED")
+
     def test_expired_or_failed_claim_never_issues_a_second_token(self) -> None:
         address = "11111111111111111111111111111111"
         matrix = FakeMatrix()
@@ -397,9 +502,9 @@ class IssuerTests(unittest.TestCase):
             "mode": issuer.RPC_QUORUM_MODE,
             "threshold": 2,
             "endpoints": [
-                {"id": "provider-a", "trustDomain": "operator-a", "url": "https://rpc-a.invalid"},
-                {"id": "provider-b", "trustDomain": "operator-b", "url": "https://rpc-b.invalid"},
-                {"id": "provider-c", "trustDomain": "operator-c", "url": "https://rpc-c.invalid"},
+                {"id": "helius-mainnet", "trustDomain": "helius.xyz", "url": "https://mainnet.helius-rpc.com/?api-key=test"},
+                {"id": "quicknode-mainnet", "trustDomain": "quicknode.com", "url": "https://neal.solana-mainnet.quiknode.pro/test/"},
+                {"id": "alchemy-mainnet", "trustDomain": "alchemy.com", "url": "https://solana-mainnet.g.alchemy.com/v2/test"},
             ],
         }))
         environment = {
@@ -464,6 +569,82 @@ class IssuerTests(unittest.TestCase):
             with self.assertRaisesRegex(issuer.IssuerError, "quorum"):
                 verifier.rpc("getAccountInfo", ["address"])
 
+    def test_rpc_redirect_to_another_host_fails_closed(self) -> None:
+        class RedirectedResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self) -> str:
+                return "https://attacker.invalid/rpc"
+
+            def read(self, _maximum: int) -> bytes:
+                return b'{"jsonrpc":"2.0","result":1}'
+
+        verifier = issuer.SolanaVerifier(self.settings)
+        with patch.object(issuer.urllib.request, "urlopen", return_value=RedirectedResponse()):
+            with self.assertRaisesRegex(issuer.IssuerError, "redirect"):
+                verifier.rpc_endpoint(self.settings.rpc_set.endpoints[0], "getBlockHeight", [])
+
+    def test_consume_recovery_rebroadcasts_while_valid_and_resigns_after_quorum_expiry(self) -> None:
+        verifier = issuer.SolanaVerifier(self.settings)
+        address = "11111111111111111111111111111111"
+        receipt = verifier.receipt_address(address)
+        blockhash = issuer.base58_encode(b"b" * 32)
+        replacement_blockhash = issuer.base58_encode(b"c" * 32)
+        with patch.object(verifier, "rpc", return_value={
+            "value": {"blockhash": blockhash, "lastValidBlockHeight": 100}
+        }):
+            transaction, signature, stored_blockhash, height = verifier._build_consume_transaction(address, receipt)
+
+        with (
+            patch.object(verifier, "consumed", return_value=False),
+            patch.object(verifier, "rpc", return_value=99),
+            patch.object(verifier, "_broadcast_consume", return_value=signature) as broadcast,
+        ):
+            self.assertEqual(
+                verifier.resume_consume(
+                    address, receipt, transaction, signature, stored_blockhash, height,
+                    lambda *_args: self.fail("valid transaction must not be replaced"),
+                ),
+                signature,
+            )
+            broadcast.assert_called_once_with(transaction, signature, receipt)
+
+        replacements = []
+        def rpc(method, _params):
+            if method == "getBlockHeight":
+                return 101
+            if method == "getLatestBlockhash":
+                return {"value": {"blockhash": replacement_blockhash, "lastValidBlockHeight": 250}}
+            raise AssertionError(method)
+
+        with (
+            patch.object(verifier, "consumed", side_effect=[False, False]),
+            patch.object(verifier, "rpc", side_effect=rpc),
+            patch.object(verifier, "_broadcast_consume", side_effect=lambda _tx, expected, _receipt: expected),
+        ):
+            recovered = verifier.resume_consume(
+                address, receipt, transaction, signature, stored_blockhash, height,
+                lambda *values: replacements.append(values),
+            )
+        self.assertEqual(len(replacements), 1)
+        self.assertEqual(replacements[0][2], replacement_blockhash)
+        self.assertEqual(replacements[0][3], 250)
+        self.assertEqual(recovered, replacements[0][1])
+
+    def test_consume_broadcast_rejects_minority_acceptance(self) -> None:
+        verifier = issuer.SolanaVerifier(self.settings)
+        with patch.object(
+            verifier,
+            "rpc_endpoint",
+            side_effect=["signature", issuer.IssuerError("down"), issuer.IssuerError("down")],
+        ):
+            with self.assertRaisesRegex(issuer.IssuerError, "required RPC quorum"):
+                verifier.broadcast(b"signed-transaction")
+
     def test_rpc_quorum_accepts_two_matching_domains_and_rejects_single_rpc_mainnet(self) -> None:
         verifier = issuer.SolanaVerifier(self.settings)
         with patch.object(verifier, "rpc_endpoint", side_effect=lambda endpoint, *_args: {
@@ -498,6 +679,18 @@ class IssuerTests(unittest.TestCase):
                 "solana-devnet.g.alchemy.com",
             },
         )
+        value = json.loads(example.read_text())
+        for mutation in (
+            lambda candidate: candidate["endpoints"][0].update({"trustDomain": "quicknode.com"}),
+            lambda candidate: candidate["endpoints"][0].update({"url": "https://helius-rpc.com.evil.invalid/key"}),
+            lambda candidate: candidate["endpoints"][0].update({"id": "quicknode-alias"}),
+        ):
+            candidate = json.loads(json.dumps(value))
+            mutation(candidate)
+            invalid = Path(self.temp.name) / f"invalid-{len(list(Path(self.temp.name).glob('invalid-*')))}.json"
+            invalid.write_text(json.dumps(candidate))
+            with self.assertRaisesRegex(issuer.IssuerError, "trust domains|approved trust registry"):
+                issuer.RpcSet.load(invalid, "solana:devnet")
 
     def test_issuer_keypair_rejects_mismatched_public_half(self) -> None:
         self.settings.issuer_keypair_file.write_text(str([0] * 64))
