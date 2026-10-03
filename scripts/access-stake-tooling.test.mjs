@@ -491,6 +491,16 @@ test('release builds use the pinned cache without rustup or network resolution',
   assert.ok(command.includes('--locked'));
 });
 
+test('CI artifacts bind to the exact pull-request head rather than the synthetic merge commit', async () => {
+  const workflow = await fs.readFile(path.join(process.cwd(), '.github/workflows/ci.yml'), 'utf8');
+  assert.equal(
+    workflow.match(/ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/gu)?.length,
+    4,
+  );
+  assert.match(workflow, /--commit "\$\(git rev-parse HEAD\)"/u);
+  assert.doesNotMatch(workflow, /--commit "\$GITHUB_SHA"/u);
+});
+
 test('Squads authority manifest pins autonomous vault index zero and exact inner instruction', () => {
   const manifest = createProposalManifest({
     cluster: 'devnet',
