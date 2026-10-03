@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ def sanitized_claim(row: Any) -> dict[str, Any]:
             "config_address",
             "config_revision",
             "chain_signature",
+            "chain_finalized_signature",
             "recovery_key_version",
             "token_generation",
             "expires_at_ms",
@@ -67,9 +69,46 @@ def inspect_operation(store: Store, operation_id: str) -> dict[str, Any]:
     return {
         "schema": "neal.reconciliation-inspection/v1",
         "claim": sanitized_claim(row),
+        "chainAttempts": store.chain_attempts(operation_id),
         "events": [{**dict(event), "metadata": json.loads(event["metadata_json"])} for event in events],
         "administrators": [dict(admin) for admin in admins],
     }
+
+
+def attribute_finalized_consumption(
+    app: Application, operation_id: str, signature: str
+) -> Any:
+    row = app.store.claim_by_operation(operation_id)
+    if signature not in {attempt["signature"] for attempt in app.store.chain_attempts(operation_id)}:
+        raise IssuerError(
+            "Finalized signature was not journaled as a claim attempt",
+            HTTPStatus.CONFLICT,
+            code="chain_signature_not_attempted",
+        )
+    if not app.solana.consumption_signature_finalized(row["receipt"], signature):
+        raise IssuerError(
+            "Attempted signature and receipt are not both finalized by RPC quorum",
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            code="chain_signature_not_finalized",
+            retryable=True,
+        )
+    return app.store.resolve_ambiguous_chain_consumption(
+        row["receipt"], finalized_signature=signature
+    )
+
+
+def accept_unattributed_consumption(app: Application, operation_id: str) -> Any:
+    row = app.store.claim_by_operation(operation_id)
+    if not app.solana.consumed(row["receipt"]):
+        raise IssuerError(
+            "Receipt is not consumed according to finalized RPC quorum",
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            code="chain_consumption_not_finalized",
+            retryable=True,
+        )
+    return app.store.resolve_ambiguous_chain_consumption(
+        row["receipt"], finalized_signature=None
+    )
 
 
 def main() -> int:
@@ -79,11 +118,17 @@ def main() -> int:
     action.add_argument("--list", action="store_true", help="list claims and unresolved administrator work")
     action.add_argument("--inspect", metavar="OPERATION_ID")
     action.add_argument("--resume", metavar="OPERATION_ID")
+    action.add_argument("--attribute-finalized-signature", metavar="OPERATION_ID")
+    action.add_argument("--accept-unattributed-consumption", metavar="OPERATION_ID")
     action.add_argument("--cancel-before-consumption", metavar="OPERATION_ID")
     action.add_argument("--revoke-and-replace", metavar="OPERATION_ID")
     action.add_argument("--post-restore", action="store_true")
     action.add_argument("--user-id", help="legacy-compatible exact temporary-administrator reconciliation")
+    parser.add_argument("--signature", help="journaled signature for --attribute-finalized-signature")
     options = parser.parse_args()
+
+    if bool(options.attribute_finalized_signature) != bool(options.signature):
+        parser.error("--signature is required only with --attribute-finalized-signature")
 
     load_environment(Path(options.environment_file))
     settings = Settings.from_environment()
@@ -123,6 +168,22 @@ def main() -> int:
         return 0
 
     app = Application(settings)
+    if options.attribute_finalized_signature:
+        row = attribute_finalized_consumption(
+            app, options.attribute_finalized_signature, options.signature
+        )
+        print(json.dumps({
+            "schema": "neal.chain-signature-attribution/v1",
+            "claim": sanitized_claim(row),
+        }, sort_keys=True))
+        return 0
+    if options.accept_unattributed_consumption:
+        row = accept_unattributed_consumption(app, options.accept_unattributed_consumption)
+        print(json.dumps({
+            "schema": "neal.chain-consumption-acceptance/v1",
+            "claim": sanitized_claim(row),
+        }, sort_keys=True))
+        return 0
     if options.resume:
         row = app.store.claim_by_operation(options.resume)
         app.store.clear_claim_attention(row["receipt"])

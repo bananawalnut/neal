@@ -88,9 +88,15 @@ If a prior attempt consumes the receipt after a replacement has been persisted
 and no attempted signature can be proven finalized, the claim remains
 `CHAIN_CONSUMED` with `attention_required` and
 `chain_signature_ambiguous`; it cannot advance to Matrix issuance until
-operator reconciliation attributes the finality or accepts the ambiguity.
+operator reconciliation either attributes one journaled attempt after
+two-of-three finalized verification or explicitly accepts an unattributed but
+quorum-consumed receipt. Generic resume refuses this state. Both decisions are
+hash-journaled and operator inspection exposes the finalized attribution and
+append-only attempt history.
 Upgrades quarantine submitted rows that predate recoverable blockhash metadata
-as `LEGACY_REVIEW` rather than retrying or reissuing them.
+as `LEGACY_REVIEW` rather than retrying or reissuing them. Pre-v6 rows already
+at or beyond `CHAIN_CONSUMED` are also quarantined without inferring a finalized
+signature from the last stored attempt.
 
 Registration tokens are derived with domain-separated HMAC from a dedicated
 versioned 32-byte recovery credential. The Solana issuer key is never reused and

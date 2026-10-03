@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import issuer
 import backup
+import reconcile
 import s3_backup
 
 
@@ -392,6 +393,164 @@ class IssuerTests(unittest.TestCase):
                 (completed["operation_id"],),
             ).fetchall()]
         self.assertEqual(attempts, ["signature-a", "signature-b"])
+
+    def _ambiguous_claim(self, receipt: str, operation_wallet: str = "wallet") -> tuple[issuer.Store, str]:
+        store = issuer.Store(self.settings.database)
+        row = store.reserve_claim(receipt, operation_wallet, "config", 1, 1)
+        row = store.transition_claim(
+            receipt,
+            ("RESERVED",),
+            "CHAIN_SUBMITTED",
+            event_type="chain_transaction_signed",
+            fields={
+                "signed_transaction": b"attempt-transaction",
+                "chain_signature": "attempt-signature",
+                "chain_blockhash": "attempt-blockhash",
+                "chain_last_valid_block_height": 100,
+            },
+            chain_attempt={
+                "transaction": b"attempt-transaction",
+                "signature": "attempt-signature",
+                "blockhash": "attempt-blockhash",
+                "last_valid_block_height": 100,
+            },
+        )
+        row = store.transition_claim(
+            receipt,
+            ("CHAIN_SUBMITTED",),
+            "CHAIN_CONSUMED",
+            event_type="chain_consumption_recovered",
+            fields={
+                "chain_finalized_signature": None,
+                "attention_required": 1,
+                "last_error_code": "chain_signature_ambiguous",
+            },
+        )
+        return store, row["operation_id"]
+
+    def test_ambiguous_consumption_requires_explicit_attribution_and_journals_it(self) -> None:
+        class FinalizedSolana(FakeSolana):
+            def consumption_signature_finalized(self, receipt: str, signature: str) -> bool:
+                return receipt == self.receipt and signature == "attempt-signature"
+
+        store, operation_id = self._ambiguous_claim("attributed-receipt")
+        with self.assertRaisesRegex(issuer.IssuerError, "explicit operator resolution"):
+            store.clear_claim_attention("attributed-receipt")
+        inspection = reconcile.inspect_operation(store, operation_id)
+        self.assertIsNone(inspection["claim"]["chain_finalized_signature"])
+        self.assertEqual(
+            [attempt["signature"] for attempt in inspection["chainAttempts"]],
+            ["attempt-signature"],
+        )
+
+        app = issuer.Application(
+            self.settings,
+            matrix=FakeMatrix(),
+            solana=FinalizedSolana("attributed-receipt"),
+        )
+        resolved = reconcile.attribute_finalized_consumption(
+            app, operation_id, "attempt-signature"
+        )
+        self.assertEqual(resolved["chain_finalized_signature"], "attempt-signature")
+        self.assertEqual(resolved["attention_required"], 0)
+        with store.connection() as database:
+            event = database.execute(
+                """SELECT event_type, metadata_json FROM claim_events
+                   WHERE operation_id = ? ORDER BY event_id DESC LIMIT 1""",
+                (operation_id,),
+            ).fetchone()
+        self.assertEqual(event["event_type"], "operator_attributed_finalized_chain_signature")
+        self.assertEqual(
+            json.loads(event["metadata_json"]),
+            {"finalizedSignature": "attempt-signature"},
+        )
+
+    def test_ambiguous_consumption_can_be_explicitly_accepted_without_attribution(self) -> None:
+        class ConsumedSolana(FakeSolana):
+            def consumed(self, receipt: str) -> bool:
+                return receipt == self.receipt
+
+        store, operation_id = self._ambiguous_claim("unattributed-receipt")
+        app = issuer.Application(
+            self.settings,
+            matrix=FakeMatrix(),
+            solana=ConsumedSolana("unattributed-receipt"),
+        )
+        resolved = reconcile.accept_unattributed_consumption(app, operation_id)
+        self.assertIsNone(resolved["chain_finalized_signature"])
+        self.assertEqual(resolved["attention_required"], 0)
+        with store.connection() as database:
+            event = database.execute(
+                """SELECT event_type, metadata_json FROM claim_events
+                   WHERE operation_id = ? ORDER BY event_id DESC LIMIT 1""",
+                (operation_id,),
+            ).fetchone()
+        self.assertEqual(event["event_type"], "operator_accepted_unattributed_chain_consumption")
+        self.assertEqual(json.loads(event["metadata_json"]), {"acceptedWithoutSignature": True})
+
+    def test_pre_v6_completed_claim_signature_is_not_inferred(self) -> None:
+        database = sqlite3.connect(self.settings.database)
+        database.executescript(
+            """
+            CREATE TABLE claim_operations (
+              receipt TEXT PRIMARY KEY,
+              operation_id TEXT NOT NULL UNIQUE,
+              address TEXT NOT NULL,
+              config_address TEXT,
+              config_revision INTEGER,
+              phase TEXT NOT NULL,
+              attention_required INTEGER NOT NULL DEFAULT 0,
+              chain_signature TEXT,
+              chain_blockhash TEXT,
+              chain_last_valid_block_height INTEGER,
+              signed_transaction BLOB,
+              recovery_key_version INTEGER NOT NULL,
+              token_generation INTEGER NOT NULL DEFAULT 0,
+              token_commitment TEXT,
+              expires_at_ms INTEGER,
+              matrix_pending INTEGER,
+              matrix_completed INTEGER,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              last_error_code TEXT
+            );
+            INSERT INTO claim_operations(
+              receipt, operation_id, address, config_address, config_revision, phase,
+              attention_required, chain_signature, chain_blockhash,
+              chain_last_valid_block_height, signed_transaction, recovery_key_version,
+              token_generation, created_at, updated_at
+            ) VALUES (
+              'pre-v6-receipt', 'pre-v6-operation', 'wallet', 'config', 1,
+              'TOKEN_READY', 0, 'replacement-b', 'blockhash-b', 200,
+              X'0102', 1, 0, 1, 1
+            );
+            PRAGMA user_version = 5;
+            """
+        )
+        database.close()
+
+        store = issuer.Store(self.settings.database)
+        migrated = store.claim("pre-v6-receipt")
+        self.assertEqual(migrated["phase"], "LEGACY_REVIEW")
+        self.assertIsNone(migrated["chain_finalized_signature"])
+        self.assertEqual(migrated["attention_required"], 1)
+        self.assertEqual(
+            migrated["last_error_code"],
+            "legacy_chain_signature_attribution_required",
+        )
+        with store.connection() as connection:
+            event = connection.execute(
+                """SELECT previous_phase, next_phase, event_type, metadata_json
+                   FROM claim_events WHERE operation_id = ?""",
+                ("pre-v6-operation",),
+            ).fetchone()
+        self.assertEqual(event["previous_phase"], "TOKEN_READY")
+        self.assertEqual(event["next_phase"], "LEGACY_REVIEW")
+        self.assertEqual(event["event_type"], "legacy_chain_signature_attribution_quarantined")
+        self.assertEqual(
+            json.loads(event["metadata_json"]),
+            {"reason": "pre_v6_finalized_signature_cannot_be_proven"},
+        )
 
     def test_v3_chain_submissions_without_recovery_metadata_are_quarantined(self) -> None:
         database = sqlite3.connect(self.settings.database)
@@ -1049,7 +1208,10 @@ class IssuerTests(unittest.TestCase):
             (repository / "programs/access-stake/contracts/error-codes.v1.json").read_text()
         )
         self.assertEqual(registry["schema"], "neal.error-code-registry/v1")
-        source = Path(__file__).with_name("issuer.py").read_text()
+        source = "\n".join(
+            Path(__file__).with_name(name).read_text()
+            for name in ("issuer.py", "reconcile.py")
+        )
         explicit = set(re.findall(r'code="([a-z0-9_]+)"', source))
         self.assertFalse(explicit - set(registry["codes"]))
         defaults = {

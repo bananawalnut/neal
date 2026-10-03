@@ -73,6 +73,10 @@ CLAIM_PHASES = (
     "REGISTRATION_COMPLETED",
 )
 TERMINAL_CLAIM_PHASES = {"LEGACY_REVIEW", "CANCELLED_BEFORE_CONSUMPTION"}
+EXPLICIT_CHAIN_RESOLUTION_ERRORS = {
+    "chain_signature_ambiguous",
+    "legacy_chain_signature_attribution_required",
+}
 B58_ALPHABET = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 B58_INDEX = {character: index for index, character in enumerate(B58_ALPHABET)}
 
@@ -562,6 +566,7 @@ class Store:
 
     def initialize(self) -> None:
         with self.connection() as database:
+            previous_schema_version = database.execute("PRAGMA user_version").fetchone()[0]
             tables = {
                 row[0] for row in database.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -659,6 +664,31 @@ class Store:
                 database.execute("ALTER TABLE claim_operations ADD COLUMN chain_blockhash TEXT")
             if "chain_last_valid_block_height" not in claim_columns:
                 database.execute("ALTER TABLE claim_operations ADD COLUMN chain_last_valid_block_height INTEGER")
+            if previous_schema_version < 6:
+                legacy_consumptions = database.execute(
+                    """SELECT receipt, operation_id, phase FROM claim_operations
+                       WHERE phase IN (
+                         'CHAIN_CONSUMED', 'MATRIX_TOKEN_ENSURING', 'ADMIN_CLEANUP_PENDING',
+                         'TOKEN_READY', 'REGISTRATION_IN_PROGRESS', 'REGISTRATION_COMPLETED'
+                       )"""
+                ).fetchall()
+                for row in legacy_consumptions:
+                    database.execute(
+                        """UPDATE claim_operations
+                           SET phase = 'LEGACY_REVIEW', chain_finalized_signature = NULL,
+                               attention_required = 1, updated_at = ?,
+                               last_error_code = 'legacy_chain_signature_attribution_required'
+                           WHERE receipt = ? AND phase = ?""",
+                        (int(time.time()), row["receipt"], row["phase"]),
+                    )
+                    self._append_claim_event(
+                        database,
+                        row["operation_id"],
+                        row["phase"],
+                        "LEGACY_REVIEW",
+                        "legacy_chain_signature_attribution_quarantined",
+                        {"reason": "pre_v6_finalized_signature_cannot_be_proven"},
+                    )
             incomplete_submissions = database.execute(
                 """SELECT receipt, operation_id, phase FROM claim_operations
                    WHERE phase IN ('CHAIN_SUBMITTED', 'CHAIN_RETRY_REQUIRED')
@@ -700,14 +730,6 @@ class Store:
                         hashlib.sha256(row["signed_transaction"]).hexdigest(), int(time.time()),
                     ),
                 )
-            database.execute(
-                """UPDATE claim_operations SET chain_finalized_signature = chain_signature
-                   WHERE chain_finalized_signature IS NULL AND chain_signature IS NOT NULL
-                     AND phase IN (
-                       'CHAIN_CONSUMED', 'MATRIX_TOKEN_ENSURING', 'ADMIN_CLEANUP_PENDING',
-                       'TOKEN_READY', 'REGISTRATION_IN_PROGRESS', 'REGISTRATION_COMPLETED'
-                     )"""
-            )
             if "legacy_claim_rows" in {
                 row[0] for row in database.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
@@ -741,7 +763,7 @@ class Store:
                     )
                 if "registration_token" in columns:
                     database.execute("UPDATE legacy_claim_rows SET registration_token = NULL")
-            database.execute("PRAGMA user_version = 5")
+            database.execute("PRAGMA user_version = 6")
 
     def enforce_storage_limit(self) -> None:
         total = sum(
@@ -995,12 +1017,107 @@ class Store:
             ).fetchall()
         return tuple(row[0] for row in rows)
 
+    def chain_attempts(self, operation_id: str) -> list[dict[str, Any]]:
+        with self.connection() as database:
+            rows = database.execute(
+                """SELECT signature, blockhash, last_valid_block_height,
+                          transaction_sha256, created_at
+                   FROM claim_chain_attempts
+                   WHERE operation_id = ? ORDER BY attempt_id""",
+                (operation_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def clear_claim_attention(self, receipt: str) -> None:
         with self.connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
+            if not row:
+                raise IssuerError("Unknown claim operation", HTTPStatus.NOT_FOUND, code="operation_not_found")
+            if row["last_error_code"] in EXPLICIT_CHAIN_RESOLUTION_ERRORS:
+                raise IssuerError(
+                    "Chain-consumption ambiguity requires an explicit operator resolution",
+                    HTTPStatus.CONFLICT,
+                    code="explicit_chain_resolution_required",
+                    operation_id=row["operation_id"],
+                )
             database.execute(
                 "UPDATE claim_operations SET attention_required = 0, last_error_code = NULL, updated_at = ? WHERE receipt = ?",
                 (int(time.time()), receipt),
             )
+            self._append_claim_event(
+                database,
+                row["operation_id"],
+                row["phase"],
+                row["phase"],
+                "operator_resumed_claim",
+                {"clearedErrorCode": row["last_error_code"]},
+            )
+
+    def resolve_ambiguous_chain_consumption(
+        self, receipt: str, *, finalized_signature: str | None
+    ) -> sqlite3.Row:
+        with self.connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
+            if (
+                not row
+                or row["phase"] != "CHAIN_CONSUMED"
+                or not row["attention_required"]
+                or row["last_error_code"] != "chain_signature_ambiguous"
+                or row["chain_finalized_signature"] is not None
+            ):
+                raise IssuerError(
+                    "Claim is not awaiting explicit chain-consumption resolution",
+                    HTTPStatus.CONFLICT,
+                    code="chain_resolution_not_required",
+                )
+            if finalized_signature is not None:
+                attempted = database.execute(
+                    """SELECT 1 FROM claim_chain_attempts
+                       WHERE operation_id = ? AND signature = ?""",
+                    (row["operation_id"], finalized_signature),
+                ).fetchone()
+                if not attempted:
+                    raise IssuerError(
+                        "Finalized signature was not journaled as a claim attempt",
+                        HTTPStatus.CONFLICT,
+                        code="chain_signature_not_attempted",
+                    )
+            database.execute(
+                """UPDATE claim_operations
+                   SET chain_finalized_signature = ?, attention_required = 0,
+                       last_error_code = NULL, updated_at = ?
+                   WHERE receipt = ? AND phase = 'CHAIN_CONSUMED'
+                     AND attention_required = 1
+                     AND last_error_code = 'chain_signature_ambiguous'""",
+                (finalized_signature, int(time.time()), receipt),
+            )
+            event_type = (
+                "operator_attributed_finalized_chain_signature"
+                if finalized_signature is not None
+                else "operator_accepted_unattributed_chain_consumption"
+            )
+            metadata = (
+                {"finalizedSignature": finalized_signature}
+                if finalized_signature is not None
+                else {"acceptedWithoutSignature": True}
+            )
+            self._append_claim_event(
+                database,
+                row["operation_id"],
+                row["phase"],
+                row["phase"],
+                event_type,
+                metadata,
+            )
+            return database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
 
     def reserve_token_replacement(self, receipt: str) -> sqlite3.Row:
         with self.connection() as database:
@@ -1482,6 +1599,10 @@ class SolanaVerifier:
             and status.get("err") is None
             and status.get("confirmationStatus") == "finalized"
         )
+
+    def consumption_signature_finalized(self, receipt_address: str, signature: str) -> bool:
+        """Require quorum-finalized receipt consumption and signature finality."""
+        return self.consumed(receipt_address) and self._signature_finalized(signature)
 
     def _attributed_finalized_signature(
         self, stored_signature: str, attempted_signatures: tuple[str, ...] | None
@@ -2089,7 +2210,7 @@ class Application:
             phase = row["phase"]
             if row["attention_required"] and (
                 phase in {"MATRIX_TOKEN_ENSURING", "ADMIN_CLEANUP_PENDING"}
-                or row["last_error_code"] == "chain_signature_ambiguous"
+                or row["last_error_code"] in EXPLICIT_CHAIN_RESOLUTION_ERRORS
             ):
                 return HTTPStatus.ACCEPTED, self.processing_response(row)
             if phase == "LEGACY_REVIEW":

@@ -212,6 +212,20 @@ If `/readyz` reports an administrator cleanup blocker, keep issuance stopped:
 /opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/reconcile.py --resume OPERATION_ID
 ```
 
+Generic `--resume` refuses an ambiguous chain-signature attribution. Inspect the
+append-only attempts first, then either attribute one attempted signature after
+the tool verifies finalized receipt consumption and signature finality through
+the configured RPC quorum, or explicitly accept an unattributed finalized
+consumption. Both actions append a hash-chained operator event and do not issue
+a Matrix token by themselves:
+
+```bash
+/opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/reconcile.py \
+  --attribute-finalized-signature OPERATION_ID --signature SIGNATURE
+/opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/reconcile.py \
+  --accept-unattributed-consumption OPERATION_ID
+```
+
 Before activation, also run the end-to-end checklist in
 `programs/access-stake/TESTING.md` against a non-production Synapse instance
 and follow `programs/access-stake/DEPLOYMENT.md`. Passing `/readyz` is necessary
