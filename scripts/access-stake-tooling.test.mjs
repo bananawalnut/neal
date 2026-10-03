@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import fs from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import {
   DEVNET_GENESIS,
   LIFECYCLE_AMOUNT,
@@ -28,7 +32,13 @@ import {
   validateManualReadiness,
   validateManualPublicRuntime,
 } from './manual-devnet-contracts.mjs';
-import { assertAcceptancePortsAvailable } from './manual-devnet.mjs';
+import {
+  assertAcceptancePortsAvailable,
+  directoryDigest,
+  processAlive,
+  reviewSignaturePayload,
+  validateSignedIsolatedReview,
+} from './manual-devnet.mjs';
 
 const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -157,6 +167,33 @@ test('manual acceptance port preflight reports an occupied listener without stop
   }
 });
 
+test('prepared browser artifact digest changes on any file mutation and rejects symlinks', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'neal-browser-artifact-'));
+  try {
+    await fs.writeFile(path.join(directory, 'index.html'), 'ready');
+    const first = await directoryDigest(directory);
+    await fs.writeFile(path.join(directory, 'index.html'), 'changed');
+    assert.notEqual(await directoryDigest(directory), first);
+    await fs.symlink(path.join(directory, 'index.html'), path.join(directory, 'alias.html'));
+    await assert.rejects(() => directoryDigest(directory), /may not contain symlinks/u);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('manual process identity rejects a live PID with the wrong ownership nonce', async () => {
+  const marker = `neal-manual-owner-${'a'.repeat(32)}`;
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', marker], { stdio: 'ignore' });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(processAlive({ pid: child.pid, marker }), true);
+    assert.equal(processAlive({ pid: child.pid, marker: `neal-manual-owner-${'b'.repeat(32)}` }), false);
+  } finally {
+    child.kill('SIGTERM');
+    await new Promise((resolve) => child.once('exit', resolve));
+  }
+});
+
 test('RPC-set contract requires three independent providers without exposing URLs in CLI parsing', () => {
   const value = {
     schema: 'neal.solana-rpc-set/v1',
@@ -234,6 +271,7 @@ test('manual browser runtime produces only a localhost devnet policy', () => {
     expiresAt: new Date(generatedAt + (MANUAL_LEASE_SECONDS * 1_000)).toISOString(),
     chainId: 'solana:devnet',
     verification: { mode: 'quorum-2-of-3', providerCount: 3, threshold: 2 },
+    requestNonce: 'd'.repeat(64),
     browserWallet: KEY,
     programId: KEY,
     programDataAddress: KEY,
@@ -256,6 +294,15 @@ test('manual browser runtime produces only a localhost devnet policy', () => {
   assert.equal(policy.accessStake.requiredAtomicAmount, '69000000000');
   assert.equal(policy.holderProof.rpcEndpoint, '/_neal/devnet/rpc');
   assert.equal(JSON.stringify(policy).includes('secret'), false);
+  assert.throws(() => validateManualPublicRuntime({
+    ...runtime, terms: { ...runtime.terms, minimumLockSeconds: 7_776_000 },
+  }), /approved acceptance terms/u);
+  assert.throws(() => validateManualPublicRuntime({ ...runtime, requestNonce: 'short' }), /request nonce/u);
+  assert.throws(() => validateManualPublicRuntime({
+    ...runtime,
+    generatedAt: new Date(generatedAt - (MANUAL_LEASE_SECONDS * 1_000)).toISOString(),
+    expiresAt: new Date(generatedAt - 1).toISOString(),
+  }), /expired/u);
 });
 
 test('manual readiness is sanitized, exact-commit bound, and requires every check', () => {
@@ -267,6 +314,7 @@ test('manual readiness is sanitized, exact-commit bound, and requires every chec
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     chainId: 'solana:devnet',
     verification: { mode: 'quorum-2-of-3', providerCount: 3, threshold: 2 },
+    requestNonce: 'd'.repeat(64),
     browserWallet: KEY, programId: KEY, programDataAddress: KEY, programSha256: SHA,
     configAddress: KEY, configRevision: '0', issuerAuthority: KEY, mint: KEY,
     terms: { requiredAtomicAmount: '69000000000', minimumLockSeconds: 120, tokenDecimals: 6, mintedAtomicAmount: '69001000000' },
@@ -298,6 +346,73 @@ test('isolated review must cover the exact release with no P0-P2 findings', () =
   };
   assert.equal(validateReview(review, COMMIT), review);
   assert.throws(() => validateReview({ ...review, findings: { p0: 0, p1: 0, p2: 1 } }, COMMIT), /unresolved/u);
+});
+
+test('manual acceptance requires a signed review bound to the exact release bytes', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'neal-signed-review-'));
+  try {
+    const artifact = Buffer.alloc(123, 7);
+    const artifactSha256 = createHash('sha256').update(artifact).digest('hex');
+    const manifest = release();
+    manifest.builds = manifest.builds.map((build) => ({ ...build, sha256: artifactSha256 }));
+    manifest.artifact = { ...manifest.artifact, sha256: artifactSha256 };
+    const manifestFile = path.join(directory, 'release-manifest.json');
+    const artifactFile = path.join(directory, 'neal_access_stake.so');
+    const reviewFile = path.join(directory, 'review.json');
+    const signatureFile = path.join(directory, 'review-signature.json');
+    const publicKeyFile = path.join(directory, 'reviewer-public.pem');
+    const issuerBundleFile = path.join(directory, 'issuer-bundle.tar');
+    const review = {
+      schema: 'neal.access-stake-isolated-review/v1', sourceCommit: COMMIT,
+      reviewedAt: '2026-10-03T00:00:00.000Z', reviewerType: 'isolated-agent',
+      findings: { p0: 0, p1: 0, p2: 0 },
+    };
+    await Promise.all([
+      fs.writeFile(artifactFile, artifact),
+      fs.writeFile(manifestFile, `${JSON.stringify(manifest)}\n`),
+      fs.writeFile(reviewFile, `${JSON.stringify(review)}\n`),
+      fs.writeFile(issuerBundleFile, Buffer.from('reviewed issuer bundle')),
+    ]);
+    const releaseManifestSha256 = createHash('sha256').update(await fs.readFile(manifestFile)).digest('hex');
+    const reviewSha256 = createHash('sha256').update(await fs.readFile(reviewFile)).digest('hex');
+    const issuerBundleSha256 = createHash('sha256').update(await fs.readFile(issuerBundleFile)).digest('hex');
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    await fs.writeFile(publicKeyFile, publicKey.export({ type: 'spki', format: 'pem' }));
+    const publicKeySha256 = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
+    const envelope = {
+      schema: 'neal.access-stake-isolated-review-signature/v1', sourceCommit: COMMIT,
+      reviewSha256, releaseManifestSha256, artifactSha256, issuerBundleSha256,
+      reviewerIdentity: 'independent-review-agent', reviewedAt: review.reviewedAt, unacceptedP3: 0,
+    };
+    const signed = { ...envelope, signature: sign(null, reviewSignaturePayload(envelope), privateKey).toString('base64url') };
+    await fs.writeFile(signatureFile, `${JSON.stringify(signed)}\n`);
+    const validated = await validateSignedIsolatedReview({
+      reviewFile, signatureFile, issuerBundleFile, reviewerPublicKeyFile: publicKeyFile, sourceCommit: COMMIT,
+      authorizedReviewerIdentity: envelope.reviewerIdentity, authorizedPublicKeySha256: publicKeySha256,
+      release: { manifest, manifestFile, artifactFile },
+    });
+    assert.equal(validated.envelope.artifactSha256, artifactSha256);
+    const tampered = { ...signed, artifactSha256: SHA };
+    await fs.writeFile(signatureFile, `${JSON.stringify(tampered)}\n`);
+    await assert.rejects(() => validateSignedIsolatedReview({
+      reviewFile, signatureFile, issuerBundleFile, reviewerPublicKeyFile: publicKeyFile, sourceCommit: COMMIT,
+      authorizedReviewerIdentity: envelope.reviewerIdentity, authorizedPublicKeySha256: publicKeySha256,
+      release: { manifest, manifestFile, artifactFile },
+    }), /does not bind/u);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('manual compose keeps Synapse internal while giving only the issuer RPC egress', async () => {
+  const [base, manual] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), 'infra/neal-access-rehearsal/compose.yaml'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'infra/neal-access-rehearsal/compose.manual.yaml'), 'utf8'),
+  ]);
+  assert.match(base, /synapse:[\s\S]*?networks:\n\s+- rehearsal-internal/u);
+  assert.match(base, /rehearsal-internal:\n\s+internal: true/u);
+  assert.doesNotMatch(manual, /^\s{2}synapse:/mu);
+  assert.match(manual, /issuer:[\s\S]*?networks:\n\s+- rehearsal-internal\n\s+- manual-egress/u);
 });
 
 test('Matrix rehearsal completes token and dummy UIA stages and rejects token replay', async () => {

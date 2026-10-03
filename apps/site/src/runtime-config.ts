@@ -6,6 +6,7 @@ export type DevnetManualRuntime = {
   expiresAt: string;
   chainId: 'solana:devnet';
   verification: { mode: 'quorum-2-of-3'; providerCount: 3; threshold: 2 };
+  requestNonce: string;
   browserWallet: string;
   programId: string;
   programDataAddress: string;
@@ -45,7 +46,7 @@ export type DevnetManualReadiness = {
   checks: Record<'lease' | 'browserCommit' | 'site' | 'issuer' | 'matrix' | 'rpcQuorum' | 'walletPolicy', 'ok' | 'failed'>;
 };
 
-export type LocalSurfaceMode = 'production' | 'local-preview' | 'manual-devnet';
+export type LocalSurfaceMode = 'production' | 'local-preview' | 'manual-devnet' | 'blocked';
 
 let runtime: DevnetManualRuntime | null = null;
 let readiness: DevnetManualReadiness | null = null;
@@ -53,9 +54,13 @@ let readiness: DevnetManualReadiness | null = null;
 const localHostname = (): boolean => ['localhost', '127.0.0.1'].includes(window.location.hostname);
 
 const detectSurfaceMode = (): LocalSurfaceMode => {
-  if (!localHostname()) return 'production';
-  if (window.location.port === '4280') return 'manual-devnet';
-  return 'local-preview';
+  const port = window.location.port;
+  if (['4280', '4281', '4282'].includes(port)) {
+    if (port === '4280' && localHostname()) return 'manual-devnet';
+    if (port === '4282' && localHostname()) return 'local-preview';
+    return 'blocked';
+  }
+  return localHostname() ? 'local-preview' : 'production';
 };
 
 const surfaceMode = detectSurfaceMode();
@@ -73,7 +78,7 @@ const validRuntime = (value: unknown): value is DevnetManualRuntime => {
   const candidate = value as Record<string, unknown>;
   if (!exact(candidate, [
     'schema', 'mode', 'sourceCommit', 'generatedAt', 'expiresAt', 'chainId', 'verification',
-    'browserWallet', 'programId', 'programDataAddress', 'programSha256', 'configAddress',
+    'requestNonce', 'browserWallet', 'programId', 'programDataAddress', 'programSha256', 'configAddress',
     'configRevision', 'issuerAuthority', 'mint', 'terms', 'matrix',
   ])) return false;
   const verification = candidate.verification as Record<string, unknown> | undefined;
@@ -92,6 +97,8 @@ const validRuntime = (value: unknown): value is DevnetManualRuntime => {
     && expiresAt > Date.now()
     && expiresAt > generatedAt
     && expiresAt - generatedAt <= 4 * 60 * 60 * 1000
+    && typeof candidate.requestNonce === 'string'
+    && /^[0-9a-f]{64}$/u.test(candidate.requestNonce)
     && publicKey(candidate.browserWallet)
     && publicKey(candidate.programId)
     && publicKey(candidate.programDataAddress)
@@ -154,6 +161,9 @@ const validReadiness = (value: unknown, expectedCommit: string): value is Devnet
 };
 
 export async function loadRuntimeConfig(): Promise<void> {
+  if (surfaceMode === 'blocked') {
+    throw new Error('This local port and hostname combination is not an authorized NEAL surface.');
+  }
   if (surfaceMode !== 'manual-devnet') return;
   if (window.location.protocol !== 'https:') {
     throw new Error('Manual acceptance requires HTTPS on localhost port 4280.');
@@ -182,3 +192,20 @@ export async function loadRuntimeConfig(): Promise<void> {
 export const getRuntimeConfig = (): DevnetManualRuntime | null => runtime;
 export const getRuntimeReadiness = (): DevnetManualReadiness | null => readiness;
 export const getLocalSurfaceMode = (): LocalSurfaceMode => surfaceMode;
+
+export const manualRequestHeaders = (): Record<string, string> => (
+  runtime ? { 'X-Neal-Request-Nonce': runtime.requestNonce } : {}
+);
+
+export async function refreshRuntimeReadiness(): Promise<DevnetManualReadiness | null> {
+  if (surfaceMode !== 'manual-devnet' || !runtime) return null;
+  const response = await fetch('/_neal/devnet/ready', { cache: 'no-store' });
+  const value: unknown = response.headers.get('content-type')?.includes('application/json')
+    ? await response.json()
+    : null;
+  if (!response.ok || !validReadiness(value, runtime.sourceCommit)) {
+    throw new Error('The isolated devnet dependencies are not ready. No transaction was constructed.');
+  }
+  readiness = value;
+  return value;
+}

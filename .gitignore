@@ -20,6 +20,7 @@ assets/drafts/
 .env.*
 !.env.example
 *.pem
+!infra/neal-access-rehearsal/independent-reviewer-public.pem
 *.key
 *.keystore
 *keypair*.json

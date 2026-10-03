@@ -38,13 +38,14 @@ const timestamp = (value, label) => {
 export function validateManualPublicRuntime(value, { allowExpired = false } = {}) {
   exactKeys(value, [
     'schema', 'mode', 'sourceCommit', 'generatedAt', 'expiresAt', 'chainId', 'verification',
-    'browserWallet', 'programId', 'programDataAddress', 'programSha256', 'configAddress',
+    'requestNonce', 'browserWallet', 'programId', 'programDataAddress', 'programSha256', 'configAddress',
     'configRevision', 'issuerAuthority', 'mint', 'terms', 'matrix',
   ], 'manual runtime');
   if (value.schema !== MANUAL_RUNTIME_SCHEMA || value.mode !== MANUAL_MODE || value.chainId !== 'solana:devnet') {
     throw new Error('Manual runtime identity is unsupported');
   }
   if (!/^[0-9a-f]{40}$/u.test(value.sourceCommit)) throw new Error('Manual runtime source commit is invalid');
+  if (!/^[0-9a-f]{64}$/u.test(value.requestNonce)) throw new Error('Manual runtime request nonce is invalid');
   const generatedAt = timestamp(value.generatedAt, 'generatedAt');
   const expiresAt = timestamp(value.expiresAt, 'expiresAt');
   const leaseMilliseconds = Date.parse(expiresAt) - Date.parse(generatedAt);

@@ -42,6 +42,7 @@
     "token_commitment_mismatch": {"http": 503, "retryable": false},
     "token_expired_operator_action": {"http": 409, "retryable": false},
     "unsafe_matrix_target": {"http": 500, "retryable": false},
+    "wallet_not_expected": {"http": 403, "retryable": false},
     "wallet_reverification_required": {"http": 401, "retryable": false}
   }
 }

@@ -1,20 +1,19 @@
 services:
-  synapse:
-    ports:
-      - "127.0.0.1:18009:18009"
-    networks:
-      rehearsal-internal:
-      manual-egress:
-
   issuer:
     build:
       context: ../..
       dockerfile: infra/neal-access-rehearsal/Dockerfile.issuer
+      args:
+        NEAL_ISSUER_SOURCE_COMMIT: ${NEAL_ISSUER_SOURCE_COMMIT:-unknown}
     platform: linux/amd64
     depends_on:
       synapse:
         condition: service_healthy
-    network_mode: service:synapse
+    ports:
+      - "127.0.0.1:18009:18009"
+    networks:
+      - rehearsal-internal
+      - manual-egress
     user: "${NEAL_REHEARSAL_UID:?set NEAL_REHEARSAL_UID}:${NEAL_REHEARSAL_GID:?set NEAL_REHEARSAL_GID}"
     env_file:
       - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}/issuer.env

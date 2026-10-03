@@ -8,8 +8,12 @@ import { spawnSync } from 'node:child_process';
 
 import { createManualGateway } from './manual-devnet-gateway.mjs';
 
-const request = (port, pathname) => new Promise((resolve, reject) => {
-  const call = https.get({ hostname: '127.0.0.1', port, path: pathname, rejectUnauthorized: false }, (response) => {
+const request = (port, pathname, options = {}) => new Promise((resolve, reject) => {
+  const call = https.request({
+    hostname: '127.0.0.1', port, path: pathname, rejectUnauthorized: false,
+    method: options.method ?? 'GET',
+    headers: { Host: 'localhost:test', ...(options.headers ?? {}) },
+  }, (response) => {
     const chunks = [];
     response.on('data', (chunk) => chunks.push(chunk));
     response.on('end', () => resolve({
@@ -19,6 +23,8 @@ const request = (port, pathname) => new Promise((resolve, reject) => {
     }));
   });
   call.on('error', reject);
+  if (options.body) call.write(options.body);
+  call.end();
 });
 
 test('manual gateway serves only sanitized runtime and local devnet wallet policy', async () => {
@@ -44,6 +50,7 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
     schema: 'neal.devnet-manual-runtime/v1', mode: 'isolated-devnet-manual', sourceCommit: 'b'.repeat(40),
     generatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), chainId: 'solana:devnet',
     verification: { mode: 'quorum-2-of-3', providerCount: 3, threshold: 2 },
+    requestNonce: 'd'.repeat(64),
     browserWallet: '11111111111111111111111111111111', programId: '11111111111111111111111111111111',
     programDataAddress: '11111111111111111111111111111111', programSha256: 'a'.repeat(64),
     configAddress: '11111111111111111111111111111111', configRevision: '0',
@@ -58,6 +65,8 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
   const faults = path.join(directory, 'faults.json');
   await fs.writeFile(faults, '{"dropMatrixFinalResponseOnce":false}', { mode: 0o600 });
   let issuerHealthy = true;
+  let rpcMode = 'agreement';
+  const rpcCalls = [];
   const readinessFetch = async (url) => {
     if (url.endsWith('/_neal-build.json')) {
       return { status: 200, body: { schema: 'neal.devnet-browser-build/v1', sourceCommit: runtime.sourceCommit } };
@@ -67,6 +76,8 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
         status: 200,
         body: {
           schema: 'neal.issuer-readiness/v2', status: 'ready', chainId: 'solana:devnet',
+          sourceCommit: runtime.sourceCommit, issuerImageId: `sha256:${'e'.repeat(64)}`,
+          expectedWallet: runtime.browserWallet,
           verificationMode: 'quorum-2-of-3', programId: runtime.programId,
           programDataAddress: runtime.programDataAddress, programSha256: runtime.programSha256,
           configAddress: runtime.configAddress, mint: runtime.mint,
@@ -83,6 +94,19 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
     'site-origin': 'http://127.0.0.1:9', 'issuer-origin': 'http://127.0.0.1:9', 'matrix-origin': 'http://127.0.0.1:9',
     readinessFetch,
     readinessAgreement: async () => ({ slot: 123, agreeingProviderIds: ['helius-devnet', 'quicknode-devnet'] }),
+    rpcRequest: async (endpoint, method) => {
+      rpcCalls.push({ provider: endpoint.id, method });
+      if (method === 'sendTransaction') {
+        if (endpoint.id.startsWith('alchemy')) throw new Error('provider unavailable');
+        return '4'.repeat(88);
+      }
+      const providerIndex = ['helius-devnet', 'quicknode-devnet', 'alchemy-devnet'].indexOf(endpoint.id);
+      if (rpcMode === 'no-majority') return { context: { slot: 123 + providerIndex }, value: 456 + providerIndex };
+      if (rpcMode === 'one-liar' && endpoint.id.startsWith('alchemy')) return { context: { slot: 999 }, value: 999 };
+      return { context: { slot: 123 }, value: 456 };
+    },
+    expectedHost: 'localhost:test',
+    'issuer-image-id': `sha256:${'e'.repeat(64)}`,
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -111,6 +135,51 @@ test('manual gateway serves only sanitized runtime and local devnet wallet polic
     assert.equal(unavailable.status, 503);
     assert.equal(unavailable.body.ready, false);
     assert.equal(unavailable.body.checks.issuer, 'failed');
+    const rpcBody = JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'getBalance', params: [runtime.browserWallet] });
+    const rpcHeaders = {
+      Origin: 'https://localhost:4280',
+      'Sec-Fetch-Site': 'same-origin',
+      'Content-Type': 'application/json',
+      'X-Neal-Request-Nonce': runtime.requestNonce,
+    };
+    const rpc = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: rpcBody });
+    assert.equal(rpc.status, 200);
+    assert.equal(rpc.body.result.value, 456);
+    assert.equal(rpcCalls.filter((call) => call.method === 'getBalance').length, 3);
+    rpcMode = 'one-liar';
+    const oneLiar = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: rpcBody });
+    assert.equal(oneLiar.status, 200);
+    assert.equal(oneLiar.body.result.value, 456);
+    rpcMode = 'no-majority';
+    const noMajority = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: rpcBody });
+    assert.equal(noMajority.status, 503);
+    rpcMode = 'agreement';
+    const sendBody = JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'sendTransaction', params: ['signed-bytes'] });
+    const sent = await request(port, '/_neal/devnet/rpc', { method: 'POST', headers: rpcHeaders, body: sendBody });
+    assert.equal(sent.status, 200);
+    assert.equal(sent.body.result, '4'.repeat(88));
+    assert.equal(rpcCalls.filter((call) => call.method === 'sendTransaction').length, 3);
+    const crossOrigin = await request(port, '/_neal/devnet/rpc', {
+      method: 'POST', headers: { ...rpcHeaders, Origin: 'https://attacker.invalid' }, body: rpcBody,
+    });
+    assert.equal(crossOrigin.status, 403);
+    const { 'X-Neal-Request-Nonce': _nonce, ...headersWithoutNonce } = rpcHeaders;
+    const missingNonce = await request(port, '/_neal/devnet/rpc', {
+      method: 'POST', headers: headersWithoutNonce, body: rpcBody,
+    });
+    assert.equal(missingNonce.status, 403);
+    const textPlain = await request(port, '/_neal/devnet/rpc', {
+      method: 'POST', headers: { ...rpcHeaders, 'Content-Type': 'text/plain' }, body: rpcBody,
+    });
+    assert.equal(textPlain.status, 415);
+    const wrongHost = await request(port, '/_neal/devnet/health', { headers: { Host: 'foo.localhost:test' } });
+    assert.equal(wrongHost.status, 421);
+    const genericMatrixRoute = await request(port, '/_matrix/client/v3/admin/users');
+    assert.equal(genericMatrixRoute.status, 404);
+    const crossOriginRegistration = await request(port, '/_matrix/client/v3/register', {
+      method: 'POST', headers: { ...rpcHeaders, Origin: 'https://attacker.invalid' }, body: '{}',
+    });
+    assert.equal(crossOriginRegistration.status, 403);
     const absoluteTarget = await request(port, 'https://example.com/');
     assert.equal(absoluteTarget.status, 502);
     assert.equal(absoluteTarget.body.error, 'Local acceptance service unavailable');

@@ -12,7 +12,7 @@ import {
   buildManualWalletPolicy,
   validateManualPublicRuntime,
 } from './manual-devnet-contracts.mjs';
-import { establishDevnetAgreement, loadRpcSetCredential, selectHeliusEndpoint } from './devnet-rpc-set.mjs';
+import { establishDevnetAgreement, loadRpcSetCredential, rpcCall } from './devnet-rpc-set.mjs';
 
 const MAX_BODY = 1024 * 1024;
 const RPC_TIMEOUT_MS = 5_000;
@@ -30,7 +30,7 @@ const parseCli = (argv) => {
     if (!argv[index]?.startsWith('--') || !argv[index + 1]) throw new Error('Gateway arguments must be --name value pairs');
     values[argv[index].slice(2)] = argv[index + 1];
   }
-  for (const name of ['runtime', 'rpc-set-file', 'tls-key', 'tls-cert', 'faults', 'site-origin', 'issuer-origin', 'matrix-origin']) {
+  for (const name of ['runtime', 'rpc-set-file', 'tls-key', 'tls-cert', 'faults', 'site-origin', 'issuer-origin', 'matrix-origin', 'issuer-image-id']) {
     if (!values[name]) throw new Error(`Missing --${name}`);
   }
   return values;
@@ -65,6 +65,72 @@ const sendJson = (response, status, value) => {
   securityHeaders(response);
   response.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': body.length });
   response.end(body);
+};
+
+const stableValue = (value) => {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]));
+  }
+  return value;
+};
+
+const quorumIdentity = (method, result) => {
+  const contextual = new Set([
+    'getAccountInfo', 'getBalance', 'getFeeForMessage', 'getLatestBlockhash',
+    'getSignatureStatuses', 'getTokenAccountsByOwner', 'getTokenSupply', 'simulateTransaction',
+  ]);
+  let comparable = contextual.has(method) ? result?.value : result;
+  if (method === 'getTokenAccountsByOwner' && Array.isArray(comparable)) {
+    comparable = [...comparable].sort((left, right) => String(left?.pubkey ?? '').localeCompare(String(right?.pubkey ?? '')));
+  }
+  return JSON.stringify(stableValue(comparable));
+};
+
+const exactBrowserRequest = (request, runtime, expectedHost, { requireJson = false } = {}) => {
+  if (request.headers.host !== expectedHost) throw Object.assign(new Error('Unexpected local host'), { status: 421 });
+  if (request.headers.origin !== 'https://localhost:4280') throw Object.assign(new Error('Origin denied'), { status: 403 });
+  const fetchSite = request.headers['sec-fetch-site'];
+  if (fetchSite && fetchSite !== 'same-origin') throw Object.assign(new Error('Cross-site request denied'), { status: 403 });
+  if (request.headers['x-neal-request-nonce'] !== runtime.requestNonce) {
+    throw Object.assign(new Error('Request nonce denied'), { status: 403 });
+  }
+  if (requireJson && !String(request.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+    throw Object.assign(new Error('JSON content type required'), { status: 415 });
+  }
+};
+
+const matrixRouteAllowed = (pathname, method, runtime) => {
+  let decoded;
+  try { decoded = decodeURIComponent(pathname); } catch { return false; }
+  const exact = new Set([
+    'GET /_matrix/client/versions',
+    'GET /_matrix/client/v3/login',
+    'POST /_matrix/client/v3/login',
+    'POST /_matrix/client/v3/logout',
+    'POST /_matrix/client/v3/register',
+    'GET /_matrix/client/v3/register/available',
+    'GET /_matrix/client/v3/sync',
+    'GET /_matrix/client/v3/account/whoami',
+    'GET /_matrix/client/v3/joined_rooms',
+    'GET /_matrix/client/v3/capabilities',
+  ]);
+  if (exact.has(`${method} ${decoded}`)) return true;
+  const roomPrefix = `/_matrix/client/v3/rooms/${runtime.matrix.roomId}/`;
+  if (decoded.startsWith(roomPrefix) && ['GET', 'POST', 'PUT', 'DELETE'].includes(method)) return true;
+  for (const action of ['join', 'knock']) {
+    const prefix = `/_matrix/client/v3/${action}/`;
+    if (decoded.startsWith(prefix)) {
+      const target = decoded.slice(prefix.length);
+      return ['POST', 'PUT'].includes(method)
+        && [runtime.matrix.roomId, runtime.matrix.roomAlias].includes(target);
+    }
+  }
+  const profilePrefix = '/_matrix/client/v3/profile/';
+  if (method === 'GET' && decoded.startsWith(profilePrefix)) {
+    return decoded.slice(profilePrefix.length).includes(`:${runtime.matrix.serverName}`);
+  }
+  return false;
 };
 
 const cappedFetch = async (url, { timeoutMs = RPC_TIMEOUT_MS } = {}) => {
@@ -186,7 +252,7 @@ const readCappedResponse = async (upstream, controller) => {
   return Buffer.concat(chunks);
 };
 
-const proxyRpc = async (request, response, endpoint) => {
+const proxyRpc = async (request, response, rpcSet, rpcRequest = rpcCall) => {
   const body = await readBody(request);
   let input;
   try {
@@ -203,23 +269,26 @@ const proxyRpc = async (request, response, endpoint) => {
     sendJson(response, 403, { jsonrpc: '2.0', id: input?.id ?? null, error: { code: -32601, message: 'Method unavailable' } });
     return;
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
   try {
-    const upstream = await fetch(endpoint.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body,
-      signal: controller.signal,
-    });
-    const payload = await readCappedResponse(upstream, controller);
-    securityHeaders(response);
-    response.writeHead(upstream.ok ? 200 : 502, { 'Content-Type': 'application/json', 'Content-Length': payload.length });
-    response.end(payload);
+    const results = await Promise.all(rpcSet.endpoints.map(async (endpoint) => {
+      try {
+        const result = await rpcRequest(endpoint, input.method, input.params, RPC_TIMEOUT_MS);
+        return { identity: quorumIdentity(input.method, result), result };
+      } catch {
+        return null;
+      }
+    }));
+    const groups = new Map();
+    for (const entry of results.filter(Boolean)) {
+      const group = groups.get(entry.identity) ?? [];
+      group.push(entry.result);
+      groups.set(entry.identity, group);
+    }
+    const agreement = [...groups.values()].find((group) => group.length >= rpcSet.threshold);
+    if (!agreement) throw new Error('RPC quorum unavailable');
+    sendJson(response, 200, { jsonrpc: '2.0', id: input.id ?? null, result: agreement[0] });
   } catch {
     sendJson(response, 503, { jsonrpc: '2.0', id: input.id ?? null, error: { code: -32000, message: 'Devnet RPC unavailable' } });
-  } finally {
-    clearTimeout(timer);
   }
 };
 
@@ -229,11 +298,12 @@ export async function createManualGateway(options) {
     fs.readFile(path.resolve(options['tls-cert'])),
     loadRpcSetCredential(options['rpc-set-file']),
   ]);
-  const helius = selectHeliusEndpoint(rpcSet);
   const runtimeFile = path.resolve(options.runtime);
   const faultsFile = path.resolve(options.faults);
+  const expectedHost = options.expectedHost ?? 'localhost:4280';
   const readinessAgreement = options.readinessAgreement ?? establishDevnetAgreement;
   const readinessFetch = options.readinessFetch ?? cappedFetch;
+  const rpcRequest = options.rpcRequest ?? rpcCall;
   const readiness = async () => {
     const checks = {};
     let runtime = null;
@@ -271,6 +341,9 @@ export async function createManualGateway(options) {
           result.status !== 200
           || issuer?.schema !== 'neal.issuer-readiness/v2'
           || issuer.status !== 'ready'
+          || issuer.sourceCommit !== runtime.sourceCommit
+          || issuer.issuerImageId !== options['issuer-image-id']
+          || issuer.expectedWallet !== runtime.browserWallet
           || issuer.verificationMode !== 'quorum-2-of-3'
           || issuer.chainId !== 'solana:devnet'
           || issuer.programId !== runtime.programId
@@ -310,6 +383,10 @@ export async function createManualGateway(options) {
   };
   const server = https.createServer({ key, cert }, async (request, response) => {
     try {
+      if (request.headers.host !== expectedHost) {
+        sendJson(response, 421, { error: 'Local acceptance host unavailable' });
+        return;
+      }
       const pathname = new URL(request.url, 'https://localhost').pathname;
       if (pathname === '/_neal/devnet/health' && request.method === 'GET') {
         sendJson(response, 200, { schema: 'neal.devnet-manual-health/v1', status: 'ok' });
@@ -334,15 +411,24 @@ export async function createManualGateway(options) {
         return;
       }
       if (pathname === '/_neal/devnet/rpc' && request.method === 'POST') {
-        await proxyRpc(request, response, helius);
+        exactBrowserRequest(request, runtime, expectedHost, { requireJson: true });
+        await proxyRpc(request, response, rpcSet, rpcRequest);
         return;
       }
-      if (ISSUER_PATHS.has(pathname) && ['POST', 'OPTIONS'].includes(request.method)) {
-        const body = request.method === 'POST' ? await readBody(request, 32 * 1024) : undefined;
+      if (ISSUER_PATHS.has(pathname) && request.method === 'POST') {
+        exactBrowserRequest(request, runtime, expectedHost, { requireJson: true });
+        const body = await readBody(request, 32 * 1024);
         await proxyLoopback(request, response, options['issuer-origin'], { body });
         return;
       }
       if (pathname.startsWith('/_matrix/client/')) {
+        if (!matrixRouteAllowed(pathname, request.method, runtime)) {
+          sendJson(response, 404, { error: 'Matrix route unavailable' });
+          return;
+        }
+        if (['POST', 'PUT', 'DELETE'].includes(request.method)) {
+          exactBrowserRequest(request, runtime, expectedHost, { requireJson: ['POST', 'PUT'].includes(request.method) });
+        }
         const body = ['POST', 'PUT'].includes(request.method) ? await readBody(request) : undefined;
         let dropResponse = false;
         if (pathname === '/_matrix/client/v3/register' && request.method === 'POST' && body) {

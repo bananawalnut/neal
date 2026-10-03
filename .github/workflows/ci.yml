@@ -125,3 +125,13 @@ jobs:
             --archive ../../outputs/issuer-bundle.tar
           python build_bundle.py verify --bundle ../../outputs/issuer-bundle
         working-directory: infra/neal-access-issuer
+
+      - name: Upload issuer bundle and SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: neal-access-issuer-bundle
+          path: |
+            outputs/issuer-bundle.tar
+            outputs/issuer-bundle/bundle-manifest.json
+            outputs/issuer-bundle/sbom.cdx.json
+          if-no-files-found: error

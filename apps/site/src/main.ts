@@ -146,8 +146,8 @@ const devnetBanner = DEVNET_RUNTIME ? `
 ` : '';
 const localPreviewBanner = SURFACE_MODE === 'local-preview' ? `
   <aside class="local-preview-banner" role="status">
-    <strong>LOCAL UI PREVIEW · CHAIN AND ACCOUNT ACTIONS DISABLED</strong>
-    <span>Use the reviewed HTTPS manual-devnet launcher for stake, issuance, registration, recovery, and refund testing.</span>
+    <strong>LOCAL UI PREVIEW — CHAIN ACTIONS DISABLED</strong>
+    <span>Account actions are disabled too. Use the reviewed HTTPS manual-devnet launcher for stake, issuance, registration, recovery, and refund testing.</span>
   </aside>
 ` : '';
 

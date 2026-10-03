@@ -412,6 +412,9 @@ class Settings:
     recovery_key_file: Path
     recovery_key_version: int
     matrix_server_name: str
+    expected_wallet: str | None = None
+    source_commit: str | None = None
+    issuer_image_id: str | None = None
     bind: str = "127.0.0.1"
     port: int = 8792
     socket_path: Path | None = None
@@ -449,12 +452,21 @@ class Settings:
             recovery_key_file=Path(required("NEAL_ACCESS_RECOVERY_KEY_FILE")),
             recovery_key_version=int(required("NEAL_ACCESS_RECOVERY_KEY_VERSION")),
             matrix_server_name=required("NEAL_ACCESS_MATRIX_SERVER_NAME").lower(),
+            expected_wallet=os.environ.get("NEAL_ACCESS_EXPECTED_WALLET", "").strip() or None,
+            source_commit=os.environ.get("NEAL_ISSUER_SOURCE_COMMIT", "").strip() or None,
+            issuer_image_id=os.environ.get("NEAL_ACCESS_ISSUER_IMAGE_ID", "").strip() or None,
             bind=os.environ.get("NEAL_ACCESS_BIND", "127.0.0.1"),
             port=int(os.environ.get("NEAL_ACCESS_PORT", "8792")),
             socket_path=Path(socket_value) if socket_value else None,
         )
         for value in (settings.program_id, settings.program_data_address, settings.config_address, settings.mint):
             public_key(value)
+        if settings.expected_wallet is not None:
+            public_key(settings.expected_wallet)
+        if settings.source_commit is not None and not re.fullmatch(r"[0-9a-f]{40}", settings.source_commit):
+            raise IssuerError("NEAL_ISSUER_SOURCE_COMMIT is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if settings.issuer_image_id is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", settings.issuer_image_id):
+            raise IssuerError("NEAL_ACCESS_ISSUER_IMAGE_ID is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
         if settings.chain_id not in CHAIN_GENESIS or settings.genesis_hash != CHAIN_GENESIS[settings.chain_id]:
             raise IssuerError("Chain ID and genesis hash are not an approved pair", HTTPStatus.INTERNAL_SERVER_ERROR)
         if len(settings.program_sha256) != 64 or any(character not in "0123456789abcdef" for character in settings.program_sha256):
@@ -465,8 +477,11 @@ class Settings:
         if settings.chain_id == "solana:mainnet" and settings.rpc_set.mode != RPC_QUORUM_MODE:
             raise IssuerError("Mainnet requires strict 2-of-3 RPC quorum", HTTPStatus.INTERNAL_SERVER_ERROR)
         matrix = urllib.parse.urlsplit(settings.matrix_url)
-        if matrix.scheme != "http" or matrix.hostname not in {"127.0.0.1", "::1", "localhost"}:
-            raise IssuerError("NEAL_ACCESS_MATRIX_URL must use loopback HTTP", HTTPStatus.INTERNAL_SERVER_ERROR)
+        matrix_host_allowed = matrix.hostname in {"127.0.0.1", "::1", "localhost"} or (
+            settings.chain_id == "solana:devnet" and matrix.hostname == "synapse"
+        )
+        if matrix.scheme != "http" or not matrix_host_allowed:
+            raise IssuerError("NEAL_ACCESS_MATRIX_URL must use an approved loopback or devnet-internal HTTP target", HTTPStatus.INTERNAL_SERVER_ERROR)
         if (
             not settings.database.is_absolute()
             or not settings.issuer_keypair_file.is_absolute()
@@ -475,7 +490,8 @@ class Settings:
         ):
             raise IssuerError("Database, keypair, and socket paths must be absolute", HTTPStatus.INTERNAL_SERVER_ERROR)
         if settings.socket_path is None and settings.bind not in {"127.0.0.1", "::1"}:
-            raise IssuerError("Issuer must bind to loopback", HTTPStatus.INTERNAL_SERVER_ERROR)
+            if settings.chain_id != "solana:devnet" or settings.bind != "0.0.0.0":
+                raise IssuerError("Issuer must bind to loopback", HTTPStatus.INTERNAL_SERVER_ERROR)
         if not settings.matrix_secret_file.is_file() or not os.access(settings.matrix_secret_file, os.R_OK):
             raise IssuerError("Matrix registration secret is unavailable", HTTPStatus.INTERNAL_SERVER_ERROR)
         if not settings.issuer_keypair_file.is_file() or not os.access(settings.issuer_keypair_file, os.R_OK):
@@ -1681,6 +1697,9 @@ class Application:
                 "adminCleanup": "ok",
             },
             "chainId": self.settings.chain_id,
+            "sourceCommit": self.settings.source_commit,
+            "issuerImageId": self.settings.issuer_image_id,
+            "expectedWallet": self.settings.expected_wallet,
             "verificationMode": self.settings.rpc_set.mode,
             "programId": self.settings.program_id,
             "programDataAddress": self.settings.program_data_address,
@@ -1743,6 +1762,8 @@ class Application:
         if request_schema not in {"neal.wallet-challenge-request/v1", "neal.wallet-challenge-request/v2"} or body.get("chain") != self.settings.chain_id or not isinstance(address, str):
             raise IssuerError("Invalid wallet challenge request")
         public_key(address)
+        if self.settings.expected_wallet is not None and address != self.settings.expected_wallet:
+            raise IssuerError("Wallet is not authorized for this acceptance runtime", HTTPStatus.FORBIDDEN, code="wallet_not_expected")
         self.store.rate_limit("challenge-global", 1_000, 60)
         self.store.rate_limit(f"challenge-ip:{client_key}", 60, 3600)
         self.store.rate_limit(f"challenge:{client_key}:{address}", 10, 3600)
@@ -1772,6 +1793,8 @@ class Application:
         request_id = sign_in.get("requestId")
         if not isinstance(address, str) or not isinstance(request_id, str):
             raise IssuerError("Invalid wallet proof")
+        if self.settings.expected_wallet is not None and address != self.settings.expected_wallet:
+            raise IssuerError("Wallet is not authorized for this acceptance runtime", HTTPStatus.FORBIDDEN, code="wallet_not_expected")
         self.store.rate_limit(f"verify:{client_key}", 20, 600)
         key = public_key(address)
         if base64url_decode(account.get("publicKey", "")) != key:
@@ -1975,6 +1998,8 @@ class Application:
 
     def access_token_v2(self, session: str, client_key: str) -> tuple[int, dict[str, Any]]:
         address = self.store.session_address(session)
+        if self.settings.expected_wallet is not None and address != self.settings.expected_wallet:
+            raise IssuerError("Wallet is not authorized for this acceptance runtime", HTTPStatus.FORBIDDEN, code="wallet_not_expected")
         self.store.rate_limit("token-global", 1_000, 60)
         self.store.rate_limit(f"token:{client_key}:{address}", 5, 3600)
         receipt = self.solana.receipt_address(address)

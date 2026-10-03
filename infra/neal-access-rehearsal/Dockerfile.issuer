@@ -1,8 +1,10 @@
 FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
 
 ARG UBUNTU_SNAPSHOT=20261002T150000Z
+ARG NEAL_ISSUER_SOURCE_COMMIT
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    NEAL_ISSUER_SOURCE_COMMIT=${NEAL_ISSUER_SOURCE_COMMIT}
 ADD --checksum=sha256:6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50 \
   https://snapshot.ubuntu.com/ubuntu/20261002T150000Z/pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb \
   /tmp/ca-certificates.deb

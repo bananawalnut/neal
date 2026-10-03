@@ -50,9 +50,13 @@ A status string never overrides the readiness report. The final signing UI must 
 for isolated Chrome acceptance. It binds one exact source commit, expiry,
 disposable browser public key, immutable program and hash, manual config,
 issuer, test mint, approved 69,000/120-second terms, strict 2-of-3 verification,
-and isolated Matrix server/room identifiers. It contains no RPC URL, key,
-password, token, cookie, or filesystem path. The browser accepts it only from
-`localhost` or `127.0.0.1`, only for `solana:devnet`, and only before expiry.
+an unpredictable per-run same-origin request nonce, and isolated Matrix
+server/room identifiers. The nonce is not a credential: it is readable only
+through the localhost same-origin contract and prevents cross-site submission
+to loopback state-changing routes. The projection contains no RPC URL, key,
+password, token, cookie, or filesystem path. The gateway serves it only from
+the exact `https://localhost:4280` origin, only for `solana:devnet`, and only
+before expiry.
 The gateway derives a temporary `neal.wallet-policy/v1` from this projection;
 the committed mainnet policy and the separate single-RPC preview policy remain
 unchanged. Older production consumers never request this runtime endpoint.
@@ -67,6 +71,18 @@ filesystem paths. The manual browser refuses to render the application until a
 ready response matches `neal.devnet-manual-runtime/v1` and its own embedded
 source commit. Production and ordinary local-preview consumers never request
 this endpoint.
+
+`neal.access-stake-isolated-review-signature/v1` is the detached Ed25519
+signature envelope for manual acceptance. It binds the exact source commit,
+review JSON SHA-256, release-manifest SHA-256, SBF artifact SHA-256, issuer
+bundle SHA-256 (including its manifest and SBOM), reviewer identity, and review
+time. Manual `doctor` and `prepare` accept signatures only
+from the independent reviewer public key pinned in
+`infra/neal-access-rehearsal/independent-reviewer-public.pem`; an arbitrary
+operator-supplied public key cannot authorize a build. The underlying
+`neal.access-stake-isolated-review/v1` remains required and must report zero
+P0–P2 findings; the signed envelope must also report zero unaccepted P3
+findings.
 
 `neal.solana-rpc-set/v1` remains a private credential contract. Executing
 manual and formal devnet tooling requires `quorum-2-of-3`, threshold two, and

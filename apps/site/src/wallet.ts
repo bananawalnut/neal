@@ -20,6 +20,7 @@ import {
   type SolanaSignMessageOutput,
 } from '@solana/wallet-standard-features';
 import { createSignInMessage, verifySignIn, verifySignMessage } from '@solana/wallet-standard-util';
+import { manualRequestHeaders } from './runtime-config';
 
 type WalletPolicy = {
   schema: 'neal.wallet-policy/v1';
@@ -426,7 +427,7 @@ export class WalletIdentityController {
     if (this.#policy.identity.challengeEndpoint) {
       const response = await fetch(this.#policy.identity.challengeEndpoint, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...manualRequestHeaders() },
         body: JSON.stringify({ schema: 'neal.wallet-challenge-request/v1', address, chain: this.#policy.chain }),
       });
       if (!response.ok) throw new Error('Wallet challenge service is unavailable');
@@ -463,7 +464,7 @@ export class WalletIdentityController {
     const response = await fetch(endpoint, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...manualRequestHeaders() },
       body: JSON.stringify({
         schema: 'neal.wallet-verification/v1',
         method,
@@ -552,7 +553,7 @@ export class WalletIdentityController {
   async #rpc<T>(method: string, params: readonly unknown[]): Promise<T> {
     const response = await fetch(this.#policy.holderProof.rpcEndpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...manualRequestHeaders() },
       body: JSON.stringify({ jsonrpc: '2.0', id: randomHex(4), method, params }),
     });
     if (!response.ok) throw new Error(`Solana RPC returned ${response.status}`);

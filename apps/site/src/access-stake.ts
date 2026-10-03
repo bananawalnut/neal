@@ -20,7 +20,7 @@ import {
 } from '@solana/wallet-standard-features';
 import bs58 from 'bs58';
 import type { WalletIdentityController, WalletTransactionSession } from './wallet';
-import { getRuntimeConfig } from './runtime-config';
+import { getRuntimeConfig, manualRequestHeaders, refreshRuntimeReadiness } from './runtime-config';
 
 const CONFIG_DISCRIMINATOR = 'NEALACFG';
 const STAKE_DISCRIMINATOR = 'NEALSTAK';
@@ -72,7 +72,7 @@ const reportRegistrationStage = async (stage: 'registration_in_progress' | 'regi
   const response = await fetch(registrationStageEndpoint(operation.endpoint), {
     method: 'POST',
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...manualRequestHeaders() },
     body: JSON.stringify({
       schema: 'neal.matrix-registration-stage/v2',
       operationId: operation.operationId,
@@ -367,7 +367,7 @@ const sendInstructions = async (
   instructions: TransactionInstruction[],
 ): Promise<string> => {
   const payer = new PublicKey(session.account.address);
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
   const message = new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions }).compileToV0Message();
   const transaction = new VersionedTransaction(message);
   const wire = transaction.serialize();
@@ -376,7 +376,7 @@ const sendInstructions = async (
     | undefined;
   let signature: string;
 
-  if (sendFeature && session.account.features.includes(SolanaSignAndSendTransaction)) {
+  if (!MANUAL_BROWSER_WALLET && sendFeature && session.account.features.includes(SolanaSignAndSendTransaction)) {
     const output = (await sendFeature.signAndSendTransaction({
       account: session.account,
       transaction: wire,
@@ -527,7 +527,10 @@ export async function mountMatrixAccessStake(
   const configAddress = new PublicKey(policy.configAddress);
   const mint = new PublicKey(policy.mint);
   const requiredAmount = BigInt(policy.requiredAtomicAmount);
-  const connection = new Connection(walletPolicy.holderProof.rpcEndpoint, 'finalized');
+  const connection = new Connection(walletPolicy.holderProof.rpcEndpoint, {
+    commitment: 'finalized',
+    httpHeaders: manualRequestHeaders(),
+  });
   let receipt: ReceiptState | null = null;
   let rendering = false;
   let accessPaused = policy.status === 'paused';
@@ -685,6 +688,7 @@ export async function mountMatrixAccessStake(
       ui.stakeButton.disabled = true;
       setStatus(ui, 'Checking finalized terms and preparing the refundable stake…', 'busy');
       try {
+        await refreshRuntimeReadiness();
         const configState = await assertConfig();
         const staker = new PublicKey(session.account.address);
         assertExpectedWallet(staker.toBase58());
@@ -748,6 +752,7 @@ export async function mountMatrixAccessStake(
       }
       ui.claimButton.disabled = true;
       try {
+        await refreshRuntimeReadiness();
         await assertConfig();
         const staker = new PublicKey(session.account.address);
         assertExpectedWallet(staker.toBase58());
@@ -773,7 +778,7 @@ export async function mountMatrixAccessStake(
           const tokenResponse = await fetch(policy.tokenEndpoint, {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...manualRequestHeaders() },
             body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v2' }),
           });
           const body = await tokenResponse.json() as TokenOperationResponse;
@@ -843,6 +848,7 @@ export async function mountMatrixAccessStake(
       ui.releaseButton.disabled = true;
       setStatus(ui, 'Preparing the full stake refund…', 'busy');
       try {
+        await refreshRuntimeReadiness();
         const staker = new PublicKey(session.account.address);
         assertExpectedWallet(staker.toBase58());
         receipt = await readReceipt(connection, program, configAddress, staker);

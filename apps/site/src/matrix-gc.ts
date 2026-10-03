@@ -1,5 +1,5 @@
 import type { MatrixClient, MatrixEvent, Room } from 'matrix-js-sdk';
-import { getRuntimeConfig } from './runtime-config';
+import { getRuntimeConfig, manualRequestHeaders } from './runtime-config';
 
 const DEVNET_RUNTIME = getRuntimeConfig();
 const ROOM_ALIAS = DEVNET_RUNTIME?.matrix.roomAlias ?? '#neal-gc:matrix.nealtheseal.org';
@@ -21,6 +21,18 @@ const SSO_MAX_AGE_MS = 20 * 60 * 1000;
 const MATRIX_SDK_LOAD_FAILURE = 'The chat client could not load. Check your connection, reload the page, then sign in again.';
 
 type MatrixSdk = typeof import('matrix-js-sdk');
+type MatrixClientOptions = Parameters<MatrixSdk['createClient']>[0];
+
+const matrixFetch: typeof globalThis.fetch = (input, init = {}) => {
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(manualRequestHeaders())) headers.set(name, value);
+  return globalThis.fetch(input, { ...init, headers });
+};
+
+const createMatrixClient = (sdk: MatrixSdk, options: MatrixClientOptions): MatrixClient => sdk.createClient({
+  ...options,
+  ...(DEVNET_RUNTIME ? { fetchFn: matrixFetch } : {}),
+});
 
 type MatrixSession = {
   baseUrl: string;
@@ -429,7 +441,7 @@ const renderPublicMessages = (ui: ClientUi, messages: PublicMessage[]): void => 
 
 const refreshPublicMessages = async (ui: ClientUi): Promise<void> => {
   try {
-    const response = await fetch(PUBLIC_FEED_URL, {
+    const response = await matrixFetch(PUBLIC_FEED_URL, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
@@ -576,7 +588,7 @@ let activeClient: MatrixClient | null = null;
 const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<void> => {
   const sdk = await loadSdk();
   activeClient?.stopClient();
-  const client = sdk.createClient({
+  const client = createMatrixClient(sdk, {
     baseUrl: session.baseUrl,
     accessToken: session.accessToken,
     userId: session.userId,
@@ -638,7 +650,7 @@ const discoverHomeserver = async (sdk: MatrixSdk, domain: string): Promise<strin
   }
   const directBaseUrl = DIRECT_HOMESERVER_BASE_URLS.get(domain);
   if (directBaseUrl) {
-    const response = await fetch(`${directBaseUrl}/_matrix/client/versions`, {
+    const response = await matrixFetch(`${directBaseUrl}/_matrix/client/versions`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
@@ -660,7 +672,7 @@ const beginSso = async (ui: ClientUi, domain: string, action: 'login' | 'registe
   const sdk = await loadSdk();
   setStatus(ui, `Discovering ${domain}…`, 'working');
   const baseUrl = await discoverHomeserver(sdk, domain);
-  const client = sdk.createClient({ baseUrl });
+  const client = createMatrixClient(sdk, { baseUrl });
   const flows = await client.loginFlows();
   const flow = flows.flows.find((candidate) => candidate.type === 'm.login.sso')
     ?? flows.flows.find((candidate) => candidate.type === 'm.login.cas');
@@ -698,7 +710,7 @@ const registrationRequest = async (
   baseUrl: string,
   body: Record<string, unknown>,
 ): Promise<{ response: Response; payload: RegistrationResponse }> => {
-  const response = await fetch(`${baseUrl}/_matrix/client/v3/register`, {
+  const response = await matrixFetch(`${baseUrl}/_matrix/client/v3/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -748,7 +760,7 @@ const completeNativeRegistration = async (
     recovery = existing;
   } else {
     clearRegistrationRecovery();
-    const availability = await fetch(
+    const availability = await matrixFetch(
       `${baseUrl}/_matrix/client/v3/register/available?username=${encodeURIComponent(username)}`,
       { headers: { Accept: 'application/json' } },
     );
@@ -830,7 +842,7 @@ const completeNativeRegistration = async (
     if (!session) {
       try {
         const sdk = await loadSdk();
-        const client = sdk.createClient({ baseUrl });
+        const client = createMatrixClient(sdk, { baseUrl });
         const response = await client.loginRequest({
           type: 'm.login.password',
           identifier: { type: 'm.id.user', user: username },
@@ -914,7 +926,7 @@ const consumeSsoCallback = async (ui: ClientUi): Promise<boolean> => {
 
   const sdk = await loadSdk();
   setStatus(ui, `Completing ${pending.domain} sign-in…`, 'working');
-  const response = await sdk.createClient({ baseUrl: pending.baseUrl }).loginRequest({
+  const response = await createMatrixClient(sdk, { baseUrl: pending.baseUrl }).loginRequest({
     type: 'm.login.token',
     token: loginToken,
     initial_device_display_name: 'NEAL web GC',
@@ -997,7 +1009,7 @@ export const mountMatrixGc = (): void => {
       const { userId, domain } = parseMatrixId(ui.userInput.value);
       setStatus(ui, `Discovering ${domain}…`, 'working');
       const baseUrl = await discoverHomeserver(sdk, domain);
-      const loginClient = sdk.createClient({ baseUrl });
+      const loginClient = createMatrixClient(sdk, { baseUrl });
       const flows = await loginClient.loginFlows();
       if (!flows.flows.some((flow) => flow.type === 'm.login.password')) {
         throw new Error('That homeserver does not offer password login. Use the homeserver sign-in button instead.');

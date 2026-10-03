@@ -260,6 +260,22 @@ class IssuerTests(unittest.TestCase):
         with self.assertRaisesRegex(issuer.IssuerError, "already-used"):
             app.verify(body, "test-second")
 
+    def test_manual_expected_wallet_is_enforced_server_side(self) -> None:
+        expected = "11111111111111111111111111111111"
+        settings = dataclasses.replace(self.settings, expected_wallet=expected)
+        app = issuer.Application(settings, matrix=FakeMatrix(), solana=FakeSolana("receipt"))
+        other = issuer.base58_encode(Ed25519PrivateKey.generate().public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        ))
+        with self.assertRaisesRegex(issuer.IssuerError, "not authorized"):
+            app.challenge(
+                {"schema": "neal.wallet-challenge-request/v2", "address": other, "chain": "solana:mainnet"},
+                "test",
+            )
+        session = app.store.create_session(other, 600)
+        with self.assertRaisesRegex(issuer.IssuerError, "not authorized"):
+            app.access_token_v2(session, "test")
+
     def test_claim_is_idempotent_without_issuing_a_second_token(self) -> None:
         matrix = FakeMatrix()
         solana = FakeSolana("receipt-address")
@@ -314,6 +330,9 @@ class IssuerTests(unittest.TestCase):
                     "adminCleanup": "ok",
                 },
                 "chainId": self.settings.chain_id,
+                "sourceCommit": None,
+                "issuerImageId": None,
+                "expectedWallet": None,
                 "verificationMode": issuer.RPC_QUORUM_MODE,
                 "programId": self.settings.program_id,
                 "programDataAddress": self.settings.program_data_address,

@@ -25,6 +25,14 @@ The executor tears down containers and deletes its temporary directory even on
 failure. Its only persistent output is a sanitized public receipt written to
 the explicitly supplied `--receipt` location.
 
+The manual Chrome harness is stricter than the disposable CI rehearsal. Its
+Synapse and Postgres services attach only to Docker's internal network; only the
+issuer receives a second egress network. Browser Matrix access is constrained
+by the localhost gateway to the isolated server and prepared room. Manual
+review approval additionally requires the detached signature made by the
+repository-pinned independent review key; see
+`docs/MANUAL_DEVNET_ACCEPTANCE.md`.
+
 The release command compiles the selected Git commit twice from separate
 source trees into separate Cargo target directories and rejects any byte or
 size mismatch. A prefetched Cargo registry/source cache is mounted read-only
