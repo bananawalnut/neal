@@ -2,6 +2,9 @@ import { Buffer } from 'buffer/';
 
 Object.assign(globalThis, { Buffer });
 
+const { loadRuntimeConfig } = await import('./runtime-config');
+await loadRuntimeConfig();
+
 const STALE_ASSET_RELOAD_KEY = 'neal.stale-asset-reload.v1';
 const STALE_ASSET_RELOAD_WINDOW_MS = 30_000;
 

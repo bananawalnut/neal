@@ -69,6 +69,20 @@ jobs:
       - name: Install JavaScript dependencies
         run: npm ci
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Restore private three-provider RPC set
+        shell: bash
+        env:
+          RPC_SET_B64: ${{ secrets.NEAL_DEVNET_RPC_SET_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "$RPC_SET_B64" || { echo 'NEAL_DEVNET_RPC_SET_B64 is required' >&2; exit 1; }
+          printf '%s' "$RPC_SET_B64" | base64 --decode > "$RUNNER_TEMP/neal-devnet-rpc-set.json"
+          chmod 600 "$RUNNER_TEMP/neal-devnet-rpc-set.json"
+          echo "NEAL_DEVNET_RPC_SET_FILE=$RUNNER_TEMP/neal-devnet-rpc-set.json" >> "$GITHUB_ENV"
+
       - name: Restore isolated review attestation
         shell: bash
         env:
@@ -85,20 +99,50 @@ jobs:
           SOURCE_COMMIT: ${{ inputs.source_commit }}
         run: npm run access-stake:reproduce -- --commit "$SOURCE_COMMIT" --output outputs/access-stake-release
 
-      - name: Execute isolated devnet and Matrix lifecycle
+      - name: Build exact issuer bundle
         env:
-          NEAL_DEVNET_RPC_SECONDARY: ${{ secrets.NEAL_DEVNET_RPC_SECONDARY }}
-          NEAL_DEVNET_RPC_TERTIARY: ${{ secrets.NEAL_DEVNET_RPC_TERTIARY }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          python infra/neal-access-issuer/build_bundle.py build \
+            --source infra/neal-access-issuer \
+            --output "outputs/neal-access-issuer-$SOURCE_COMMIT" \
+            --archive "outputs/neal-access-issuer-$SOURCE_COMMIT.tar"
+
+      - name: Restore and verify signed production review
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          REVIEW_B64: ${{ secrets.NEAL_PRODUCTION_REVIEW_B64 }}
+          REVIEW_SIGSTORE_B64: ${{ secrets.NEAL_PRODUCTION_REVIEW_SIGSTORE_B64 }}
+          REVIEWER_IDENTITY: ${{ secrets.NEAL_PRODUCTION_REVIEWER_IDENTITY }}
+          REVIEWER_ISSUER: ${{ secrets.NEAL_PRODUCTION_REVIEWER_OIDC_ISSUER }}
+        run: |
+          set -euo pipefail
+          test -n "$REVIEW_B64"
+          test -n "$REVIEW_SIGSTORE_B64"
+          test -n "$REVIEWER_IDENTITY"
+          test -n "$REVIEWER_ISSUER"
+          printf '%s' "$REVIEW_B64" | base64 --decode > outputs/production-review.json
+          printf '%s' "$REVIEW_SIGSTORE_B64" | base64 --decode > outputs/production-review.sigstore.json
+          chmod 600 outputs/production-review.json outputs/production-review.sigstore.json
+          npm run access-stake:verify-production-review -- \
+            --review outputs/production-review.json \
+            --sigstore-bundle outputs/production-review.sigstore.json \
+            --release-manifest outputs/access-stake-release/release-manifest.json \
+            --sbf outputs/access-stake-release/neal_access_stake.so \
+            --issuer-bundle "outputs/neal-access-issuer-$SOURCE_COMMIT.tar" \
+            --source-commit "$SOURCE_COMMIT" \
+            --expected-identity "$REVIEWER_IDENTITY" \
+            --expected-issuer "$REVIEWER_ISSUER"
+
+      - name: Execute isolated devnet and Matrix lifecycle
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$NEAL_DEVNET_RPC_SECONDARY" || { echo 'NEAL_DEVNET_RPC_SECONDARY is required' >&2; exit 1; }
-          test -n "$NEAL_DEVNET_RPC_TERTIARY" || { echo 'NEAL_DEVNET_RPC_TERTIARY is required' >&2; exit 1; }
+          test -f "$NEAL_DEVNET_RPC_SET_FILE"
           npm run access-stake:rehearse-devnet -- \
             --release-manifest outputs/access-stake-release/release-manifest.json \
-            --rpc-primary https://api.devnet.solana.com \
-            --rpc-secondary "$NEAL_DEVNET_RPC_SECONDARY" \
-            --rpc-tertiary "$NEAL_DEVNET_RPC_TERTIARY" \
+            --rpc-set-file "$NEAL_DEVNET_RPC_SET_FILE" \
             --review-file outputs/isolated-review.json \
             --receipt outputs/devnet-receipt.json \
             --log outputs/devnet-log.json \
@@ -113,7 +157,10 @@ jobs:
           subject-path: |
             outputs/access-stake-release/release-manifest.json
             outputs/access-stake-release/neal_access_stake.so
+            outputs/neal-access-issuer-${{ inputs.source_commit }}.tar
             outputs/isolated-review.json
+            outputs/production-review.json
+            outputs/production-review.sigstore.json
             outputs/devnet-receipt.json
             outputs/devnet-log.json
 
@@ -124,7 +171,10 @@ jobs:
           path: |
             outputs/access-stake-release/release-manifest.json
             outputs/access-stake-release/neal_access_stake.so
+            outputs/neal-access-issuer-${{ inputs.source_commit }}.tar
             outputs/isolated-review.json
+            outputs/production-review.json
+            outputs/production-review.sigstore.json
             outputs/devnet-receipt.json
             outputs/devnet-log.json
           if-no-files-found: error

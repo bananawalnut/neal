@@ -1,21 +1,19 @@
 import type { MatrixClient, MatrixEvent, Room } from 'matrix-js-sdk';
+import { getRuntimeConfig } from './runtime-config';
 
-const ROOM_ALIAS = '#neal-gc:matrix.nealtheseal.org';
-const ROOM_ID = '!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org';
-const ROOM_VIA_SERVERS = [
-  'matrix.nealtheseal.org',
-  'salix.host',
-];
-const NATIVE_REGISTRATION_SERVERS = new Set([
-  'matrix.nealtheseal.org',
-  'salix.host',
-]);
-const DIRECT_HOMESERVER_BASE_URLS = new Map([
-  ['matrix.nealtheseal.org', 'https://matrix.nealtheseal.org'],
-]);
-const PUBLIC_FEED_URL = 'https://matrix.nealtheseal.org/_neal/gc/messages';
+const DEVNET_RUNTIME = getRuntimeConfig();
+const ROOM_ALIAS = DEVNET_RUNTIME?.matrix.roomAlias ?? '#neal-gc:matrix.nealtheseal.org';
+const ROOM_ID = DEVNET_RUNTIME?.matrix.roomId ?? '!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org';
+const ROOM_VIA_SERVERS = DEVNET_RUNTIME?.matrix.viaServers ?? ['matrix.nealtheseal.org', 'salix.host'];
+const NATIVE_REGISTRATION_SERVERS = new Set(DEVNET_RUNTIME
+  ? [DEVNET_RUNTIME.matrix.serverName]
+  : ['matrix.nealtheseal.org', 'salix.host']);
+const DIRECT_HOMESERVER_BASE_URLS = new Map<string, string>(DEVNET_RUNTIME
+  ? [[DEVNET_RUNTIME.matrix.serverName, DEVNET_RUNTIME.matrix.baseUrl] as const]
+  : [['matrix.nealtheseal.org', 'https://matrix.nealtheseal.org'] as const]);
+const PUBLIC_FEED_URL = DEVNET_RUNTIME ? '/_neal/devnet/public-messages' : 'https://matrix.nealtheseal.org/_neal/gc/messages';
 const PUBLIC_REFRESH_MS = 10_000;
-const NEAL_HOMESERVER_DOMAIN = 'matrix.nealtheseal.org';
+const NEAL_HOMESERVER_DOMAIN = DEVNET_RUNTIME?.matrix.serverName ?? 'matrix.nealtheseal.org';
 const SESSION_KEY = 'neal.matrix.session.v1';
 const SSO_PENDING_KEY = 'neal.matrix.sso.pending.v1';
 const REGISTRATION_RECOVERY_KEY = 'neal.matrix.registration-recovery.v2';
@@ -149,7 +147,11 @@ export const parseMatrixId = (value: string): { userId: string; domain: string }
   if (!userId.startsWith('@') || separator < 2 || separator === userId.length - 1) {
     throw new Error('Use your NEAL username, like neal, or a full Matrix ID like @name:matrix.org.');
   }
-  return { userId, domain: userId.slice(separator + 1) };
+  const domain = userId.slice(separator + 1);
+  if (DEVNET_RUNTIME && domain !== DEVNET_RUNTIME.matrix.serverName) {
+    throw new Error('Isolated devnet acceptance permits only its local Matrix server.');
+  }
+  return { userId, domain };
 };
 
 const normalizeHomeserverDomain = (value: string): string => {
@@ -161,6 +163,9 @@ const normalizeHomeserverDomain = (value: string): string => {
   const parsed = new URL(`https://${candidate}/`);
   if (!parsed.hostname || parsed.username || parsed.password) {
     throw new Error('Use a valid Matrix homeserver domain.');
+  }
+  if (DEVNET_RUNTIME && parsed.host !== DEVNET_RUNTIME.matrix.serverName) {
+    throw new Error('Isolated devnet acceptance permits only its local Matrix server.');
   }
   return parsed.host;
 };
@@ -179,6 +184,10 @@ const readSession = (): MatrixSession | null => {
       && typeof value.accessToken === 'string'
       && typeof value.userId === 'string'
       && typeof value.deviceId === 'string'
+      && (!DEVNET_RUNTIME || (
+        value.baseUrl === DEVNET_RUNTIME.matrix.baseUrl
+        && value.userId.endsWith(`:${DEVNET_RUNTIME.matrix.serverName}`)
+      ))
     ) return value as MatrixSession;
   } catch {
     // Invalid client state is discarded below.
@@ -204,6 +213,10 @@ const readPendingSso = (): PendingSso | null => {
       && typeof value.state === 'string'
       && typeof value.createdAt === 'number'
       && Date.now() - value.createdAt <= SSO_MAX_AGE_MS
+      && (!DEVNET_RUNTIME || (
+        value.baseUrl === DEVNET_RUNTIME.matrix.baseUrl
+        && value.domain === DEVNET_RUNTIME.matrix.serverName
+      ))
     ) return value as PendingSso;
   } catch {
     // Invalid or expired SSO state is discarded below.
@@ -620,6 +633,9 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
 };
 
 const discoverHomeserver = async (sdk: MatrixSdk, domain: string): Promise<string> => {
+  if (DEVNET_RUNTIME && domain !== DEVNET_RUNTIME.matrix.serverName) {
+    throw new Error('Isolated devnet acceptance permits only its local Matrix server.');
+  }
   const directBaseUrl = DIRECT_HOMESERVER_BASE_URLS.get(domain);
   if (directBaseUrl) {
     const response = await fetch(`${directBaseUrl}/_matrix/client/versions`, {
@@ -958,6 +974,11 @@ export const mountMatrixGc = (): void => {
     knockList: required(root, '#matrix-knocks'),
   };
 
+  if (DEVNET_RUNTIME) {
+    ui.createDomainInput.value = DEVNET_RUNTIME.matrix.serverName;
+    ui.createDomainInput.readOnly = true;
+  }
+
   ui.loginTab.addEventListener('click', () => showEntryMode(ui, 'login'));
   ui.createTab.addEventListener('click', () => showEntryMode(ui, 'create'));
   ui.createDomainInput.addEventListener('input', () => updateCreateProvider(ui));
@@ -1037,7 +1058,7 @@ export const mountMatrixGc = (): void => {
         if (password.length < 12) throw new Error('Use a password of at least 12 characters.');
         if (password !== confirmation) throw new Error('The two passwords do not match.');
         if (!token) {
-          throw new Error(domain === 'matrix.nealtheseal.org'
+          throw new Error(domain === NEAL_HOMESERVER_DOMAIN
             ? 'Complete the NEAL account-access step above first.'
             : 'Get a one-use registration token from Salix first.');
         }

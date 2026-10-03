@@ -9,6 +9,7 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 import { verifyAccessStake } from './verify-access-stake-readiness.mjs';
+import { loadRpcSetCredential } from './devnet-rpc-set.mjs';
 
 const CONFIG_SIZE = 171;
 const CONFIG_DISCRIMINATOR = Buffer.from('NEALACFG');
@@ -31,15 +32,32 @@ const parseCli = (argv) => {
     else if (argument.startsWith('--')) values[argument.slice(2)] = argv[++index];
     else throw new Error(`Unexpected argument: ${argument}`);
   }
-  for (const required of ['action', 'cluster', 'rpc', 'program-id', 'config-address', 'authority-keypair']) {
+  for (const required of ['action', 'cluster', 'program-id', 'config-address', 'authority-keypair']) {
     if (!values[required]) throw new Error(`Missing --${required}`);
   }
+  if (Boolean(values.rpc) === Boolean(values['rpc-set-file'])) throw new Error('Provide exactly one of --rpc or --rpc-set-file');
   if (!['pause', 'unpause'].includes(values.action)) throw new Error('--action must be pause or unpause');
   if (!['devnet', 'mainnet'].includes(values.cluster)) throw new Error('--cluster must be devnet or mainnet');
   if (values.cluster === 'mainnet') throw new Error('Direct mainnet authority changes are disabled; create and inspect an autonomous Squads v4 proposal');
   if (values.writePolicy && !values.send) throw new Error('--write-policy requires --send');
   if (values.writePolicy) throw new Error('Direct authority tooling never writes production policy');
   return values;
+};
+
+const rpcUrl = async (options) => {
+  if (options['rpc-set-file']) {
+    const rpcSet = await loadRpcSetCredential(options['rpc-set-file']);
+    const endpoint = options['rpc-endpoint-id']
+      ? rpcSet.endpoints.find((candidate) => candidate.id === options['rpc-endpoint-id'])
+      : rpcSet.endpoints[0];
+    if (!endpoint) throw new Error('--rpc-endpoint-id is not present in the RPC set');
+    return endpoint.url;
+  }
+  const url = new URL(options.rpc);
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search || url.pathname !== '/') {
+    throw new Error('--rpc accepts only a credential-free HTTPS origin; use --rpc-set-file for managed providers');
+  }
+  return url.toString();
 };
 
 const parseConfig = (data) => {
@@ -63,9 +81,7 @@ const atomicJsonWrite = async (file, value) => {
 
 async function main() {
   const options = parseCli(process.argv.slice(2));
-  const rpc = new URL(options.rpc);
-  if (rpc.protocol !== 'https:') throw new Error('--rpc must use HTTPS');
-  const connection = new Connection(rpc.toString(), 'finalized');
+  const connection = new Connection(await rpcUrl(options), 'finalized');
   const expectedGenesis = DEVNET_GENESIS;
   if (await connection.getGenesisHash() !== expectedGenesis) throw new Error(`RPC genesis does not match ${options.cluster}`);
 

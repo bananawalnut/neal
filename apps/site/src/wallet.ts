@@ -23,7 +23,7 @@ import { createSignInMessage, verifySignIn, verifySignMessage } from '@solana/wa
 
 type WalletPolicy = {
   schema: 'neal.wallet-policy/v1';
-  chain: 'solana:mainnet';
+  chain: 'solana:mainnet' | 'solana:devnet';
   preferredWallets: readonly string[];
   identity: {
     subjectFormat: string;
@@ -55,7 +55,7 @@ type WalletProof = {
   schema: 'neal.wallet-proof/v1';
   subject: string;
   address: string;
-  chain: 'solana:mainnet';
+  chain: 'solana:mainnet' | 'solana:devnet';
   wallet: string;
   method: 'solana:signIn' | 'solana:signMessage';
   requestId: string;
@@ -73,7 +73,7 @@ type HolderProof = {
   schema: 'neal.holder-proof/v1';
   subject: string;
   address: string;
-  chain: 'solana:mainnet';
+  chain: 'solana:mainnet' | 'solana:devnet';
   mint: string;
   amountAtomic: string;
   decimals: number;
@@ -88,7 +88,7 @@ export type WalletTransactionSession = {
   wallet: Wallet;
   account: WalletAccount;
   rpcEndpoint: string;
-  chain: 'solana:mainnet';
+  chain: 'solana:mainnet' | 'solana:devnet';
 };
 
 export type WalletAuthenticationState = {
@@ -319,7 +319,7 @@ export class WalletIdentityController {
       if (!feature) throw new Error('Wallet does not advertise standard:connect');
       const output = await feature.connect({ silent: false });
       const account = output.accounts.find((candidate) => hasChain(candidate, this.#policy.chain));
-      if (!account) throw new Error(`${wallet.name} did not authorize a Solana mainnet account`);
+      if (!account) throw new Error(`${wallet.name} did not authorize an account for ${this.#policy.chain}`);
 
       this.#removeWalletListener?.();
       this.#wallet = wallet;

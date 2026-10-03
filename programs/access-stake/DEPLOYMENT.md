@@ -33,16 +33,17 @@ Activation is intentionally split into independently verifiable stages.
 
 ## 2. Devnet rehearsal
 
-The supported end-to-end executor is dry-run by default. It requires three HTTPS
-RPCs on distinct hosts and a `neal.access-stake-isolated-review/v1` attestation
-covering the exact release commit with zero unresolved P0-P2 findings:
+The supported end-to-end executor is dry-run by default. It requires a private,
+mode-`0600` `neal.solana-rpc-set/v1` credential containing three HTTPS RPCs on
+distinct hosts, registrable domains, and trust domains, plus a
+`neal.access-stake-isolated-review/v1` attestation covering the exact release
+commit with zero unresolved P0-P2 findings. Credential-bearing URLs are never
+accepted as rehearsal command arguments:
 
 ```bash
 npm run access-stake:rehearse-devnet -- \
   --release-manifest outputs/access-stake-release/release-manifest.json \
-  --rpc-primary https://api.devnet.solana.com \
-  --rpc-secondary "$NEAL_DEVNET_RPC_SECONDARY" \
-  --rpc-tertiary "$NEAL_DEVNET_RPC_TERTIARY" \
+  --rpc-set-file /absolute/private/path/devnet-rpc-set.json \
   --review-file outputs/isolated-review.json
 ```
 
@@ -101,15 +102,49 @@ issuer must use `NEAL_ACCESS_CHAIN_ID=solana:devnet` with the devnet genesis;
 the service rejects an ID/genesis mismatch.
 
 The repository also provides a manually dispatched `Access-stake devnet
-rehearsal` workflow. It requires the exact source commit, explicit devnet
-acknowledgement, two separately managed RPC secrets, and a base64-encoded isolated
-review attestation in `NEAL_ACCESS_REVIEW_ATTESTATION_B64`. It uploads the
-release manifest, `.so`, public review attestation, receipt, and sanitized log,
-and creates GitHub build-provenance attestations for each file; it never commits
-or changes the production policy. Configure the `access-stake-devnet`
-environment with required reviewers and keep both secrets in that environment,
-not at repository scope. Verify downloaded evidence with `gh attestation verify
-FILE --repo OWNER/REPOSITORY` in addition to the offline schema validator.
+rehearsal` workflow. It requires the exact current `main` commit, explicit
+devnet acknowledgement, `NEAL_DEVNET_RPC_SET_B64`, the isolated review, and the
+exact-artifact production review plus its Sigstore bundle and approved identity.
+Configure all of these only in the protected `access-stake-devnet` environment.
+The workflow decodes the RPC set to a private runner-temporary file and never
+places URLs in arguments or artifacts. It uploads and attests the release,
+issuer bundle, both reviews, receipt, and sanitized log; it never changes policy.
+Verify downloads with `gh attestation verify FILE --repo OWNER/REPOSITORY` and
+the offline schema validator.
+
+### Manual Chrome acceptance
+
+The manual lifecycle is separate from the disposable formal rehearsal. It uses
+an isolated Synapse/Postgres stack, an immutable program, a 69,001-test-NEAL
+mint, an unstaked 69,000/90-day parity config, and an active 69,000/120-second
+browser config. Preparation requires Docker Desktop, Python 3.12, an
+authenticated GitHub CLI session, and green completed checks on the exact clean
+reviewed commit:
+
+```bash
+npm run access-stake:manual-devnet -- prepare \
+  --release-manifest /absolute/path/release-manifest.json \
+  --rpc-set-file /absolute/private/path/devnet-rpc-set.json \
+  --review-file /absolute/path/isolated-review.json \
+  --wallet DISPOSABLE_BROWSER_WALLET_PUBLIC_KEY \
+  --execute --acknowledge-devnet
+```
+
+Import the emitted localhost certificate in Keychain Access and mark only that
+certificate trusted. Then start the four-hour lease:
+
+```bash
+npm run access-stake:manual-devnet -- start \
+  --runtime '/absolute/path/from/prepare' \
+  --acknowledge-certificate-trusted
+```
+
+Open `https://localhost:4280/#gc`. Arm the lost-final-response recovery case
+with `fault --name matrix-final-response-once`. Use `status` for sanitized
+identifiers and service state. `stop` refuses to delete the runtime while the
+browser receipt is unreleased or issuer/administrator reconciliation is
+incomplete; after a successful refund it stops containers, removes secrets and
+volumes, and removes the trusted certificate from the login keychain.
 
 Use the same first-party pause tool on devnet. It simulates by default:
 

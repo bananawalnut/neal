@@ -4,6 +4,7 @@ import { mountNealPurchase } from './buy';
 import { mountMatrixGc } from './matrix-gc';
 import { mountMatrixAccessStake } from './access-stake';
 import { formatLocalStreak, getLocalYahooStats, onLocalYahooChange, recordLocalYahoo, type LocalYahooStats } from './local-yahoos';
+import { getRuntimeConfig } from './runtime-config';
 
 type PublicRecord = {
   schema: 'neal.public-record/v1';
@@ -125,11 +126,27 @@ type YahooLeaderboardRecord = {
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing #app');
 
+const DEVNET_RUNTIME = getRuntimeConfig();
+if (DEVNET_RUNTIME) document.documentElement.dataset.devnetManual = 'true';
+const devnetBanner = DEVNET_RUNTIME ? `
+  <aside class="devnet-manual-banner" role="status">
+    <strong>ISOLATED DEVNET ACCEPTANCE · NOT PRODUCTION</strong>
+    <span>69,000 TEST NEAL · 120 SECOND REFUND · ISSUER QUORUM 2 OF 3</span>
+    <small>Expires ${new Date(DEVNET_RUNTIME.expiresAt).toLocaleString()}. The Matrix account and room exist only on this computer. Never enter a production recovery phrase.</small>
+    <dl>
+      <div><dt>PROGRAM</dt><dd>${DEVNET_RUNTIME.programId}</dd></div>
+      <div><dt>CONFIG</dt><dd>${DEVNET_RUNTIME.configAddress}</dd></div>
+      <div><dt>MINT</dt><dd>${DEVNET_RUNTIME.mint}</dd></div>
+    </dl>
+  </aside>
+` : '';
+
 let canonicalMintAddress: string | null = null;
 let localYahooMode = false;
 
 app.innerHTML = `
   <main class="shell">
+    ${devnetBanner}
     <nav class="topbar">
       <a class="brand" href="#top" aria-label="Neal the Seal home"><span class="brand-orb"><img src="/neal-favicon.png" width="96" height="96" alt="" /></span><span>NEAL</span><small>LOCAL UNIT</small></a>
       <p class="nav-meta"><span>EST. TASMANIA</span><span>BUILT ON SOLANA</span><span>VIBE: UNREASONABLE</span></p>
@@ -771,7 +788,7 @@ function renderRecord(record: PublicRecord) {
   const launched = record.status === 'launched'
     && Boolean(record.execution.mintAddress)
     && Boolean(record.execution.creationTransaction);
-  canonicalMintAddress = launched ? record.execution.mintAddress : null;
+  canonicalMintAddress = DEVNET_RUNTIME?.mint ?? (launched ? record.execution.mintAddress : null);
   const status = byId<HTMLElement>('status-chip');
   status.className = `status-chip ${launched ? 'launched' : 'prelaunch'}`;
   status.innerHTML = `<i></i>${launched ? 'Canonical mint verified' : 'Pre-launch · no mint'}`;
@@ -891,7 +908,7 @@ async function start() {
     }
     const walletIdentity = await mountWalletIdentity(() => canonicalMintAddress);
     if (walletIdentity) {
-      mountNealPurchase(() => canonicalMintAddress, walletIdentity);
+      if (!DEVNET_RUNTIME) mountNealPurchase(() => canonicalMintAddress, walletIdentity);
       await mountMatrixAccessStake(() => canonicalMintAddress, walletIdentity);
     }
   }

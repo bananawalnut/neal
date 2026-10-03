@@ -1,0 +1,36 @@
+services:
+  synapse:
+    ports:
+      - "127.0.0.1:18009:18009"
+    networks:
+      rehearsal-internal:
+      manual-egress:
+
+  issuer:
+    build:
+      context: ../..
+      dockerfile: infra/neal-access-rehearsal/Dockerfile.issuer
+    platform: linux/amd64
+    depends_on:
+      synapse:
+        condition: service_healthy
+    network_mode: service:synapse
+    user: "${NEAL_REHEARSAL_UID:?set NEAL_REHEARSAL_UID}:${NEAL_REHEARSAL_GID:?set NEAL_REHEARSAL_GID}"
+    env_file:
+      - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}/issuer.env
+    volumes:
+      - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}:/runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    command: ["/opt/issuer/issuer.py"]
+    healthcheck:
+      test: ["CMD", "/opt/issuer/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18009/readyz', timeout=4)"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+networks:
+  manual-egress:

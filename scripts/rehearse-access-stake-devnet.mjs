@@ -43,6 +43,7 @@ import {
   sha256File,
   validateRehearsalReceipt,
 } from './access-stake-contracts.mjs';
+import { establishDevnetAgreement, loadRpcSetCredential } from './devnet-rpc-set.mjs';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(SCRIPT), '..');
@@ -71,7 +72,7 @@ export const parseCli = (argv) => {
     else if (argument.startsWith('--')) values[argument.slice(2)] = argv[++index];
     else throw new Error(`Unexpected argument: ${argument}`);
   }
-  for (const required of ['release-manifest', 'rpc-primary', 'rpc-secondary', 'rpc-tertiary', 'review-file']) {
+  for (const required of ['release-manifest', 'rpc-set-file', 'review-file']) {
     if (!values[required]) throw new Error(`Missing --${required}`);
   }
   if (values.acknowledgeDevnet && !values.execute) throw new Error('--acknowledge-devnet requires --execute');
@@ -79,7 +80,7 @@ export const parseCli = (argv) => {
   return values;
 };
 
-const run = (command, args, options = {}) => new Promise((resolve, reject) => {
+export const run = (command, args, options = {}) => new Promise((resolve, reject) => {
   const capture = options.capture === true;
   const child = spawn(command, args, {
     cwd: options.cwd ?? ROOT,
@@ -97,7 +98,7 @@ const run = (command, args, options = {}) => new Promise((resolve, reject) => {
   });
 });
 
-const jsonCommand = async (command, args, options = {}) => {
+export const jsonCommand = async (command, args, options = {}) => {
   const output = await run(command, args, { ...options, capture: true });
   try {
     return JSON.parse(output);
@@ -108,13 +109,7 @@ const jsonCommand = async (command, args, options = {}) => {
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-const checkedUrl = (value, label) => {
-  const url = new URL(value);
-  if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new Error(`${label} must be a credential-free HTTPS URL`);
-  return url;
-};
-
-const atomicWrite = async (file, value, mode = 0o644) => {
+export const atomicWrite = async (file, value, mode = 0o644) => {
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o755 });
   const temporary = `${file}.tmp`;
   await fs.writeFile(temporary, value, { mode });
@@ -122,8 +117,8 @@ const atomicWrite = async (file, value, mode = 0o644) => {
   await fs.chmod(file, mode);
 };
 
-const writePrivate = (file, value) => atomicWrite(file, value, 0o600);
-const writeKeypair = (file, keypair) => writePrivate(file, `${JSON.stringify(Array.from(keypair.secretKey))}\n`);
+export const writePrivate = (file, value) => atomicWrite(file, value, 0o600);
+export const writeKeypair = (file, keypair) => writePrivate(file, `${JSON.stringify(Array.from(keypair.secretKey))}\n`);
 const base64url = (value) => Buffer.from(value).toString('base64url');
 
 export function validateReview(value, sourceCommit) {
@@ -152,27 +147,7 @@ const assertPlannedPolicy = async () => {
   }
 };
 
-const agreement = async (connections) => {
-  const genesis = await Promise.all(connections.map((connection) => connection.getGenesisHash()));
-  if (genesis.some((value) => value !== DEVNET_GENESIS)) throw new Error('All RPCs must report Solana devnet genesis');
-  const slots = await Promise.all(connections.map((connection) => connection.getSlot('finalized')));
-  for (let offset = 0; offset < 64; offset += 1) {
-    const slot = Math.min(...slots) - offset;
-    if (slot <= 0) break;
-    const blocks = await Promise.all(connections.map((connection) => connection.getBlock(
-      slot, { commitment: 'finalized', transactionDetails: 'none', rewards: false, maxSupportedTransactionVersion: 0 },
-    )));
-    if (blocks.every(Boolean)) {
-      if (blocks.some((block) => block.blockhash !== blocks[0].blockhash || block.previousBlockhash !== blocks[0].previousBlockhash)) {
-        throw new Error('Independent RPCs disagree on a finalized devnet block');
-      }
-      return { genesisHash: genesis[0], slot };
-    }
-  }
-  throw new Error('Independent RPCs could not establish a shared finalized devnet block');
-};
-
-const compose = (project, runtime, args, options = {}) => run('docker', [
+export const compose = (project, runtime, args, options = {}) => run('docker', [
   'compose', '--file', COMPOSE, '--project-name', project, ...args,
 ], {
   ...options,
@@ -184,7 +159,7 @@ const compose = (project, runtime, args, options = {}) => run('docker', [
   },
 });
 
-const stopProcess = async (child) => {
+export const stopProcess = async (child) => {
   if (!child || child.exitCode !== null) return;
   const exited = new Promise((resolve) => child.once('exit', resolve));
   child.kill('SIGTERM');
@@ -195,7 +170,7 @@ const stopProcess = async (child) => {
   if (!killed) throw new Error('A rehearsal child process did not exit after SIGKILL');
 };
 
-const waitHttp = async (url, expected, attempts = 60) => {
+export const waitHttp = async (url, expected, attempts = 60) => {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const response = await fetch(url);
@@ -208,7 +183,7 @@ const waitHttp = async (url, expected, attempts = 60) => {
   throw new Error('A loopback rehearsal service did not become ready');
 };
 
-const renderSynapse = async (runtime, matrixSecret) => {
+export const renderSynapse = async (runtime, matrixSecret) => {
   const postgresPassword = randomBytes(32).toString('base64url');
   const signingId = randomBytes(4).toString('hex');
   const signingSeed = randomBytes(32).toString('base64').replace(/=+$/u, '');
@@ -269,7 +244,7 @@ const renderSynapse = async (runtime, matrixSecret) => {
   ].join('\n'));
 };
 
-const startLoggedProcess = async (command, args, env, logFile) => {
+export const startLoggedProcess = async (command, args, env, logFile) => {
   const descriptor = fsSync.openSync(logFile, 'a', 0o600);
   const child = spawn(command, args, { cwd: ISSUER_DIR, env, stdio: ['ignore', descriptor, descriptor] });
   child.once('exit', () => fsSync.closeSync(descriptor));
@@ -387,11 +362,11 @@ export const matrixAttempt = async (registrationToken, shouldSucceed) => {
   return finalBody;
 };
 
-const buildToolchain = () => run('docker', [
+export const buildToolchain = () => run('docker', [
   'build', '--platform', 'linux/amd64', '--file', DOCKERFILE, '--tag', TOOLCHAIN_IMAGE, ROOT,
 ]);
 
-const dockerSolana = (runtime, artifactFile, args, options = {}) => run('docker', [
+export const dockerSolana = (runtime, artifactFile, args, options = {}) => run('docker', [
   'run', '--rm', '--platform', 'linux/amd64',
   '--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
   '--env', 'HOME=/tmp',
@@ -421,7 +396,7 @@ export const expectProgramError = async (operation, label, expectedCode) => {
   throw new Error(`${label} unexpectedly succeeded instead of custom program error 0x${expectedCode.toString(16)}`);
 };
 
-const fundWithAirdrop = async (connection, account, targetLamports) => {
+export const fundWithAirdrop = async (connection, account, targetLamports) => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const balance = await connection.getBalance(account, 'finalized');
     if (balance >= targetLamports) return balance;
@@ -438,7 +413,7 @@ const fundWithAirdrop = async (connection, account, targetLamports) => {
   return balance;
 };
 
-const fundSigners = async (connection, deployer, signers) => {
+export const fundSigners = async (connection, deployer, signers) => {
   const transfers = signers.map((signer) => SystemProgram.transfer({
     fromPubkey: deployer.publicKey,
     toPubkey: signer.publicKey,
@@ -447,7 +422,7 @@ const fundSigners = async (connection, deployer, signers) => {
   await send(connection, transfers, [deployer]);
 };
 
-const receiptAddress = (programId, config, staker) => PublicKey.findProgramAddressSync(
+export const receiptAddress = (programId, config, staker) => PublicKey.findProgramAddressSync(
   [Buffer.from('access-stake'), config.toBuffer(), staker.toBuffer()],
   programId,
 )[0];
@@ -511,7 +486,7 @@ const unstakeInstruction = (programId, config, mint, staker, vault, destination)
   data: Buffer.from([6, 6]),
 });
 
-const readReceipt = async (connection, address) => {
+export const readReceipt = async (connection, address) => {
   const account = await connection.getAccountInfo(address, 'finalized');
   if (!account || account.data.length !== 163 || !account.data.subarray(0, 8).equals(Buffer.from('NEALSTAK'))) {
     throw new Error('Finalized rehearsal receipt has an invalid wire shape');
@@ -524,10 +499,10 @@ const readReceipt = async (connection, address) => {
   };
 };
 
-const configCommand = async ({ runtime, artifactFile, rpc, programId, programData, hash, mint, deployer, issuer, configId, amount, lock }) => {
+export const configCommand = async ({ runtime, artifactFile, rpcSetFile, programId, programData, hash, mint, deployer, issuer, configId, amount, lock }) => {
   const result = await jsonCommand(process.execPath, [
     path.join(ROOT, 'scripts/initialize-access-stake-config.mjs'),
-    '--cluster', 'devnet', '--rpc', rpc,
+    '--cluster', 'devnet', '--rpc-set-file', rpcSetFile,
     '--program-id', programId.toBase58(), '--program-data-address', programData.toBase58(),
     '--program-sha256', hash, '--mint', mint.toBase58(),
     '--authority-keypair', path.join(runtime, 'deployer.json'),
@@ -537,14 +512,14 @@ const configCommand = async ({ runtime, artifactFile, rpc, programId, programDat
   return { ...result, address: new PublicKey(result.configAddress) };
 };
 
-const pauseCommand = async ({ runtime, rpc, programId, config, action }) => jsonCommand(process.execPath, [
+const pauseCommand = async ({ runtime, rpcSetFile, programId, config, action }) => jsonCommand(process.execPath, [
   path.join(ROOT, 'scripts/manage-access-stake-config.mjs'),
-  '--action', action, '--cluster', 'devnet', '--rpc', rpc,
+  '--action', action, '--cluster', 'devnet', '--rpc-set-file', rpcSetFile,
   '--program-id', programId.toBase58(), '--config-address', config.toBase58(),
   '--authority-keypair', path.join(runtime, 'deployer.json'), '--send',
 ], { failure: `Devnet config ${action} failed` });
 
-const attestProgram = async (connection, programId, programData, expectedHash) => {
+export const attestProgram = async (connection, programId, programData, expectedHash) => {
   const [program, data] = await Promise.all([
     connection.getAccountInfo(programId, 'finalized'),
     connection.getAccountInfo(programData, 'finalized'),
@@ -561,18 +536,11 @@ const attestProgram = async (connection, programId, programData, expectedHash) =
   return deployedHash;
 };
 
-const startIssuer = async ({ python, runtime, rpcEndpoints, programId, programData, programHash, config, mint }) => {
-  const rpcSet = path.join(runtime, 'solana-rpc-set.json');
-  await writePrivate(rpcSet, `${JSON.stringify({
-    schema: 'neal.solana-rpc-set/v1',
-    mode: 'quorum-2-of-3',
-    threshold: 2,
-    endpoints: rpcEndpoints.map((url, index) => ({ id: `provider-${index + 1}`, trustDomain: `rehearsal-${index + 1}`, url })),
-  })}\n`);
+const startIssuer = async ({ python, runtime, rpcSetFile, programId, programData, programHash, config, mint }) => {
   const environment = {
     ...process.env,
     NEAL_ACCESS_DATABASE: path.join(runtime, 'issuer.sqlite3'),
-    NEAL_ACCESS_SOLANA_RPC_SET_FILE: rpcSet,
+    NEAL_ACCESS_SOLANA_RPC_SET_FILE: rpcSetFile,
     NEAL_ACCESS_CHAIN_ID: 'solana:devnet',
     NEAL_ACCESS_SOLANA_GENESIS_HASH: DEVNET_GENESIS,
     NEAL_ACCESS_PROGRAM_ID: programId.toBase58(),
@@ -598,7 +566,7 @@ const startIssuer = async ({ python, runtime, rpcEndpoints, programId, programDa
   return { child, environment };
 };
 
-const installPython = async (runtime) => {
+export const installPython = async (runtime) => {
   await run('python3.12', ['-m', 'venv', path.join(runtime, 'venv')], { failure: 'Python 3.12 is required for the rehearsal issuer' });
   const python = path.join(runtime, 'venv/bin/python');
   await run(python, [
@@ -658,6 +626,26 @@ async function execute(options, release, review, rpcAgreement) {
   let issuerEnvironment;
   let receipt;
   try {
+    const rpcEndpoints = options.rpcSet.endpoints.map((endpoint) => endpoint.url);
+    const primaryRpc = rpcEndpoints[0];
+    const rpcSetFile = path.join(runtime, 'solana-rpc-set.json');
+    const solanaConfigFile = path.join(runtime, 'solana-cli.yml');
+    await writePrivate(rpcSetFile, `${JSON.stringify({
+      schema: options.rpcSet.schema,
+      mode: options.rpcSet.mode,
+      threshold: options.rpcSet.threshold,
+      endpoints: options.rpcSet.endpoints.map(({ id, trustDomain, url }) => ({ id, trustDomain, url })),
+    })}\n`);
+    await writePrivate(solanaConfigFile, [
+      '---',
+      `json_rpc_url: ${JSON.stringify(primaryRpc)}`,
+      "websocket_url: ''",
+      'keypair_path: /rehearsal/deployer.json',
+      'address_labels:',
+      '  {}',
+      'commitment: finalized',
+      '',
+    ].join('\n'));
     const mark = (step) => publicLog.push({ step, status: 'passed' });
     const deployer = Keypair.generate();
     const issuer = Keypair.generate();
@@ -687,26 +675,25 @@ async function execute(options, release, review, rpcAgreement) {
     await waitHttp('http://127.0.0.1:18010/_matrix/client/versions', [200]);
     mark('isolated-synapse-ready');
 
-    const connection = new Connection(options['rpc-primary'], 'finalized');
+    const connection = new Connection(primaryRpc, 'finalized');
     await fundWithAirdrop(connection, deployer.publicKey, 4 * LAMPORTS_PER_SOL);
     await fundSigners(connection, deployer, [issuer, ...Object.values(wallets)]);
     mark('disposable-identities-funded');
 
     await dockerSolana(runtime, release.artifactFile, [
-      'solana', 'program', 'deploy', `/release/${path.basename(release.artifactFile)}`,
+      'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'deploy', `/release/${path.basename(release.artifactFile)}`,
       '--program-id', '/rehearsal/program.json', '--upgrade-authority', '/rehearsal/deployer.json',
-      '--keypair', '/rehearsal/deployer.json', '--url', options['rpc-primary'], '--commitment', 'finalized',
+      '--keypair', '/rehearsal/deployer.json', '--commitment', 'finalized',
     ], { failure: 'Devnet program deployment failed' });
     const programId = programKeypair.publicKey;
     const [programData] = PublicKey.findProgramAddressSync([programId.toBuffer()], UPGRADEABLE_LOADER);
     await dockerSolana(runtime, release.artifactFile, [
-      'solana', 'program', 'set-upgrade-authority', programId.toBase58(), '--final',
+      'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'set-upgrade-authority', programId.toBase58(), '--final',
       '--upgrade-authority', '/rehearsal/deployer.json', '--keypair', '/rehearsal/deployer.json',
-      '--url', options['rpc-primary'], '--commitment', 'finalized',
+      '--commitment', 'finalized',
     ], { failure: 'Could not finalize the devnet upgrade authority' });
     await dockerSolana(runtime, release.artifactFile, [
-      'solana', 'program', 'dump', programId.toBase58(), '/rehearsal/deployed.so',
-      '--url', options['rpc-primary'],
+      'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'dump', programId.toBase58(), '/rehearsal/deployed.so',
     ], { failure: 'Could not dump finalized devnet program bytes' });
     const dumpHash = await sha256File(path.join(runtime, 'deployed.so'));
     if (dumpHash !== release.manifest.artifact.sha256) throw new Error('solana program dump differs from the release artifact');
@@ -716,17 +703,17 @@ async function execute(options, release, review, rpcAgreement) {
     const { mint, accounts } = await createRehearsalMint(connection, deployer, wallets);
     mark('token-2022-mint-created-and-authorities-disabled');
     const parityConfig = await configCommand({
-      runtime, artifactFile: release.artifactFile, rpc: options['rpc-primary'], programId, programData,
+      runtime, artifactFile: release.artifactFile, rpcSetFile, programId, programData,
       hash: programHash, mint, deployer, issuer, configId: 0, amount: PRODUCTION_AMOUNT, lock: PRODUCTION_LOCK_SECONDS,
     });
     const lifecycleConfig = await configCommand({
-      runtime, artifactFile: release.artifactFile, rpc: options['rpc-primary'], programId, programData,
+      runtime, artifactFile: release.artifactFile, rpcSetFile, programId, programData,
       hash: programHash, mint, deployer, issuer, configId: 1, amount: LIFECYCLE_AMOUNT, lock: LIFECYCLE_LOCK_SECONDS,
     });
     mark('two-configs-finalized');
 
     ({ child: issuerProcess, environment: issuerEnvironment } = await startIssuer({
-      python, runtime, rpcEndpoints: [options['rpc-primary'], options['rpc-secondary'], options['rpc-tertiary']],
+      python, runtime, rpcSetFile,
       programId, programData, programHash, config: parityConfig, mint,
     }));
     await waitHttp('http://127.0.0.1:18009/readyz', [200]);
@@ -762,7 +749,7 @@ async function execute(options, release, review, rpcAgreement) {
       cwd: ISSUER_DIR, failure: 'Encrypted issuer restore failed',
     });
     ({ child: issuerProcess, environment: issuerEnvironment } = await startIssuer({
-      python, runtime, rpcEndpoints: [options['rpc-primary'], options['rpc-secondary'], options['rpc-tertiary']],
+      python, runtime, rpcSetFile,
       programId, programData, programHash, config: parityConfig, mint,
     }));
     await waitHttp('http://127.0.0.1:18009/readyz', [503]);
@@ -826,7 +813,7 @@ async function execute(options, release, review, rpcAgreement) {
       () => send(connection, [unstakeInstruction(programId, lifecycleConfig.address, mint, wallets.lifecycle.publicKey, lifecycleStake.vault, lifecycleSource)], [wallets.lifecycle]),
       'early unstake', STAKE_LOCKED_ERROR,
     );
-    const paused = await pauseCommand({ runtime, rpc: options['rpc-primary'], programId, config: lifecycleConfig.address, action: 'pause' });
+    const paused = await pauseCommand({ runtime, rpcSetFile, programId, config: lifecycleConfig.address, action: 'pause' });
     if (paused.finalizedRevision !== '1') throw new Error('Lifecycle pause did not finalize revision 1');
     await expectProgramError(
       () => send(connection, [claimInstruction(programId, lifecycleConfig.address, wallets.lifecycle.publicKey)], [wallets.lifecycle]),
@@ -850,7 +837,7 @@ async function execute(options, release, review, rpcAgreement) {
     if (afterRefund - beforeRefund !== 1_000_001n) throw new Error('Paused unstake did not return the full pre-dusted vault');
     const released = await readReceipt(connection, lifecycleStake.receipt);
     if (released.releasedAt <= 0) throw new Error('Lifecycle receipt did not finalize its release');
-    const unpaused = await pauseCommand({ runtime, rpc: options['rpc-primary'], programId, config: lifecycleConfig.address, action: 'unpause' });
+    const unpaused = await pauseCommand({ runtime, rpcSetFile, programId, config: lifecycleConfig.address, action: 'unpause' });
     if (unpaused.finalizedRevision !== '2') throw new Error('Lifecycle unpause did not finalize revision 2');
     mark('lifecycle-pause-rejections-full-refund-and-unpause');
 
@@ -920,12 +907,8 @@ async function execute(options, release, review, rpcAgreement) {
 
 async function main() {
   const options = parseCli(process.argv.slice(2));
-  const primaryUrl = checkedUrl(options['rpc-primary'], '--rpc-primary');
-  const secondaryUrl = checkedUrl(options['rpc-secondary'], '--rpc-secondary');
-  const tertiaryUrl = checkedUrl(options['rpc-tertiary'], '--rpc-tertiary');
-  if (new Set([primaryUrl.hostname, secondaryUrl.hostname, tertiaryUrl.hostname]).size !== 3) {
-    throw new Error('All three RPCs must use independent hostnames');
-  }
+  const rpcSet = await loadRpcSetCredential(options['rpc-set-file']);
+  options.rpcSet = rpcSet;
   const release = await readAndValidateReleaseManifest(options['release-manifest']);
   const review = validateReview(JSON.parse(await fs.readFile(path.resolve(options['review-file']), 'utf8')), release.manifest.sourceCommit);
   await assertPlannedPolicy();
@@ -936,11 +919,7 @@ async function main() {
   }
   let rpcAgreement;
   try {
-    rpcAgreement = await agreement([
-      new Connection(primaryUrl.toString(), 'finalized'),
-      new Connection(secondaryUrl.toString(), 'finalized'),
-      new Connection(tertiaryUrl.toString(), 'finalized'),
-    ]);
+    rpcAgreement = await establishDevnetAgreement(rpcSet);
   } catch {
     throw new Error('Independent RPC devnet/finality preflight failed');
   }
@@ -963,9 +942,11 @@ async function main() {
   }, null, 2));
 }
 
-if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   main().catch((error) => {
-    console.error(`Access-stake devnet rehearsal failed: ${error instanceof Error ? error.message : String(error)}`);
+    const message = (error instanceof Error ? error.message : String(error))
+      .replaceAll(/https:\/\/[^\s"']+/gu, '[redacted RPC URL]');
+    console.error(`Access-stake devnet rehearsal failed: ${message}`);
     process.exitCode = 1;
   });
 }

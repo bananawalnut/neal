@@ -20,10 +20,11 @@ import {
 } from '@solana/wallet-standard-features';
 import bs58 from 'bs58';
 import type { WalletIdentityController, WalletTransactionSession } from './wallet';
+import { getRuntimeConfig } from './runtime-config';
 
 const CONFIG_DISCRIMINATOR = 'NEALACFG';
 const STAKE_DISCRIMINATOR = 'NEALSTAK';
-const NEAL_SERVER = 'matrix.nealtheseal.org';
+const NEAL_SERVER = getRuntimeConfig()?.matrix.serverName ?? 'matrix.nealtheseal.org';
 const UPGRADEABLE_LOADER_ID = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
 const ACCESS_OPERATION_KEY = 'neal.matrix-access-operation.v2';
 

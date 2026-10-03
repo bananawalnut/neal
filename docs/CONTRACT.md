@@ -46,6 +46,24 @@ A status string never overrides the readiness report. The final signing UI must 
 
 `neal.wallet-policy/v1` is an additive public contract consumed by the website and, later, Castalia conformance tests. It defines the Solana chain identifier, standard feature names, authentication preference, nonce lifetime, RPC commitment, and minimum atomic balance for holder status. Older site builds that do not read this file remain valid because it does not alter `neal.public-record/v1`.
 
+`neal.devnet-manual-runtime/v1` is a localhost-only, four-hour public projection
+for isolated Chrome acceptance. It binds one exact source commit, expiry,
+disposable browser public key, immutable program and hash, manual config,
+issuer, test mint, approved 69,000/120-second terms, strict 2-of-3 verification,
+and isolated Matrix server/room identifiers. It contains no RPC URL, key,
+password, token, cookie, or filesystem path. The browser accepts it only from
+`localhost` or `127.0.0.1`, only for `solana:devnet`, and only before expiry.
+The gateway derives a temporary `neal.wallet-policy/v1` from this projection;
+the committed mainnet policy and the separate single-RPC preview policy remain
+unchanged. Older production consumers never request this runtime endpoint.
+
+`neal.solana-rpc-set/v1` remains a private credential contract. Executing
+manual and formal devnet tooling requires `quorum-2-of-3`, threshold two, and
+exactly three distinct IDs, hosts, registrable domains, and trust domains.
+Tooling receives only the mode-`0600` credential path. URLs may contain provider
+credentials but must never appear in command arguments, browser contracts,
+logs, receipts, or GitHub artifacts.
+
 `neal.wallet-proof/v1` proves control of one address. Its subject is `solana:mainnet/{address}`. The proof records the wallet name, standard signing method, short-lived request ID, issue and expiry times, signed message, Ed25519 signature, public key, digest, and whether verification was local or server-backed. A local proof is never represented as a durable authenticated session.
 
 `neal.holder-proof/v1` binds a wallet-proof digest to the canonical mint, integer token balance, mint decimals, commitment, finalized or confirmed slot, and observation time. Holder status is true only when the integer balance meets the public policy threshold. It is a point-in-time observation, not a permanent role.

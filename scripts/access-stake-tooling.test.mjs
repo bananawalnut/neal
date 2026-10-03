@@ -18,6 +18,13 @@ import { expectProgramError, matrixAttempt, parseCli, validateReview } from './r
 import { buildSbfCommand, buildSbfEnvironment } from './reproduce-access-stake-release.mjs';
 import { createProposalManifest, validateProposalManifest } from './squads-access-authority.mjs';
 import { validateProductionReview } from './verify-production-review.mjs';
+import { validateRpcSetCredential } from './devnet-rpc-set.mjs';
+import {
+  MANUAL_RUNTIME_SCHEMA,
+  MANUAL_LEASE_SECONDS,
+  buildManualWalletPolicy,
+  validateManualPublicRuntime,
+} from './manual-devnet-contracts.mjs';
 
 const SHA = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -121,10 +128,66 @@ test('public evidence rejects credential-shaped keys and values', () => {
 });
 
 test('devnet writes require both explicit flags', () => {
-  const required = ['--release-manifest', 'release.json', '--rpc-primary', 'https://one.invalid', '--rpc-secondary', 'https://two.invalid', '--rpc-tertiary', 'https://three.invalid', '--review-file', 'review.json'];
+  const required = ['--release-manifest', 'release.json', '--rpc-set-file', '/private/rpc-set.json', '--review-file', 'review.json'];
   assert.equal(parseCli(required).execute, false);
   assert.throws(() => parseCli([...required, '--execute']), /acknowledge-devnet/u);
   assert.equal(parseCli([...required, '--execute', '--acknowledge-devnet']).execute, true);
+});
+
+test('RPC-set contract requires three independent providers without exposing URLs in CLI parsing', () => {
+  const value = {
+    schema: 'neal.solana-rpc-set/v1',
+    mode: 'quorum-2-of-3',
+    threshold: 2,
+    endpoints: [
+      { id: 'helius-devnet', trustDomain: 'helius.xyz', url: 'https://devnet.helius-rpc.com/?api-key=secret' },
+      { id: 'quicknode-devnet', trustDomain: 'quicknode.com', url: 'https://sample.solana-devnet.quiknode.pro/secret/' },
+      { id: 'alchemy-devnet', trustDomain: 'alchemy.com', url: 'https://solana-devnet.g.alchemy.com/v2/secret' },
+    ],
+  };
+  assert.equal(validateRpcSetCredential(value).endpoints.length, 3);
+  const duplicate = structuredClone(value);
+  duplicate.endpoints[2].trustDomain = 'quicknode.com';
+  assert.throws(() => validateRpcSetCredential(duplicate), /trust domains must be distinct/u);
+  const impostor = structuredClone(value);
+  impostor.endpoints[1] = {
+    id: 'unrelated-devnet', trustDomain: 'other.example', url: 'https://rpc.other.example/key',
+  };
+  assert.throws(() => validateRpcSetCredential(impostor), /recognized QuickNode/u);
+});
+
+test('manual browser runtime produces only a localhost devnet policy', () => {
+  const generatedAt = Date.now();
+  const runtime = {
+    schema: MANUAL_RUNTIME_SCHEMA,
+    mode: 'isolated-devnet-manual',
+    sourceCommit: COMMIT,
+    generatedAt: new Date(generatedAt).toISOString(),
+    expiresAt: new Date(generatedAt + (MANUAL_LEASE_SECONDS * 1_000)).toISOString(),
+    chainId: 'solana:devnet',
+    verification: { mode: 'quorum-2-of-3', providerCount: 3, threshold: 2 },
+    browserWallet: KEY,
+    programId: KEY,
+    programDataAddress: KEY,
+    programSha256: SHA,
+    configAddress: KEY,
+    configRevision: '0',
+    issuerAuthority: KEY,
+    mint: KEY,
+    terms: { requiredAtomicAmount: '69000000000', minimumLockSeconds: 120, tokenDecimals: 6, mintedAtomicAmount: '69001000000' },
+    matrix: {
+      serverName: 'rehearsal.neal.invalid', baseUrl: 'https://localhost:4280',
+      roomId: '!room:rehearsal.neal.invalid', roomAlias: '#neal-gc:rehearsal.neal.invalid',
+      viaServers: ['rehearsal.neal.invalid'],
+    },
+  };
+  assert.equal(validateManualPublicRuntime(runtime), runtime);
+  const policy = buildManualWalletPolicy(runtime);
+  assert.equal(policy.chain, 'solana:devnet');
+  assert.equal(policy.verification.mode, 'quorum-2-of-3');
+  assert.equal(policy.accessStake.requiredAtomicAmount, '69000000000');
+  assert.equal(policy.holderProof.rpcEndpoint, '/_neal/devnet/rpc');
+  assert.equal(JSON.stringify(policy).includes('secret'), false);
 });
 
 test('isolated review must cover the exact release with no P0-P2 findings', () => {
