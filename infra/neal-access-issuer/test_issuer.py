@@ -156,6 +156,39 @@ class MatrixLoopbackTests(unittest.TestCase):
             matrix_loopback.UPSTREAM_PORT = original_port
             matrix_loopback.UPSTREAM_TIMEOUT_SECONDS = original_timeout
 
+    def test_partial_clients_time_out_and_release_all_worker_slots(self) -> None:
+        original_timeout = matrix_loopback.CLIENT_TIMEOUT_SECONDS
+        matrix_loopback.CLIENT_TIMEOUT_SECONDS = 0.05
+        proxy = matrix_loopback.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), matrix_loopback.MatrixLoopbackHandler
+        )
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        clients: list[socket.socket] = []
+        try:
+            for _index in range(matrix_loopback.WORKER_LIMIT):
+                client = socket.create_connection(proxy.server_address, timeout=2)
+                client.sendall(
+                    b"POST /_matrix/client/v3/register HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\nContent-Length: 10\r\n\r\nx"
+                )
+                clients.append(client)
+            time.sleep(0.15)
+            started = time.monotonic()
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=2)
+            connection.request("GET", "/denied")
+            response = connection.getresponse()
+            self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
+            response.read()
+            connection.close()
+            self.assertLess(time.monotonic() - started, 1.0)
+        finally:
+            for client in clients:
+                client.close()
+            proxy.shutdown()
+            proxy.server_close()
+            matrix_loopback.CLIENT_TIMEOUT_SECONDS = original_timeout
+
 
 class FakeAccessDenied(RuntimeError):
     def __init__(self) -> None:

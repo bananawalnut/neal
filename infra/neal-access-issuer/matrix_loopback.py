@@ -19,6 +19,7 @@ MAX_BODY_BYTES = 1024 * 1024
 UPSTREAM_HOST = "synapse"
 UPSTREAM_PORT = 8008
 UPSTREAM_TIMEOUT_SECONDS = 60
+CLIENT_TIMEOUT_SECONDS = 15
 WORKER_LIMIT = 32
 ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 REQUEST_HEADERS = frozenset({"accept", "authorization", "content-type", "user-agent"})
@@ -70,6 +71,10 @@ class MatrixLoopbackHandler(BaseHTTPRequestHandler):
     server_version = "neal-matrix-loopback"
     sys_version = ""
 
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(CLIENT_TIMEOUT_SECONDS)
+
     def log_message(self, _format: str, *_arguments) -> None:
         return
 
@@ -94,7 +99,10 @@ class MatrixLoopbackHandler(BaseHTTPRequestHandler):
             raise ValueError("invalid content length") from error
         if length < 0 or length > MAX_BODY_BYTES:
             raise OverflowError("request body is too large")
-        return self.rfile.read(length) if length else b""
+        body = self.rfile.read(length) if length else b""
+        if len(body) != length:
+            raise ValueError("request body ended early")
+        return body
 
     def _health(self) -> None:
         connection = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=5)
@@ -126,6 +134,9 @@ class MatrixLoopbackHandler(BaseHTTPRequestHandler):
             return
         except ValueError:
             self._send_json(HTTPStatus.BAD_REQUEST, {"schema": SCHEMA, "status": "denied"})
+            return
+        except TimeoutError:
+            self.close_connection = True
             return
         headers = filtered_headers(self.headers, REQUEST_HEADERS)
         headers["Host"] = f"{UPSTREAM_HOST}:{UPSTREAM_PORT}"
