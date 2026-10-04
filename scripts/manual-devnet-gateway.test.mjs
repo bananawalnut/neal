@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { createManualGateway } from './manual-devnet-gateway.mjs';
+import { createManualGateway, matrixRouteAllowed } from './manual-devnet-gateway.mjs';
 
 const request = (port, pathname, options = {}) => new Promise((resolve, reject) => {
   const call = https.request({
@@ -242,4 +242,23 @@ test('manual browser joins its public isolated room while production retains mod
   assert.ok(entryHandler.indexOf('activeClient.joinRoom') < entryHandler.indexOf('activeClient.knockRoom'));
   assert.match(shell, /heroBadge: 'ISOLATED DEVNET GC · DIRECT JOIN'/u);
   assert.match(shell, /heroBadge: 'FEDERATED GC · KNOCK TO JOIN'/u);
+});
+
+test('manual Matrix allowlist permits only isolated-user filter synchronization routes', () => {
+  const runtime = { matrix: { serverName: 'rehearsal.neal.invalid' } };
+  assert.equal(matrixRouteAllowed(
+    '/_matrix/client/v3/user/%40alice%3Arehearsal.neal.invalid/filter', 'POST', runtime,
+  ), true);
+  assert.equal(matrixRouteAllowed(
+    '/_matrix/client/v3/user/%40alice%3Arehearsal.neal.invalid/filter/12', 'GET', runtime,
+  ), true);
+  assert.equal(matrixRouteAllowed(
+    '/_matrix/client/v3/user/%40alice%3Amatrix.org/filter', 'POST', runtime,
+  ), false);
+  assert.equal(matrixRouteAllowed(
+    '/_matrix/client/v3/user/%40alice%3Arehearsal.neal.invalid/filter/12', 'POST', runtime,
+  ), false);
+  assert.equal(matrixRouteAllowed(
+    '/_matrix/client/v3/user/%40alice%3Arehearsal.neal.invalid/filter/%2e%2e%2fadmin', 'GET', runtime,
+  ), false);
 });

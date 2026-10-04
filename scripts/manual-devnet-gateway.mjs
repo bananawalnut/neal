@@ -100,7 +100,7 @@ const exactBrowserRequest = (request, runtime, expectedHost, { requireJson = fal
   }
 };
 
-const matrixRouteAllowed = (pathname, method, runtime) => {
+export const matrixRouteAllowed = (pathname, method, runtime) => {
   let decoded;
   try { decoded = decodeURIComponent(pathname); } catch { return false; }
   const exact = new Set([
@@ -129,6 +129,13 @@ const matrixRouteAllowed = (pathname, method, runtime) => {
   const profilePrefix = '/_matrix/client/v3/profile/';
   if (method === 'GET' && decoded.startsWith(profilePrefix)) {
     return decoded.slice(profilePrefix.length).includes(`:${runtime.matrix.serverName}`);
+  }
+  const userFilter = decoded.match(/^\/_matrix\/client\/v3\/user\/([^/]+)\/filter(?:\/([^/]+))?$/u);
+  if (userFilter) {
+    const [, userId, filterId] = userFilter;
+    if (!userId.startsWith('@') || !userId.endsWith(`:${runtime.matrix.serverName}`)) return false;
+    if (filterId === undefined) return method === 'POST';
+    return method === 'GET' && /^[A-Za-z0-9._~-]+$/u.test(filterId);
   }
   return false;
 };
