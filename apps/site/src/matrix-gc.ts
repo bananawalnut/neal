@@ -14,6 +14,7 @@ const DIRECT_HOMESERVER_BASE_URLS = new Map<string, string>(DEVNET_RUNTIME
 const PUBLIC_FEED_URL = DEVNET_RUNTIME ? '/_neal/devnet/public-messages' : 'https://matrix.nealtheseal.org/_neal/gc/messages';
 const PUBLIC_REFRESH_MS = 10_000;
 const NEAL_HOMESERVER_DOMAIN = DEVNET_RUNTIME?.matrix.serverName ?? 'matrix.nealtheseal.org';
+const ROOM_ENTRY_ACTION = DEVNET_RUNTIME ? 'join' : 'knock';
 const SESSION_KEY = 'neal.matrix.session.v1';
 const SSO_PENDING_KEY = 'neal.matrix.sso.pending.v1';
 const REGISTRATION_RECOVERY_KEY = 'neal.matrix.registration-recovery.v2';
@@ -578,8 +579,13 @@ const renderRoom = async (ui: ClientUi, client: MatrixClient, sdk: MatrixSdk): P
     setActivityDockState('INVITED · OPEN CHAT TO ENTER', 'good');
   } else {
     startPublicTimeline(ui);
-    setStatus(ui, 'Authenticated. Knock to request entry.', 'idle');
-    setActivityDockState('SIGNED IN · KNOCK TO SEE ACTIVITY', 'idle');
+    if (ROOM_ENTRY_ACTION === 'join') {
+      setStatus(ui, 'Authenticated. Enter the isolated room to start chatting.', 'idle');
+      setActivityDockState('SIGNED IN · ENTER THE ISOLATED ROOM', 'idle');
+    } else {
+      setStatus(ui, 'Authenticated. Knock to request entry.', 'idle');
+      setActivityDockState('SIGNED IN · KNOCK TO SEE ACTIVITY', 'idle');
+    }
   }
 };
 
@@ -989,6 +995,7 @@ export const mountMatrixGc = (): void => {
   if (DEVNET_RUNTIME) {
     ui.createDomainInput.value = DEVNET_RUNTIME.matrix.serverName;
     ui.createDomainInput.readOnly = true;
+    ui.knockButton.textContent = 'ENTER THE ISOLATED ROOM';
   }
 
   ui.loginTab.addEventListener('click', () => showEntryMode(ui, 'login'));
@@ -1098,8 +1105,15 @@ export const mountMatrixGc = (): void => {
   ui.knockButton.addEventListener('click', async () => {
     if (!activeClient) return;
     ui.knockButton.disabled = true;
-    setStatus(ui, 'Knocking on the NEAL GC…', 'working');
     try {
+      if (ROOM_ENTRY_ACTION === 'join') {
+        setStatus(ui, 'Entering the isolated NEAL GC…', 'working');
+        await activeClient.joinRoom(ROOM_ID, { viaServers: ROOM_VIA_SERVERS });
+        const sdk = await loadSdk();
+        await renderRoom(ui, activeClient, sdk);
+        return;
+      }
+      setStatus(ui, 'Knocking on the NEAL GC…', 'working');
       await activeClient.knockRoom(ROOM_ID, {
         reason: 'Requesting entry through the NEAL web client.',
         viaServers: ROOM_VIA_SERVERS,

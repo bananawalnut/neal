@@ -227,3 +227,19 @@ test('manual browser finality uses only HTTP quorum polling before any productio
   assert.match(manualBranch, /lastValidBlockHeight/u);
   assert.doesNotMatch(manualBranch, /confirmTransaction/u);
 });
+
+test('manual browser joins its public isolated room while production retains moderated knock', async () => {
+  const source = await fs.readFile(path.join(process.cwd(), 'apps/site/src/matrix-gc.ts'), 'utf8');
+  const shell = await fs.readFile(path.join(process.cwd(), 'apps/site/src/main.ts'), 'utf8');
+  assert.match(source, /const ROOM_ENTRY_ACTION = DEVNET_RUNTIME \? 'join' : 'knock';/u);
+  const entryHandler = source.slice(
+    source.indexOf("ui.knockButton.addEventListener('click'"),
+    source.indexOf("ui.joinButton.addEventListener('click'"),
+  );
+  assert.match(entryHandler, /if \(ROOM_ENTRY_ACTION === 'join'\)/u);
+  assert.match(entryHandler, /activeClient\.joinRoom\(ROOM_ID/u);
+  assert.match(entryHandler, /activeClient\.knockRoom\(ROOM_ID/u);
+  assert.ok(entryHandler.indexOf('activeClient.joinRoom') < entryHandler.indexOf('activeClient.knockRoom'));
+  assert.match(shell, /heroBadge: 'ISOLATED DEVNET GC · DIRECT JOIN'/u);
+  assert.match(shell, /heroBadge: 'FEDERATED GC · KNOCK TO JOIN'/u);
+});

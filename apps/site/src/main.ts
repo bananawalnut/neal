@@ -150,6 +150,17 @@ const localPreviewBanner = SURFACE_MODE === 'local-preview' ? `
     <span>Account actions are disabled too. Use the reviewed HTTPS manual-devnet launcher for stake, issuance, registration, recovery, and refund testing.</span>
   </aside>
 ` : '';
+const matrixEntryCopy = DEVNET_RUNTIME ? {
+  heroBadge: 'ISOLATED DEVNET GC · DIRECT JOIN',
+  heroCallout: 'ISOLATED DEVNET · ENTER ROOM ↓',
+  heading: 'BRING YOUR ACCOUNT.<br>ENTER THE ROOM.<br><em>JOIN THE RACKET.</em>',
+  roomBadge: 'DIRECT JOIN',
+} : {
+  heroBadge: 'FEDERATED GC · KNOCK TO JOIN',
+  heroCallout: 'FEDERATED · KNOCK TO JOIN ↓',
+  heading: 'BRING YOUR ACCOUNT.<br>KNOCK ON THE DOOR.<br><em>JOIN THE RACKET.</em>',
+  roomBadge: 'KNOCK TO JOIN',
+};
 
 let canonicalMintAddress: string | null = null;
 let localYahooMode = false;
@@ -212,8 +223,8 @@ app.innerHTML = `
 
       <div class="hero-control-deck">
         <div class="hero-quests" aria-labelledby="hero-quests-title">
-          <div class="hero-quests-head"><div><span>THE KINGDOM / QUESTS</span><h2 id="hero-quests-title">The mob pitches. LORD NEAL seals the decree.</h2></div><b>FEDERATED GC · KNOCK TO JOIN</b></div>
-          <a class="hero-quest-callout" href="#gc"><strong>ENTER THE NEAL MATRIX GC.</strong><small>FEDERATED · KNOCK TO JOIN ↓</small></a>
+          <div class="hero-quests-head"><div><span>THE KINGDOM / QUESTS</span><h2 id="hero-quests-title">The mob pitches. LORD NEAL seals the decree.</h2></div><b>${matrixEntryCopy.heroBadge}</b></div>
+          <a class="hero-quest-callout" href="#gc"><strong>ENTER THE NEAL MATRIX GC.</strong><small>${matrixEntryCopy.heroCallout}</small></a>
         </div>
       </div>
       <div class="hero-marquee hero-marquee--bottom" aria-hidden="true"><span>LONG LIVE NEAL ✦ THE MOB IS YAPPING ✦ ARMY OF DEBAUCHERY ✦ CAUSE A SCENE ✦ LONG LIVE NEAL ✦ COMMUNITY QUESTS ARE COMING ✦</span></div>
@@ -359,7 +370,7 @@ app.innerHTML = `
       <section class="gc-portal" id="gc" aria-labelledby="gc-title">
         <div class="gc-portal-copy">
           <p class="eyebrow">FIRST-PARTY NEAL CLIENT / FEDERATED MATRIX</p>
-          <h3 id="gc-title">BRING YOUR ACCOUNT.<br>KNOCK ON THE DOOR.<br><em>JOIN THE RACKET.</em></h3>
+          <h3 id="gc-title">${matrixEntryCopy.heading}</h3>
           <p>Bring an existing account from any federated homeserver—or create one through an always-online provider. Chat with the mob, add stories and in-jokes, and help shape NEAL's egregore in real time. NEAL discovers the server and speaks Matrix directly: no Element detour and no NEAL credential backend.</p>
         </div>
         <div class="gc-room-board" id="matrix-client">
@@ -369,7 +380,7 @@ app.innerHTML = `
             <button class="gc-drawer-close" id="gc-drawer-close" type="button" aria-label="Close the NEAL group chat">×</button>
           </header>
           <code>#neal-gc:<wbr>matrix.nealtheseal.org</code>
-          <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>KNOCK TO JOIN</span><span>FEDERATED</span><span>UNENCRYPTED</span></div>
+          <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>${matrixEntryCopy.roomBadge}</span><span>FEDERATED</span><span>UNENCRYPTED</span></div>
           <ol class="matrix-public-messages" id="matrix-public-messages" aria-label="Public NEAL GC conversation">
             <li class="matrix-empty">LOADING THE PUBLIC CONVERSATION…</li>
           </ol>
