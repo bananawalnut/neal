@@ -1,0 +1,32 @@
+[Unit]
+Description=NEAL off-host immutable backup restore verification
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+StateDirectory=neal-access-restore-verifier
+StateDirectoryMode=0700
+LoadCredential=s3-restore-target:/etc/neal-access-restore-s3.json
+LoadCredential=recovery-private-key:/etc/neal-access-restore-private.pem
+ExecStart=/opt/neal-access-issuer/current/venv/bin/python /opt/neal-access-issuer/current/s3_backup.py verify-restore --target-credential %d/s3-restore-target --private-key %d/recovery-private-key --receipt-output /var/lib/neal-access-restore-verifier/last-restore-verification.json
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

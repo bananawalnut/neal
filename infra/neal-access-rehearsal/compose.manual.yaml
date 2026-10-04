@@ -1,0 +1,59 @@
+services:
+  synapse:
+    ports: !reset []
+
+  issuer:
+    build:
+      context: ../..
+      dockerfile: infra/neal-access-rehearsal/Dockerfile.issuer
+      args:
+        NEAL_ISSUER_SOURCE_COMMIT: ${NEAL_ISSUER_SOURCE_COMMIT:-unknown}
+    platform: linux/amd64
+    depends_on:
+      synapse:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18009:18009"
+      - "127.0.0.1:18011:18011"
+    networks:
+      - rehearsal-internal
+      - manual-egress
+    user: "${NEAL_REHEARSAL_UID:?set NEAL_REHEARSAL_UID}:${NEAL_REHEARSAL_GID:?set NEAL_REHEARSAL_GID}"
+    env_file:
+      - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}/issuer.env
+    volumes:
+      - ${NEAL_REHEARSAL_RUNTIME:?set NEAL_REHEARSAL_RUNTIME}:/runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    command: ["/opt/issuer/issuer.py"]
+    healthcheck:
+      test: ["CMD", "/opt/issuer/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18009/healthz', timeout=4)"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+  matrix-loopback:
+    image: ${NEAL_MANUAL_ISSUER_IMAGE:?set NEAL_MANUAL_ISSUER_IMAGE}
+    platform: linux/amd64
+    network_mode: "service:issuer"
+    depends_on:
+      issuer:
+        condition: service_healthy
+    user: "${NEAL_REHEARSAL_UID:?set NEAL_REHEARSAL_UID}:${NEAL_REHEARSAL_GID:?set NEAL_REHEARSAL_GID}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    command: ["/opt/issuer/matrix_loopback.py"]
+    healthcheck:
+      test: ["CMD", "/opt/issuer/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18011/healthz', timeout=4)"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+networks:
+  manual-egress:

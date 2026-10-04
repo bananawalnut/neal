@@ -11,18 +11,27 @@ Run it only through the repository command:
 ```bash
 npm run access-stake:rehearse-devnet -- \
   --release-manifest /absolute/path/release-manifest.json \
-  --rpc-primary https://api.devnet.solana.com \
-  --rpc-secondary https://independent-devnet-rpc.example \
+  --rpc-set-file /absolute/private/path/devnet-rpc-set.json \
   --review-file /absolute/path/isolated-review.json
 ```
 
 That is a dry run. It validates the release, review attestation, policy, clean
-checkout, HTTPS RPC URLs, and finalized devnet agreement without funding or
-changing chain state. Tool and service checks happen only in the live rehearsal,
+checkout, private three-provider RPC contract, and 2-of-3 finalized devnet
+agreement without funding or changing chain state. Credential URLs remain in
+the mode-`0600` file and are never process arguments. Tool and service checks
+happen only in the live rehearsal,
 which additionally requires both `--execute` and `--acknowledge-devnet`.
 The executor tears down containers and deletes its temporary directory even on
 failure. Its only persistent output is a sanitized public receipt written to
 the explicitly supplied `--receipt` location.
+
+The manual Chrome harness is stricter than the disposable CI rehearsal. Its
+Synapse and Postgres services attach only to Docker's internal network; only the
+issuer receives a second egress network. Browser Matrix access is constrained
+by the localhost gateway to the isolated server and prepared room. Manual
+review approval additionally requires the detached signature made by the
+repository-pinned independent review key; see
+`docs/MANUAL_DEVNET_ACCEPTANCE.md`.
 
 The release command compiles the selected Git commit twice from separate
 source trees into separate Cargo target directories and rejects any byte or

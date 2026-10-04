@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily NEAL encrypted immutable issuer backup
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+AccuracySec=1min
+Unit=neal-access-issuer-backup.service
+
+[Install]
+WantedBy=timers.target

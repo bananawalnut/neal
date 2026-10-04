@@ -1,0 +1,44 @@
+FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
+
+ARG UBUNTU_SNAPSHOT=20261002T150000Z
+ARG NEAL_ISSUER_SOURCE_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    NEAL_ISSUER_SOURCE_COMMIT=${NEAL_ISSUER_SOURCE_COMMIT}
+ADD --checksum=sha256:6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50 \
+  https://snapshot.ubuntu.com/ubuntu/20261002T150000Z/pool/main/c/ca-certificates/ca-certificates_20260601~24.04.1_all.deb \
+  /tmp/ca-certificates.deb
+RUN dpkg --unpack /tmp/ca-certificates.deb \
+    && find /usr/share/ca-certificates -type f -name '*.crt' -printf '%P\n' | sort > /etc/ca-certificates.conf \
+    && mkdir -p /etc/ssl/certs \
+    && cat /usr/share/ca-certificates/mozilla/*.crt > /etc/ssl/certs/ca-certificates.crt \
+    && rm /tmp/ca-certificates.deb \
+    && printf '%s\n' \
+      'Types: deb' \
+      "URIs: https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}" \
+      'Suites: noble noble-updates noble-backports noble-security' \
+      'Components: main universe restricted multiverse' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+      > /etc/apt/sources.list.d/ubuntu.sources \
+    && rm -f /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends --fix-broken openssl \
+    && apt-get install --yes --no-install-recommends \
+      ca-certificates=20260601~24.04.1 \
+      python3.12=3.12.3-1ubuntu0.17 \
+      python3.12-venv=3.12.3-1ubuntu0.17 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY infra/neal-access-issuer/requirements-deploy.txt /opt/issuer/requirements-deploy.txt
+COPY infra/neal-access-issuer/wheelhouse /opt/issuer/wheelhouse
+RUN python3.12 -m venv /opt/issuer/venv \
+    && /opt/issuer/venv/bin/python -m pip install \
+      --disable-pip-version-check --no-index --only-binary=:all: --require-hashes \
+      --find-links /opt/issuer/wheelhouse --requirement /opt/issuer/requirements-deploy.txt \
+    && rm -rf /opt/issuer/wheelhouse
+
+COPY infra/neal-access-issuer/*.py /opt/issuer/
+WORKDIR /opt/issuer
+USER 65534:65534
+ENTRYPOINT ["/opt/issuer/venv/bin/python"]
+CMD ["/opt/issuer/issuer.py"]

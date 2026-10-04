@@ -104,20 +104,24 @@ every gateway change.
 
 ## Read-only administrator monitor
 
-The private site route at `https://nealtheseal.org/admin/` signs in directly
-with Synapse and keeps its access token in browser-tab session storage. Caddy
-maps two exact, GET-only paths for that page:
+The private site route at `https://nealtheseal.org/admin/` sends Beaver's
+credentials to the dedicated `neal-admin-monitor` service. The broker signs
+in through loopback Synapse, verifies that Beaver is still an administrator,
+encrypts the Matrix token in its root-isolated session database, and gives the
+browser only an opaque `Secure`, `HttpOnly`, `SameSite=Strict` cookie.
+Caddy maps three exact method/path combinations:
 
-- `/_neal/admin/users` to the bounded Synapse account-list endpoint;
-- `/_neal/admin/server` to the Synapse version endpoint.
+- `POST /_neal/admin/session` signs in;
+- `GET /_neal/admin/snapshot` returns the allowlisted read-only monitor view;
+- `DELETE /_neal/admin/session` revokes the Matrix login.
 
-Both paths require the exact `https://nealtheseal.org` browser origin and a
-valid Synapse administrator access token. They return `no-store`, expose no
-write method, and do not weaken the existing `/_synapse/admin/*` public block.
-The portal reads room policy and membership through ordinary authenticated
-Matrix Client API routes. It shows pending knock requests without exposing an
-approval or rejection control. Never add a generic admin proxy or a credential
-to the public site bundle.
+The broker accepts only the exact `https://nealtheseal.org` origin. Sessions
+expire after 15 idle minutes or one absolute hour; persisted encrypted metadata
+exists only so a restart can revoke orphaned Matrix logins. The snapshot is
+limited to server status/version, local accounts, room membership requests,
+federated members, fixed room-policy checks, and Hermes health. It shows
+pending knock requests without exposing an approval or rejection control.
+Never add a generic admin proxy or a credential to the public site bundle.
 
 ## Backups and rollback
 

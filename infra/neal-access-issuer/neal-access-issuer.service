@@ -9,9 +9,13 @@ DynamicUser=yes
 EnvironmentFile=/etc/neal-access-issuer.env
 LoadCredential=matrix-registration-secret:/srv/neal-matrix/runtime/synapse/registration-shared-secret
 LoadCredential=issuer-keypair:/etc/neal-access-issuer-issuer-keypair.json
+LoadCredential=solana-rpc-set:/etc/neal-access-issuer-solana-rpc-set.json
+LoadCredential=issuance-recovery-key:/etc/neal-access-issuer-recovery-key.bin
 Environment=NEAL_ACCESS_MATRIX_SECRET_FILE=%d/matrix-registration-secret
 Environment=NEAL_ACCESS_ISSUER_KEYPAIR_FILE=%d/issuer-keypair
-ExecStart=/opt/neal-access-issuer/venv/bin/python /opt/neal-access-issuer/issuer.py
+Environment=NEAL_ACCESS_SOLANA_RPC_SET_FILE=%d/solana-rpc-set
+Environment=NEAL_ACCESS_RECOVERY_KEY_FILE=%d/issuance-recovery-key
+ExecStart=/opt/neal-access-issuer/current/venv/bin/python /opt/neal-access-issuer/current/issuer.py
 Restart=on-failure
 RestartSec=3
 RuntimeDirectory=neal-access-issuer

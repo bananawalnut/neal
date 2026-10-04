@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
+import collections
+import contextlib
 import dataclasses
 import hashlib
 import hmac
 import json
 import os
+import ipaddress
+import re
 import secrets
+import shutil
 import socketserver
 import sqlite3
 import stat
@@ -24,7 +30,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -34,7 +40,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 CHAIN_GENESIS = {
     "solana:mainnet": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-    "solana:devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "solana:devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
 }
 CONFIG_DISCRIMINATOR = b"NEALACFG"
 STAKE_DISCRIMINATOR = b"NEALSTAK"
@@ -42,14 +48,68 @@ PDA_MARKER = b"ProgramDerivedAddress"
 COOKIE_NAME = "neal_access_session"
 MAX_BODY = 32_768
 MAX_DATABASE_BYTES = 128 * 1024 * 1024
+MAX_RPC_RESPONSE_BYTES = 1024 * 1024
+RPC_TIMEOUT_SECONDS = 5
+RPC_SET_SCHEMA = "neal.solana-rpc-set/v1"
+RPC_PREVIEW_MODE = "single-rpc-devnet-preview"
+RPC_QUORUM_MODE = "quorum-2-of-3"
+APPROVED_RPC_PROVIDERS = (
+    ("helius", "helius.xyz", "helius-rpc.com"),
+    ("quicknode", "quicknode.com", "quiknode.pro"),
+    ("alchemy", "alchemy.com", "alchemy.com"),
+)
+MAX_CHALLENGES = 10_000
+MAX_SESSIONS = 10_000
+MAX_RATE_KEYS = 50_000
+CLAIM_PHASES = (
+    "RESERVED",
+    "CHAIN_SUBMITTED",
+    "CHAIN_RETRY_REQUIRED",
+    "CHAIN_CONSUMED",
+    "MATRIX_TOKEN_ENSURING",
+    "ADMIN_CLEANUP_PENDING",
+    "TOKEN_READY",
+    "REGISTRATION_IN_PROGRESS",
+    "REGISTRATION_COMPLETED",
+)
+TERMINAL_CLAIM_PHASES = {"LEGACY_REVIEW", "CANCELLED_BEFORE_CONSUMPTION"}
+EXPLICIT_CHAIN_RESOLUTION_ERRORS = {
+    "chain_signature_ambiguous",
+    "legacy_chain_signature_attribution_required",
+}
 B58_ALPHABET = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 B58_INDEX = {character: index for index, character in enumerate(B58_ALPHABET)}
 
 
 class IssuerError(RuntimeError):
-    def __init__(self, message: str, status: int = HTTPStatus.BAD_REQUEST):
+    def __init__(
+        self,
+        message: str,
+        status: int = HTTPStatus.BAD_REQUEST,
+        *,
+        code: str | None = None,
+        retryable: bool | None = None,
+        operation_id: str | None = None,
+    ):
         super().__init__(message)
         self.status = status
+        defaults = {
+            HTTPStatus.BAD_REQUEST: ("invalid_request", False),
+            HTTPStatus.UNAUTHORIZED: ("wallet_reverification_required", False),
+            HTTPStatus.FORBIDDEN: ("forbidden", False),
+            HTTPStatus.NOT_FOUND: ("not_found", False),
+            HTTPStatus.CONFLICT: ("conflict", False),
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE: ("request_too_large", False),
+            HTTPStatus.UNPROCESSABLE_ENTITY: ("stake_ineligible", False),
+            HTTPStatus.TOO_MANY_REQUESTS: ("rate_limited", True),
+            HTTPStatus.BAD_GATEWAY: ("dependency_unavailable", True),
+            HTTPStatus.SERVICE_UNAVAILABLE: ("dependency_unavailable", True),
+            HTTPStatus.INTERNAL_SERVER_ERROR: ("internal_error", False),
+        }
+        default_code, default_retryable = defaults.get(status, ("internal_error", False))
+        self.code = code or default_code
+        self.retryable = default_retryable if retryable is None and code is None else bool(retryable)
+        self.operation_id = operation_id
 
 
 def base58_decode(value: str) -> bytes:
@@ -156,9 +216,214 @@ def siws_message(sign_in: dict[str, Any]) -> bytes:
 
 
 @dataclasses.dataclass(frozen=True)
+class RpcEndpoint:
+    id: str
+    trust_domain: str
+    url: str
+    host: str
+
+
+@dataclasses.dataclass(frozen=True)
+class RpcSet:
+    mode: str
+    threshold: int
+    endpoints: tuple[RpcEndpoint, ...]
+
+    @classmethod
+    def load(cls, path: Path, chain_id: str) -> "RpcSet":
+        try:
+            metadata = path.lstat()
+            if path.is_symlink() or not path.is_file() or metadata.st_size > 64 * 1024:
+                raise ValueError("unsafe credential")
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise IssuerError("Solana RPC set credential is unavailable or invalid", HTTPStatus.INTERNAL_SERVER_ERROR) from error
+        if not isinstance(value, dict) or set(value) != {"schema", "mode", "threshold", "endpoints"}:
+            raise IssuerError("Solana RPC set contract is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if value.get("schema") != RPC_SET_SCHEMA or not isinstance(value.get("endpoints"), list):
+            raise IssuerError("Solana RPC set contract is unsupported", HTTPStatus.INTERNAL_SERVER_ERROR)
+        endpoints: list[RpcEndpoint] = []
+        for item in value["endpoints"]:
+            if not isinstance(item, dict) or set(item) != {"id", "trustDomain", "url"}:
+                raise IssuerError("Solana RPC endpoint contract is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+            endpoint_id = item.get("id")
+            trust_domain = item.get("trustDomain")
+            url = item.get("url")
+            if (
+                not isinstance(endpoint_id, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", endpoint_id)
+                or not isinstance(trust_domain, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,126}", trust_domain)
+                or not isinstance(url, str)
+                or len(url) > 4096
+            ):
+                raise IssuerError("Solana RPC endpoint fields are invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+            parsed = urllib.parse.urlsplit(url)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.fragment
+            ):
+                raise IssuerError("Solana RPC endpoints must be credential-safe HTTPS URLs", HTTPStatus.INTERNAL_SERVER_ERROR)
+            host = parsed.hostname.rstrip(".").lower().encode("idna").decode("ascii")
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                if "." not in host:
+                    raise IssuerError("Solana RPC endpoint host is not globally qualified", HTTPStatus.INTERNAL_SERVER_ERROR)
+            endpoints.append(RpcEndpoint(endpoint_id, trust_domain, url, host))
+        mode = value.get("mode")
+        threshold = value.get("threshold")
+        if mode == RPC_PREVIEW_MODE:
+            if chain_id != "solana:devnet" or threshold != 1 or len(endpoints) != 1:
+                raise IssuerError("Single-RPC mode is permitted only for one-provider devnet preview", HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif mode == RPC_QUORUM_MODE:
+            if threshold != 2 or len(endpoints) != 3:
+                raise IssuerError("Quorum mode requires exactly three providers and threshold two", HTTPStatus.INTERNAL_SERVER_ERROR)
+            if len({endpoint.id for endpoint in endpoints}) != 3:
+                raise IssuerError("Solana RPC provider IDs must be distinct", HTTPStatus.INTERNAL_SERVER_ERROR)
+            if len({endpoint.host for endpoint in endpoints}) != 3:
+                raise IssuerError("Solana RPC provider hosts must be distinct", HTTPStatus.INTERNAL_SERVER_ERROR)
+            if len({endpoint.trust_domain for endpoint in endpoints}) != 3:
+                raise IssuerError("Solana RPC trust domains must be distinct", HTTPStatus.INTERNAL_SERVER_ERROR)
+            approved_providers: set[str] = set()
+            for endpoint in endpoints:
+                matches = [
+                    provider
+                    for provider, trust_domain, host_suffix in APPROVED_RPC_PROVIDERS
+                    if (
+                        endpoint.id == provider or endpoint.id.startswith(f"{provider}-")
+                    )
+                    and endpoint.trust_domain == trust_domain
+                    and (endpoint.host == host_suffix or endpoint.host.endswith(f".{host_suffix}"))
+                ]
+                if len(matches) != 1:
+                    raise IssuerError(
+                        "Solana RPC provider identity is not in the approved trust registry",
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                approved_providers.add(matches[0])
+            if len(approved_providers) != 3:
+                raise IssuerError("Solana RPC providers are not independently approved", HTTPStatus.INTERNAL_SERVER_ERROR)
+        else:
+            raise IssuerError("Solana RPC verification mode is unsupported", HTTPStatus.INTERNAL_SERVER_ERROR)
+        return cls(mode=mode, threshold=threshold, endpoints=tuple(endpoints))
+
+
+class EphemeralState:
+    """Thread-safe, restart-discardable, bounded TTL/LRU state."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.challenges: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
+        self.sessions: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
+        self.rates: collections.OrderedDict[str, collections.deque[int]] = collections.OrderedDict()
+
+    @staticmethod
+    def _trim(mapping: collections.OrderedDict[str, Any], maximum: int) -> None:
+        while len(mapping) >= maximum:
+            mapping.popitem(last=False)
+
+    def prune(self, now: int) -> None:
+        for key in [
+            key for key, value in self.challenges.items()
+            if value["expires_at"] < now or value["used_at"] is not None
+        ]:
+            self.challenges.pop(key, None)
+        for key in [key for key, value in self.sessions.items() if value["expires_at"] < now]:
+            self.sessions.pop(key, None)
+        for key in list(self.rates):
+            values = self.rates[key]
+            while values and values[0] < now - 86_400:
+                values.popleft()
+            if not values:
+                self.rates.pop(key, None)
+
+    def rate_limit(self, key: str, limit: int, window_seconds: int) -> None:
+        now = int(time.time())
+        with self.lock:
+            self.prune(now)
+            values = self.rates.get(key)
+            if values is None:
+                self._trim(self.rates, MAX_RATE_KEYS)
+                values = collections.deque()
+                self.rates[key] = values
+            else:
+                self.rates.move_to_end(key)
+            cutoff = now - window_seconds
+            while values and values[0] < cutoff:
+                values.popleft()
+            if len(values) >= limit:
+                raise IssuerError(
+                    "Too many requests; try again later",
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    code="rate_limited",
+                    retryable=True,
+                )
+            values.append(now)
+
+    def occupancy(self) -> dict[str, int]:
+        with self.lock:
+            self.prune(int(time.time()))
+            return {
+                "challenges": len(self.challenges),
+                "sessions": len(self.sessions),
+                "rateKeys": len(self.rates),
+            }
+
+    def create_challenge(self, request_id: str, address: str, message: bytes, expires_at: int) -> None:
+        with self.lock:
+            self.prune(int(time.time()))
+            self._trim(self.challenges, MAX_CHALLENGES)
+            self.challenges[request_id] = {
+                "address": address,
+                "message": message,
+                "expires_at": expires_at,
+                "used_at": None,
+            }
+
+    def consume_challenge(self, request_id: str, address: str, signed_message: bytes) -> None:
+        now = int(time.time())
+        with self.lock:
+            row = self.challenges.get(request_id)
+            if not row or row["address"] != address or row["used_at"] is not None:
+                raise IssuerError("Unknown or already-used wallet challenge", HTTPStatus.UNAUTHORIZED)
+            if row["expires_at"] < now:
+                self.challenges.pop(request_id, None)
+                raise IssuerError("Wallet challenge expired", HTTPStatus.UNAUTHORIZED)
+            if not hmac.compare_digest(row["message"], signed_message):
+                raise IssuerError("Signed message does not match the issued challenge", HTTPStatus.UNAUTHORIZED)
+            row["used_at"] = now
+            self.challenges.move_to_end(request_id)
+
+    def create_session(self, address: str, ttl: int) -> str:
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        now = int(time.time())
+        with self.lock:
+            self.prune(now)
+            self._trim(self.sessions, MAX_SESSIONS)
+            self.sessions[digest] = {"address": address, "expires_at": now + ttl}
+        return token
+
+    def session_address(self, token: str) -> str:
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        now = int(time.time())
+        with self.lock:
+            self.prune(now)
+            row = self.sessions.get(digest)
+            if not row:
+                raise IssuerError("Wallet session is missing or expired", HTTPStatus.UNAUTHORIZED)
+            self.sessions.move_to_end(digest)
+            return str(row["address"])
+
+
+@dataclasses.dataclass(frozen=True)
 class Settings:
     database: Path
-    rpc_urls: tuple[str, ...]
+    rpc_set: RpcSet
     chain_id: str
     genesis_hash: str
     program_id: str
@@ -173,6 +438,12 @@ class Settings:
     public_origin: str
     matrix_url: str
     matrix_secret_file: Path
+    recovery_key_file: Path
+    recovery_key_version: int
+    matrix_server_name: str
+    expected_wallet: str | None = None
+    source_commit: str | None = None
+    issuer_image_id: str | None = None
     bind: str = "127.0.0.1"
     port: int = 8792
     socket_path: Path | None = None
@@ -189,10 +460,11 @@ class Settings:
             return value
 
         socket_value = os.environ.get("NEAL_ACCESS_SOCKET", "").strip()
+        chain_id = required("NEAL_ACCESS_CHAIN_ID")
         settings = cls(
             database=Path(required("NEAL_ACCESS_DATABASE")),
-            rpc_urls=tuple(part.strip() for part in required("NEAL_ACCESS_SOLANA_RPCS").split(",") if part.strip()),
-            chain_id=required("NEAL_ACCESS_CHAIN_ID"),
+            rpc_set=RpcSet.load(Path(required("NEAL_ACCESS_SOLANA_RPC_SET_FILE")), chain_id),
+            chain_id=chain_id,
             genesis_hash=required("NEAL_ACCESS_SOLANA_GENESIS_HASH"),
             program_id=required("NEAL_ACCESS_PROGRAM_ID"),
             program_data_address=required("NEAL_ACCESS_PROGRAM_DATA_ADDRESS"),
@@ -206,12 +478,24 @@ class Settings:
             public_origin=required("NEAL_ACCESS_PUBLIC_ORIGIN").rstrip("/"),
             matrix_url=os.environ.get("NEAL_ACCESS_MATRIX_URL", "http://127.0.0.1:8008").rstrip("/"),
             matrix_secret_file=Path(required("NEAL_ACCESS_MATRIX_SECRET_FILE")),
+            recovery_key_file=Path(required("NEAL_ACCESS_RECOVERY_KEY_FILE")),
+            recovery_key_version=int(required("NEAL_ACCESS_RECOVERY_KEY_VERSION")),
+            matrix_server_name=required("NEAL_ACCESS_MATRIX_SERVER_NAME").lower(),
+            expected_wallet=os.environ.get("NEAL_ACCESS_EXPECTED_WALLET", "").strip() or None,
+            source_commit=os.environ.get("NEAL_ISSUER_SOURCE_COMMIT", "").strip() or None,
+            issuer_image_id=os.environ.get("NEAL_ACCESS_ISSUER_IMAGE_ID", "").strip() or None,
             bind=os.environ.get("NEAL_ACCESS_BIND", "127.0.0.1"),
             port=int(os.environ.get("NEAL_ACCESS_PORT", "8792")),
             socket_path=Path(socket_value) if socket_value else None,
         )
         for value in (settings.program_id, settings.program_data_address, settings.config_address, settings.mint):
             public_key(value)
+        if settings.expected_wallet is not None:
+            public_key(settings.expected_wallet)
+        if settings.source_commit is not None and not re.fullmatch(r"[0-9a-f]{40}", settings.source_commit):
+            raise IssuerError("NEAL_ISSUER_SOURCE_COMMIT is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if settings.issuer_image_id is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", settings.issuer_image_id):
+            raise IssuerError("NEAL_ACCESS_ISSUER_IMAGE_ID is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
         if settings.chain_id not in CHAIN_GENESIS or settings.genesis_hash != CHAIN_GENESIS[settings.chain_id]:
             raise IssuerError("Chain ID and genesis hash are not an approved pair", HTTPStatus.INTERNAL_SERVER_ERROR)
         if len(settings.program_sha256) != 64 or any(character not in "0123456789abcdef" for character in settings.program_sha256):
@@ -219,27 +503,36 @@ class Settings:
         origin = urllib.parse.urlsplit(settings.public_origin)
         if origin.scheme != "https" or not origin.netloc or origin.path not in {"", "/"} or origin.query or origin.fragment:
             raise IssuerError("NEAL_ACCESS_PUBLIC_ORIGIN must be an HTTPS origin", HTTPStatus.INTERNAL_SERVER_ERROR)
-        if len(settings.rpc_urls) < 2:
-            raise IssuerError("At least two independent Solana RPCs are required", HTTPStatus.INTERNAL_SERVER_ERROR)
-        for rpc_url in settings.rpc_urls:
-            rpc = urllib.parse.urlsplit(rpc_url)
-            if rpc.scheme != "https" or not rpc.netloc:
-                raise IssuerError("NEAL_ACCESS_SOLANA_RPCS must use HTTPS", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if settings.chain_id == "solana:mainnet" and settings.rpc_set.mode != RPC_QUORUM_MODE:
+            raise IssuerError("Mainnet requires strict 2-of-3 RPC quorum", HTTPStatus.INTERNAL_SERVER_ERROR)
         matrix = urllib.parse.urlsplit(settings.matrix_url)
-        if matrix.scheme != "http" or matrix.hostname not in {"127.0.0.1", "::1", "localhost"}:
-            raise IssuerError("NEAL_ACCESS_MATRIX_URL must use loopback HTTP", HTTPStatus.INTERNAL_SERVER_ERROR)
+        matrix_host_allowed = matrix.hostname in {"127.0.0.1", "::1", "localhost"} or (
+            settings.chain_id == "solana:devnet" and matrix.hostname == "synapse"
+        )
+        if matrix.scheme != "http" or not matrix_host_allowed:
+            raise IssuerError("NEAL_ACCESS_MATRIX_URL must use an approved loopback or devnet-internal HTTP target", HTTPStatus.INTERNAL_SERVER_ERROR)
         if (
             not settings.database.is_absolute()
             or not settings.issuer_keypair_file.is_absolute()
+            or not settings.recovery_key_file.is_absolute()
             or (settings.socket_path and not settings.socket_path.is_absolute())
         ):
             raise IssuerError("Database, keypair, and socket paths must be absolute", HTTPStatus.INTERNAL_SERVER_ERROR)
         if settings.socket_path is None and settings.bind not in {"127.0.0.1", "::1"}:
-            raise IssuerError("Issuer must bind to loopback", HTTPStatus.INTERNAL_SERVER_ERROR)
+            if settings.chain_id != "solana:devnet" or settings.bind != "0.0.0.0":
+                raise IssuerError("Issuer must bind to loopback", HTTPStatus.INTERNAL_SERVER_ERROR)
         if not settings.matrix_secret_file.is_file() or not os.access(settings.matrix_secret_file, os.R_OK):
             raise IssuerError("Matrix registration secret is unavailable", HTTPStatus.INTERNAL_SERVER_ERROR)
         if not settings.issuer_keypair_file.is_file() or not os.access(settings.issuer_keypair_file, os.R_OK):
             raise IssuerError("Issuer keypair is unavailable", HTTPStatus.INTERNAL_SERVER_ERROR)
+        try:
+            recovery_key = settings.recovery_key_file.read_bytes()
+        except OSError as error:
+            raise IssuerError("Issuance recovery key is unavailable", HTTPStatus.INTERNAL_SERVER_ERROR) from error
+        if len(recovery_key) != 32 or settings.recovery_key_version < 1:
+            raise IssuerError("Issuance recovery credential is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if not re.fullmatch(r"[a-z0-9.-]{1,255}", settings.matrix_server_name):
+            raise IssuerError("Matrix server name is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
         if (
             settings.expected_revision < 0
             or settings.expected_amount <= 0
@@ -255,49 +548,222 @@ class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = path
+        self.ephemeral = EphemeralState()
         self.initialize()
         os.chmod(path, 0o600)
 
-    def connection(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         with self.connection() as database:
+            previous_schema_version = database.execute("PRAGMA user_version").fetchone()[0]
+            tables = {
+                row[0] for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            if "claims" in tables and "legacy_claim_rows" not in tables:
+                database.execute("ALTER TABLE claims RENAME TO legacy_claim_rows")
             database.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS challenges (
-                  request_id TEXT PRIMARY KEY, address TEXT NOT NULL, message BLOB NOT NULL,
-                  issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER
+                CREATE TABLE IF NOT EXISTS claim_operations (
+                  receipt TEXT PRIMARY KEY,
+                  operation_id TEXT NOT NULL UNIQUE,
+                  address TEXT NOT NULL,
+                  config_address TEXT,
+                  config_revision INTEGER,
+                  phase TEXT NOT NULL,
+                  attention_required INTEGER NOT NULL DEFAULT 0 CHECK (attention_required IN (0, 1)),
+                  chain_signature TEXT,
+                  chain_finalized_signature TEXT,
+                  chain_blockhash TEXT,
+                  chain_last_valid_block_height INTEGER,
+                  signed_transaction BLOB,
+                  recovery_key_version INTEGER NOT NULL,
+                  token_generation INTEGER NOT NULL DEFAULT 0,
+                  token_commitment TEXT,
+                  expires_at_ms INTEGER,
+                  matrix_pending INTEGER,
+                  matrix_completed INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  last_error_code TEXT
                 );
-                CREATE TABLE IF NOT EXISTS sessions (
-                  token_hash TEXT PRIMARY KEY, address TEXT NOT NULL,
-                  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+                CREATE TABLE IF NOT EXISTS claim_events (
+                  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  operation_id TEXT NOT NULL,
+                  previous_phase TEXT,
+                  next_phase TEXT NOT NULL,
+                  event_type TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  metadata_json TEXT NOT NULL,
+                  previous_hash TEXT,
+                  event_hash TEXT NOT NULL UNIQUE,
+                  FOREIGN KEY(operation_id) REFERENCES claim_operations(operation_id)
                 );
-                CREATE TABLE IF NOT EXISTS claims (
-                  receipt TEXT PRIMARY KEY, address TEXT NOT NULL,
-                  state TEXT NOT NULL CHECK (state IN ('pending','issued','failed')),
-                  registration_token TEXT, expires_at_ms INTEGER,
-                  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, error TEXT
+                CREATE TABLE IF NOT EXISTS claim_chain_attempts (
+                  attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  operation_id TEXT NOT NULL,
+                  signature TEXT NOT NULL,
+                  blockhash TEXT NOT NULL,
+                  last_valid_block_height INTEGER NOT NULL,
+                  transaction_sha256 TEXT NOT NULL,
+                  created_at INTEGER NOT NULL,
+                  UNIQUE(operation_id, signature),
+                  FOREIGN KEY(operation_id) REFERENCES claim_operations(operation_id)
                 );
-                CREATE TABLE IF NOT EXISTS rate_events (key TEXT NOT NULL, occurred_at INTEGER NOT NULL);
-                CREATE INDEX IF NOT EXISTS rate_events_lookup ON rate_events(key, occurred_at);
-                CREATE INDEX IF NOT EXISTS challenges_expiry ON challenges(expires_at, used_at);
-                CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+                CREATE INDEX IF NOT EXISTS claim_phase_age ON claim_operations(phase, updated_at);
                 CREATE TABLE IF NOT EXISTS admin_cleanups (
                   user_id TEXT PRIMARY KEY, registration_token TEXT,
                   created_at INTEGER NOT NULL, resolved_at INTEGER, error TEXT
                 );
+                CREATE TABLE IF NOT EXISTS admin_operations (
+                  operation_id TEXT PRIMARY KEY,
+                  username TEXT NOT NULL UNIQUE,
+                  expected_user_id TEXT NOT NULL UNIQUE,
+                  purpose TEXT NOT NULL,
+                  state TEXT NOT NULL,
+                  related_claim_id TEXT,
+                  registration_token_commitment TEXT,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  last_error_code TEXT
+                );
+                CREATE TABLE IF NOT EXISTS schema_metadata (
+                  key TEXT PRIMARY KEY, value TEXT NOT NULL
+                );
                 """
             )
-            columns = {
-                row[1] for row in database.execute("PRAGMA table_info(claims)").fetchall()
+            database.execute("DROP TABLE IF EXISTS challenges")
+            database.execute("DROP TABLE IF EXISTS sessions")
+            database.execute("DROP TABLE IF EXISTS rate_events")
+            database.execute(
+                "INSERT OR IGNORE INTO schema_metadata(key, value) VALUES ('ledger_generation', ?)",
+                (secrets.token_hex(16),),
+            )
+            claim_columns = {
+                row[1] for row in database.execute("PRAGMA table_info(claim_operations)").fetchall()
             }
-            if "chain_consumed_at" not in columns:
-                database.execute("ALTER TABLE claims ADD COLUMN chain_consumed_at INTEGER")
+            if "chain_signature" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_signature TEXT")
+            if "chain_finalized_signature" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_finalized_signature TEXT")
+            if "signed_transaction" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN signed_transaction BLOB")
+            if "chain_blockhash" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_blockhash TEXT")
+            if "chain_last_valid_block_height" not in claim_columns:
+                database.execute("ALTER TABLE claim_operations ADD COLUMN chain_last_valid_block_height INTEGER")
+            if previous_schema_version < 6:
+                legacy_consumptions = database.execute(
+                    """SELECT receipt, operation_id, phase FROM claim_operations
+                       WHERE phase IN (
+                         'CHAIN_CONSUMED', 'MATRIX_TOKEN_ENSURING', 'ADMIN_CLEANUP_PENDING',
+                         'TOKEN_READY', 'REGISTRATION_IN_PROGRESS', 'REGISTRATION_COMPLETED'
+                       )"""
+                ).fetchall()
+                for row in legacy_consumptions:
+                    database.execute(
+                        """UPDATE claim_operations
+                           SET phase = 'LEGACY_REVIEW', chain_finalized_signature = NULL,
+                               attention_required = 1, updated_at = ?,
+                               last_error_code = 'legacy_chain_signature_attribution_required'
+                           WHERE receipt = ? AND phase = ?""",
+                        (int(time.time()), row["receipt"], row["phase"]),
+                    )
+                    self._append_claim_event(
+                        database,
+                        row["operation_id"],
+                        row["phase"],
+                        "LEGACY_REVIEW",
+                        "legacy_chain_signature_attribution_quarantined",
+                        {"reason": "pre_v6_finalized_signature_cannot_be_proven"},
+                    )
+            incomplete_submissions = database.execute(
+                """SELECT receipt, operation_id, phase FROM claim_operations
+                   WHERE phase IN ('CHAIN_SUBMITTED', 'CHAIN_RETRY_REQUIRED')
+                     AND (signed_transaction IS NULL OR chain_signature IS NULL
+                          OR chain_blockhash IS NULL OR chain_last_valid_block_height IS NULL)"""
+            ).fetchall()
+            for row in incomplete_submissions:
+                database.execute(
+                    """UPDATE claim_operations
+                       SET phase = 'LEGACY_REVIEW', attention_required = 1,
+                           updated_at = ?, last_error_code = 'legacy_chain_submission_review_required'
+                       WHERE receipt = ? AND phase = ?""",
+                    (int(time.time()), row["receipt"], row["phase"]),
+                )
+                self._append_claim_event(
+                    database,
+                    row["operation_id"],
+                    row["phase"],
+                    "LEGACY_REVIEW",
+                    "legacy_chain_submission_quarantined",
+                    {"reason": "missing_recoverable_submission_metadata"},
+                )
+            recoverable_attempts = database.execute(
+                """SELECT operation_id, chain_signature, chain_blockhash,
+                          chain_last_valid_block_height, signed_transaction
+                   FROM claim_operations
+                   WHERE chain_signature IS NOT NULL AND chain_blockhash IS NOT NULL
+                     AND chain_last_valid_block_height IS NOT NULL AND signed_transaction IS NOT NULL"""
+            ).fetchall()
+            for row in recoverable_attempts:
+                database.execute(
+                    """INSERT OR IGNORE INTO claim_chain_attempts(
+                         operation_id, signature, blockhash, last_valid_block_height,
+                         transaction_sha256, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        row["operation_id"], row["chain_signature"], row["chain_blockhash"],
+                        row["chain_last_valid_block_height"],
+                        hashlib.sha256(row["signed_transaction"]).hexdigest(), int(time.time()),
+                    ),
+                )
+            if "legacy_claim_rows" in {
+                row[0] for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }:
+                columns = {
+                    row[1] for row in database.execute("PRAGMA table_info(legacy_claim_rows)").fetchall()
+                }
+                for row in database.execute("SELECT * FROM legacy_claim_rows").fetchall():
+                    receipt = row["receipt"]
+                    operation_id = f"legacy-{hashlib.sha256(receipt.encode()).hexdigest()[:32]}"
+                    token = row["registration_token"] if "registration_token" in columns else None
+                    commitment = hashlib.sha256(token.encode()).hexdigest() if token else None
+                    created_at = row["created_at"] if "created_at" in columns else int(time.time())
+                    updated_at = row["updated_at"] if "updated_at" in columns else created_at
+                    database.execute(
+                        """INSERT OR IGNORE INTO claim_operations(
+                             receipt, operation_id, address, config_address, config_revision,
+                             phase, attention_required, recovery_key_version, token_generation,
+                             token_commitment, expires_at_ms, created_at, updated_at, last_error_code
+                           ) VALUES (?, ?, ?, NULL, NULL, 'LEGACY_REVIEW', 1, 0, 0, ?, ?, ?, ?, 'legacy_review_required')""",
+                        (
+                            receipt,
+                            operation_id,
+                            row["address"],
+                            commitment,
+                            row["expires_at_ms"] if "expires_at_ms" in columns else None,
+                            created_at,
+                            updated_at,
+                        ),
+                    )
+                if "registration_token" in columns:
+                    database.execute("UPDATE legacy_claim_rows SET registration_token = NULL")
+            database.execute("PRAGMA user_version = 6")
 
     def enforce_storage_limit(self) -> None:
         total = sum(
@@ -308,123 +774,400 @@ class Store:
         if total >= MAX_DATABASE_BYTES:
             raise IssuerError("Issuer storage limit reached", HTTPStatus.SERVICE_UNAVAILABLE)
 
-    def prune_ephemeral(self, database: sqlite3.Connection, now: int) -> None:
-        database.execute("DELETE FROM challenges WHERE expires_at < ? OR used_at IS NOT NULL", (now,))
-        database.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+    def ledger_generation(self) -> str:
+        with self.connection() as database:
+            row = database.execute(
+                "SELECT value FROM schema_metadata WHERE key = 'ledger_generation'"
+            ).fetchone()
+        if not row or not isinstance(row[0], str) or not row[0]:
+            raise IssuerError("Ledger generation is unavailable", HTTPStatus.SERVICE_UNAVAILABLE)
+        return row[0]
 
     def rate_limit(self, key: str, limit: int, window_seconds: int) -> None:
-        self.enforce_storage_limit()
+        self.ephemeral.rate_limit(key, limit, window_seconds)
+
+    def metrics(self) -> dict[str, Any]:
         now = int(time.time())
         with self.connection() as database:
-            self.prune_ephemeral(database, now)
-            database.execute("DELETE FROM rate_events WHERE occurred_at < ?", (now - 86_400,))
-            count = database.execute(
-                "SELECT COUNT(*) FROM rate_events WHERE key = ? AND occurred_at >= ?",
-                (key, now - window_seconds),
+            phases = {
+                row["phase"]: row["count"]
+                for row in database.execute(
+                    "SELECT phase, COUNT(*) AS count FROM claim_operations GROUP BY phase"
+                ).fetchall()
+            }
+            oldest = database.execute(
+                "SELECT MIN(updated_at) FROM claim_operations WHERE phase NOT IN ('REGISTRATION_COMPLETED', 'CANCELLED_BEFORE_CONSUMPTION')"
             ).fetchone()[0]
-            if count >= limit:
-                raise IssuerError("Too many requests; try again later", HTTPStatus.TOO_MANY_REQUESTS)
-            database.execute("INSERT INTO rate_events VALUES (?, ?)", (key, now))
+            attention = database.execute(
+                "SELECT COUNT(*) FROM claim_operations WHERE attention_required = 1"
+            ).fetchone()[0]
+        database_bytes = sum(
+            candidate.stat().st_size
+            for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm"))
+            if candidate.exists()
+        )
+        return {
+            "claimsByPhase": phases,
+            "oldestOpenClaimAgeSeconds": max(0, now - oldest) if oldest else 0,
+            "claimsAttentionRequired": attention,
+            "unresolvedAdminOperations": self.unresolved_admin_cleanups(),
+            "ephemeralOccupancy": self.ephemeral.occupancy(),
+            "databaseBytes": database_bytes,
+        }
 
     def create_challenge(self, address: str, message_factory: Callable[[str, str, int, int], bytes], ttl: int) -> tuple[dict[str, Any], bytes]:
-        self.enforce_storage_limit()
         now = int(time.time())
         expires = now + ttl
         nonce = secrets.token_hex(16)
         request_id = f"neal-{secrets.token_urlsafe(18)}"
         message = message_factory(nonce, request_id, now, expires)
-        with self.connection() as database:
-            database.execute(
-                "INSERT INTO challenges VALUES (?, ?, ?, ?, ?, NULL)",
-                (request_id, address, message, now, expires),
-            )
+        self.ephemeral.create_challenge(request_id, address, message, expires)
         return {"nonce": nonce, "requestId": request_id, "issuedAt": now, "expiresAt": expires}, message
 
     def consume_challenge(self, request_id: str, address: str, signed_message: bytes) -> None:
-        now = int(time.time())
-        with self.connection() as database:
-            database.execute("BEGIN IMMEDIATE")
-            row = database.execute(
-                "SELECT * FROM challenges WHERE request_id = ?", (request_id,)
-            ).fetchone()
-            if not row or row["address"] != address or row["used_at"] is not None:
-                raise IssuerError("Unknown or already-used wallet challenge", HTTPStatus.UNAUTHORIZED)
-            if row["expires_at"] < now:
-                raise IssuerError("Wallet challenge expired", HTTPStatus.UNAUTHORIZED)
-            if not hmac.compare_digest(row["message"], signed_message):
-                raise IssuerError("Signed message does not match the issued challenge", HTTPStatus.UNAUTHORIZED)
-            database.execute(
-                "UPDATE challenges SET used_at = ? WHERE request_id = ?", (now, request_id)
-            )
+        self.ephemeral.consume_challenge(request_id, address, signed_message)
 
     def create_session(self, address: str, ttl: int) -> str:
-        token = secrets.token_urlsafe(32)
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        now = int(time.time())
-        with self.connection() as database:
-            database.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
-            database.execute(
-                "INSERT INTO sessions VALUES (?, ?, ?, ?)", (digest, address, now, now + ttl)
-            )
-        return token
+        return self.ephemeral.create_session(address, ttl)
 
     def session_address(self, token: str) -> str:
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        now = int(time.time())
+        return self.ephemeral.session_address(token)
+
+    @staticmethod
+    def _append_claim_event(
+        database: sqlite3.Connection,
+        operation_id: str,
+        previous_phase: str | None,
+        next_phase: str,
+        event_type: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        previous = database.execute(
+            "SELECT event_hash FROM claim_events WHERE operation_id = ? ORDER BY event_id DESC LIMIT 1",
+            (operation_id,),
+        ).fetchone()
+        previous_hash = previous[0] if previous else None
+        created_at = int(time.time())
+        metadata_json = json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"))
+        event_hash = hashlib.sha256(
+            json.dumps(
+                {
+                    "operationId": operation_id,
+                    "previousPhase": previous_phase,
+                    "nextPhase": next_phase,
+                    "eventType": event_type,
+                    "createdAt": created_at,
+                    "metadata": json.loads(metadata_json),
+                    "previousHash": previous_hash,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        database.execute(
+            """INSERT INTO claim_events(
+                 operation_id, previous_phase, next_phase, event_type, created_at,
+                 metadata_json, previous_hash, event_hash
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (operation_id, previous_phase, next_phase, event_type, created_at, metadata_json, previous_hash, event_hash),
+        )
+
+    def claim(self, receipt: str, address: str | None = None) -> sqlite3.Row | None:
         with self.connection() as database:
             row = database.execute(
-                "SELECT address FROM sessions WHERE token_hash = ? AND expires_at >= ?",
-                (digest, now),
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
             ).fetchone()
-        if not row:
-            raise IssuerError("Wallet session is missing or expired", HTTPStatus.UNAUTHORIZED)
-        return row["address"]
+        if row and address is not None and row["address"] != address:
+            raise IssuerError("Stake receipt belongs to another wallet", HTTPStatus.FORBIDDEN)
+        return row
 
-    def reserve_claim(self, receipt: str, address: str) -> str | None:
+    def reserve_claim(
+        self,
+        receipt: str,
+        address: str,
+        config_address: str,
+        config_revision: int,
+        recovery_key_version: int,
+    ) -> sqlite3.Row:
+        self.enforce_storage_limit()
         now = int(time.time())
-        now_ms = now * 1000
+        operation_id = secrets.token_urlsafe(24)
         with self.connection() as database:
             database.execute("BEGIN IMMEDIATE")
-            row = database.execute("SELECT * FROM claims WHERE receipt = ?", (receipt,)).fetchone()
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
             if row:
                 if row["address"] != address:
                     raise IssuerError("Stake receipt belongs to another wallet", HTTPStatus.FORBIDDEN)
-                if row["state"] == "issued" and row["expires_at_ms"] > now_ms:
-                    return row["registration_token"]
-                if row["state"] == "pending":
-                    raise IssuerError("Token issuance is already pending", HTTPStatus.CONFLICT)
-                raise IssuerError("This stake receipt has already been consumed", HTTPStatus.CONFLICT)
+                return row
             database.execute(
-                """INSERT INTO claims(
-                     receipt, address, state, registration_token, expires_at_ms,
-                     created_at, updated_at, error, chain_consumed_at
-                   ) VALUES (?, ?, 'pending', NULL, NULL, ?, ?, NULL, NULL)""",
-                (receipt, address, now, now),
+                """INSERT INTO claim_operations(
+                     receipt, operation_id, address, config_address, config_revision,
+                     phase, attention_required, recovery_key_version, token_generation,
+                     created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, 'RESERVED', 0, ?, 0, ?, ?)""",
+                (receipt, operation_id, address, config_address, config_revision, recovery_key_version, now, now),
             )
-        return None
+            self._append_claim_event(database, operation_id, None, "RESERVED", "claim_reserved")
+            return database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
 
-    def existing_claim(self, receipt: str, address: str) -> str | None:
-        now_ms = int(time.time()) * 1000
+    def transition_claim(
+        self,
+        receipt: str,
+        expected_phases: tuple[str, ...],
+        next_phase: str,
+        *,
+        event_type: str,
+        fields: dict[str, Any] | None = None,
+        chain_attempt: dict[str, Any] | None = None,
+    ) -> sqlite3.Row:
+        allowed = {
+            "chain_signature",
+            "chain_finalized_signature",
+            "chain_blockhash",
+            "chain_last_valid_block_height",
+            "signed_transaction",
+            "token_commitment",
+            "expires_at_ms",
+            "matrix_pending",
+            "matrix_completed",
+            "attention_required",
+            "last_error_code",
+            "token_generation",
+        }
+        values = fields or {}
+        if set(values) - allowed:
+            raise IssuerError("Unsupported claim update", HTTPStatus.INTERNAL_SERVER_ERROR)
+        if chain_attempt is not None and set(chain_attempt) != {
+            "signature", "blockhash", "last_valid_block_height", "transaction"
+        }:
+            raise IssuerError("Unsupported chain-attempt journal", HTTPStatus.INTERNAL_SERVER_ERROR)
         with self.connection() as database:
-            row = database.execute("SELECT * FROM claims WHERE receipt = ?", (receipt,)).fetchone()
-        if not row:
-            return None
-        if row["address"] != address:
-            raise IssuerError("Stake receipt belongs to another wallet", HTTPStatus.FORBIDDEN)
-        if row["state"] == "issued" and row["expires_at_ms"] > now_ms:
-            return row["registration_token"]
-        if row["state"] == "pending":
-            raise IssuerError("Token issuance is already pending", HTTPStatus.CONFLICT)
-        raise IssuerError("This stake receipt has already been consumed", HTTPStatus.CONFLICT)
-
-    def mark_chain_consumed(self, receipt: str) -> None:
-        with self.connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
+            if not row or row["phase"] not in expected_phases:
+                raise IssuerError("Claim phase changed concurrently", HTTPStatus.CONFLICT)
+            if next_phase not in CLAIM_PHASES and next_phase not in TERMINAL_CLAIM_PHASES:
+                raise IssuerError("Claim phase is unsupported", HTTPStatus.INTERNAL_SERVER_ERROR)
+            if next_phase in CLAIM_PHASES and (
+                row["phase"] in CLAIM_PHASES
+                and CLAIM_PHASES.index(next_phase) < CLAIM_PHASES.index(row["phase"])
+            ):
+                raise IssuerError("Claim phases may not move backward", HTTPStatus.INTERNAL_SERVER_ERROR)
+            assignments = ["phase = ?", "updated_at = ?"]
+            parameters: list[Any] = [next_phase, int(time.time())]
+            for key, value in values.items():
+                assignments.append(f"{key} = ?")
+                parameters.append(value)
+            parameters.extend((receipt, row["phase"]))
             changed = database.execute(
-                "UPDATE claims SET chain_consumed_at = ?, updated_at = ? WHERE receipt = ? AND state = 'pending' AND chain_consumed_at IS NULL",
-                (int(time.time()), int(time.time()), receipt),
+                f"UPDATE claim_operations SET {', '.join(assignments)} WHERE receipt = ? AND phase = ?",
+                parameters,
             ).rowcount
             if changed != 1:
-                raise IssuerError("Claim consumption reservation was lost", HTTPStatus.INTERNAL_SERVER_ERROR)
+                raise IssuerError("Claim phase changed concurrently", HTTPStatus.CONFLICT)
+            if chain_attempt is not None:
+                transaction = chain_attempt["transaction"]
+                if not isinstance(transaction, bytes):
+                    raise IssuerError("Chain-attempt transaction is invalid", HTTPStatus.INTERNAL_SERVER_ERROR)
+                database.execute(
+                    """INSERT INTO claim_chain_attempts(
+                         operation_id, signature, blockhash, last_valid_block_height,
+                         transaction_sha256, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        row["operation_id"], chain_attempt["signature"], chain_attempt["blockhash"],
+                        chain_attempt["last_valid_block_height"], hashlib.sha256(transaction).hexdigest(),
+                        int(time.time()),
+                    ),
+                )
+            self._append_claim_event(database, row["operation_id"], row["phase"], next_phase, event_type)
+            return database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
+
+    def mark_claim_attention(self, receipt: str, error_code: str) -> None:
+        with self.connection() as database:
+            database.execute(
+                "UPDATE claim_operations SET attention_required = 1, last_error_code = ?, updated_at = ? WHERE receipt = ?",
+                (error_code, int(time.time()), receipt),
+            )
+
+    def claim_by_operation(self, operation_id: str) -> sqlite3.Row:
+        with self.connection() as database:
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+        if not row:
+            raise IssuerError("Unknown claim operation", HTTPStatus.NOT_FOUND, code="operation_not_found")
+        return row
+
+    def chain_attempt_signatures(self, receipt: str) -> tuple[str, ...]:
+        with self.connection() as database:
+            rows = database.execute(
+                """SELECT attempt.signature FROM claim_chain_attempts AS attempt
+                   JOIN claim_operations AS claim ON claim.operation_id = attempt.operation_id
+                   WHERE claim.receipt = ? ORDER BY attempt.attempt_id""",
+                (receipt,),
+            ).fetchall()
+        return tuple(row[0] for row in rows)
+
+    def chain_attempts(self, operation_id: str) -> list[dict[str, Any]]:
+        with self.connection() as database:
+            rows = database.execute(
+                """SELECT signature, blockhash, last_valid_block_height,
+                          transaction_sha256, created_at
+                   FROM claim_chain_attempts
+                   WHERE operation_id = ? ORDER BY attempt_id""",
+                (operation_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_claim_attention(self, receipt: str) -> None:
+        with self.connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
+            if not row:
+                raise IssuerError("Unknown claim operation", HTTPStatus.NOT_FOUND, code="operation_not_found")
+            if row["last_error_code"] in EXPLICIT_CHAIN_RESOLUTION_ERRORS:
+                raise IssuerError(
+                    "Chain-consumption ambiguity requires an explicit operator resolution",
+                    HTTPStatus.CONFLICT,
+                    code="explicit_chain_resolution_required",
+                    operation_id=row["operation_id"],
+                )
+            database.execute(
+                "UPDATE claim_operations SET attention_required = 0, last_error_code = NULL, updated_at = ? WHERE receipt = ?",
+                (int(time.time()), receipt),
+            )
+            self._append_claim_event(
+                database,
+                row["operation_id"],
+                row["phase"],
+                row["phase"],
+                "operator_resumed_claim",
+                {"clearedErrorCode": row["last_error_code"]},
+            )
+
+    def resolve_ambiguous_chain_consumption(
+        self, receipt: str, *, finalized_signature: str | None
+    ) -> sqlite3.Row:
+        with self.connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
+            if (
+                not row
+                or row["phase"] != "CHAIN_CONSUMED"
+                or not row["attention_required"]
+                or row["last_error_code"] != "chain_signature_ambiguous"
+                or row["chain_finalized_signature"] is not None
+            ):
+                raise IssuerError(
+                    "Claim is not awaiting explicit chain-consumption resolution",
+                    HTTPStatus.CONFLICT,
+                    code="chain_resolution_not_required",
+                )
+            if finalized_signature is not None:
+                attempted = database.execute(
+                    """SELECT 1 FROM claim_chain_attempts
+                       WHERE operation_id = ? AND signature = ?""",
+                    (row["operation_id"], finalized_signature),
+                ).fetchone()
+                if not attempted:
+                    raise IssuerError(
+                        "Finalized signature was not journaled as a claim attempt",
+                        HTTPStatus.CONFLICT,
+                        code="chain_signature_not_attempted",
+                    )
+            database.execute(
+                """UPDATE claim_operations
+                   SET chain_finalized_signature = ?, attention_required = 0,
+                       last_error_code = NULL, updated_at = ?
+                   WHERE receipt = ? AND phase = 'CHAIN_CONSUMED'
+                     AND attention_required = 1
+                     AND last_error_code = 'chain_signature_ambiguous'""",
+                (finalized_signature, int(time.time()), receipt),
+            )
+            event_type = (
+                "operator_attributed_finalized_chain_signature"
+                if finalized_signature is not None
+                else "operator_accepted_unattributed_chain_consumption"
+            )
+            metadata = (
+                {"finalizedSignature": finalized_signature}
+                if finalized_signature is not None
+                else {"acceptedWithoutSignature": True}
+            )
+            self._append_claim_event(
+                database,
+                row["operation_id"],
+                row["phase"],
+                row["phase"],
+                event_type,
+                metadata,
+            )
+            return database.execute(
+                "SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)
+            ).fetchone()
+
+    def reserve_token_replacement(self, receipt: str) -> sqlite3.Row:
+        with self.connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute("SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)).fetchone()
+            if not row or row["phase"] not in {"TOKEN_READY", "REGISTRATION_IN_PROGRESS"}:
+                raise IssuerError("Claim is not eligible for token replacement", HTTPStatus.CONFLICT)
+            database.execute(
+                """UPDATE claim_operations
+                   SET token_generation = token_generation + 1, token_commitment = NULL,
+                       expires_at_ms = NULL, attention_required = 1,
+                       last_error_code = 'token_replacement_pending', updated_at = ?
+                   WHERE receipt = ?""",
+                (int(time.time()), receipt),
+            )
+            self._append_claim_event(
+                database,
+                row["operation_id"],
+                row["phase"],
+                row["phase"],
+                "registration_token_replacement_reserved",
+                {"nextGeneration": row["token_generation"] + 1},
+            )
+            return database.execute("SELECT * FROM claim_operations WHERE receipt = ?", (receipt,)).fetchone()
+
+    def complete_token_replacement(self, receipt: str, token: str, expires_at_ms: int) -> sqlite3.Row:
+        row = self.claim(receipt)
+        if not row or row["last_error_code"] != "token_replacement_pending":
+            raise IssuerError("Token replacement is not pending", HTTPStatus.CONFLICT)
+        return self.transition_claim(
+            receipt,
+            (row["phase"],),
+            row["phase"],
+            event_type="registration_token_replaced",
+            fields={
+                "token_commitment": hashlib.sha256(token.encode()).hexdigest(),
+                "expires_at_ms": expires_at_ms,
+                "attention_required": 0,
+                "last_error_code": None,
+            },
+        )
+
+    def operation_summaries(self) -> list[dict[str, Any]]:
+        with self.connection() as database:
+            rows = database.execute(
+                """SELECT operation_id, receipt, address, phase, attention_required,
+                          token_generation, expires_at_ms, created_at, updated_at, last_error_code
+                   FROM claim_operations ORDER BY created_at, operation_id"""
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_admin_cleanup(self, user_id: str, registration_token: str | None, error: str) -> None:
         with self.connection() as database:
@@ -433,18 +1176,90 @@ class Store:
                 (user_id, registration_token, int(time.time()), error[:500]),
             )
 
-    def unresolved_admin_cleanups(self) -> int:
+    def plan_admin(self, purpose: str, related_claim_id: str | None) -> tuple[str, str, str]:
+        operation_id = secrets.token_hex(16)
+        username = f"neal_access_issuer_{operation_id}"
+        expected_user_id = f"@{username}:{self._matrix_server_name}"
+        now = int(time.time())
+        with self.connection() as database:
+            database.execute(
+                """INSERT INTO admin_operations(
+                     operation_id, username, expected_user_id, purpose, state,
+                     related_claim_id, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, 'PLANNED', ?, ?, ?)""",
+                (operation_id, username, expected_user_id, purpose, related_claim_id, now, now),
+            )
+        return operation_id, username, expected_user_id
+
+    def set_matrix_server_name(self, server_name: str) -> None:
+        self._matrix_server_name = server_name
+
+    def transition_admin(
+        self,
+        operation_id: str,
+        expected_states: tuple[str, ...],
+        next_state: str,
+        *,
+        error_code: str | None = None,
+        token_commitment: str | None = None,
+    ) -> None:
+        assignments = ["state = ?", "updated_at = ?", "last_error_code = ?"]
+        parameters: list[Any] = [next_state, int(time.time()), error_code]
+        if token_commitment is not None:
+            assignments.append("registration_token_commitment = ?")
+            parameters.append(token_commitment)
+        placeholders = ",".join("?" for _ in expected_states)
+        parameters.extend((operation_id, *expected_states))
+        with self.connection() as database:
+            changed = database.execute(
+                f"UPDATE admin_operations SET {', '.join(assignments)} WHERE operation_id = ? AND state IN ({placeholders})",
+                parameters,
+            ).rowcount
+        if changed != 1:
+            raise IssuerError("Administrator operation state changed", HTTPStatus.CONFLICT)
+
+    def admin_operation_for_user(self, user_id: str) -> sqlite3.Row | None:
         with self.connection() as database:
             return database.execute(
+                "SELECT * FROM admin_operations WHERE expected_user_id = ?", (user_id,)
+            ).fetchone()
+
+    def mark_admin_reconciliation(self, user_id: str, error_code: str) -> None:
+        operation = self.admin_operation_for_user(user_id)
+        if operation:
+            self.transition_admin(
+                operation["operation_id"],
+                ("PLANNED", "CREATE_REQUESTED", "ACTIVE", "CLEANUP_REQUESTED", "RECONCILIATION_REQUIRED"),
+                "RECONCILIATION_REQUIRED",
+                error_code=error_code,
+            )
+        else:
+            self.add_admin_cleanup(user_id, None, error_code)
+
+    def unresolved_admin_cleanups(self) -> int:
+        with self.connection() as database:
+            legacy = database.execute(
                 "SELECT COUNT(*) FROM admin_cleanups WHERE resolved_at IS NULL"
             ).fetchone()[0]
+            journaled = database.execute(
+                "SELECT COUNT(*) FROM admin_operations WHERE state != 'RESOLVED'"
+            ).fetchone()[0]
+            return legacy + journaled
 
     def pending_admin_cleanups(self) -> list[dict[str, Any]]:
         with self.connection() as database:
-            rows = database.execute(
+            legacy = database.execute(
                 "SELECT user_id, created_at, error FROM admin_cleanups WHERE resolved_at IS NULL ORDER BY created_at"
             ).fetchall()
-        return [dict(row) for row in rows]
+            journaled = database.execute(
+                """SELECT operation_id, expected_user_id AS user_id, purpose, state,
+                          related_claim_id, created_at, updated_at, last_error_code
+                   FROM admin_operations WHERE state != 'RESOLVED' ORDER BY created_at"""
+            ).fetchall()
+        return [
+            *({"kind": "legacy", **dict(row)} for row in legacy),
+            *({"kind": "journaled", **dict(row)} for row in journaled),
+        ]
 
     def admin_cleanup(self, user_id: str) -> sqlite3.Row:
         with self.connection() as database:
@@ -464,24 +1279,6 @@ class Store:
             ).rowcount
         if changed != 1:
             raise IssuerError("Administrator cleanup state changed", HTTPStatus.CONFLICT)
-
-    def finish_claim(self, receipt: str, token: str, expires_at_ms: int) -> None:
-        now = int(time.time())
-        with self.connection() as database:
-            changed = database.execute(
-                "UPDATE claims SET state = 'issued', registration_token = ?, expires_at_ms = ?, updated_at = ? WHERE receipt = ? AND state = 'pending'",
-                (token, expires_at_ms, now, receipt),
-            ).rowcount
-            if changed != 1:
-                raise IssuerError("Claim reservation was lost", HTTPStatus.INTERNAL_SERVER_ERROR)
-
-    def fail_claim(self, receipt: str, error: str) -> None:
-        with self.connection() as database:
-            database.execute(
-                "UPDATE claims SET state = 'failed', error = ?, updated_at = ? WHERE receipt = ? AND state = 'pending'",
-                (error[:500], int(time.time()), receipt),
-            )
-
 
 class SolanaVerifier:
     def __init__(self, settings: Settings):
@@ -504,16 +1301,25 @@ class SolanaVerifier:
         )
         if not hmac.compare_digest(self.issuer_public, raw[32:]):
             raise IssuerError("Issuer keypair public key does not match its private seed", HTTPStatus.INTERNAL_SERVER_ERROR)
+        self.metrics_lock = threading.Lock()
+        self.rpc_disagreements = 0
+        self.rpc_failures = 0
 
-    def rpc_endpoint(self, url: str, method: str, params: list[Any]) -> Any:
+    def rpc_endpoint(self, endpoint: RpcEndpoint, method: str, params: list[Any]) -> Any:
         request = urllib.request.Request(
-            url,
+            endpoint.url,
             data=json.dumps({"jsonrpc": "2.0", "id": secrets.token_hex(4), "method": method, "params": params}).encode(),
             headers={"Content-Type": "application/json", "Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                body = json.loads(response.read())
+            with urllib.request.urlopen(request, timeout=RPC_TIMEOUT_SECONDS) as response:
+                response_host = urllib.parse.urlsplit(response.geturl()).hostname
+                if not response_host or response_host.rstrip(".").lower().encode("idna").decode("ascii") != endpoint.host:
+                    raise IssuerError("Solana RPC redirect changed the approved provider host", HTTPStatus.SERVICE_UNAVAILABLE)
+                raw = response.read(MAX_RPC_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_RPC_RESPONSE_BYTES:
+                    raise IssuerError("Solana RPC response exceeds the size limit", HTTPStatus.SERVICE_UNAVAILABLE)
+                body = json.loads(raw)
         except (OSError, json.JSONDecodeError) as error:
             raise IssuerError("Solana RPC is unavailable", HTTPStatus.SERVICE_UNAVAILABLE) from error
         if body.get("error") or "result" not in body:
@@ -527,17 +1333,60 @@ class SolanaVerifier:
         return result
 
     def rpc(self, method: str, params: list[Any]) -> Any:
-        results = [self.rpc_endpoint(url, method, params) for url in self.settings.rpc_urls]
-        expected = json.dumps(self.comparable_result(results[0]), sort_keys=True, separators=(",", ":"))
-        if any(
-            json.dumps(self.comparable_result(result), sort_keys=True, separators=(",", ":")) != expected
-            for result in results[1:]
-        ):
-            raise IssuerError("Independent Solana RPCs disagree", HTTPStatus.SERVICE_UNAVAILABLE)
-        return results[0]
+        results: list[tuple[RpcEndpoint, Any]] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.settings.rpc_set.endpoints)) as executor:
+            pending = {
+                executor.submit(self.rpc_endpoint, endpoint, method, params): endpoint
+                for endpoint in self.settings.rpc_set.endpoints
+            }
+            for future, endpoint in ((future, pending[future]) for future in pending):
+                try:
+                    results.append((endpoint, future.result(timeout=RPC_TIMEOUT_SECONDS + 1)))
+                except Exception:
+                    with self.metrics_lock:
+                        self.rpc_failures += 1
+                    continue
+        groups: dict[str, list[tuple[RpcEndpoint, Any]]] = {}
+        for endpoint, result in results:
+            comparable = json.dumps(self.comparable_result(result), sort_keys=True, separators=(",", ":"))
+            groups.setdefault(comparable, []).append((endpoint, result))
+        agreed = [group for group in groups.values() if len({entry[0].trust_domain for entry in group}) >= self.settings.rpc_set.threshold]
+        if len(agreed) != 1:
+            with self.metrics_lock:
+                self.rpc_disagreements += 1
+            raise IssuerError("Solana RPC quorum is unavailable", HTTPStatus.SERVICE_UNAVAILABLE)
+        return agreed[0][0][1]
 
-    def rpc_primary(self, method: str, params: list[Any]) -> Any:
-        return self.rpc_endpoint(self.settings.rpc_urls[0], method, params)
+    def metrics(self) -> dict[str, int]:
+        with self.metrics_lock:
+            return {
+                "rpcFailures": self.rpc_failures,
+                "rpcDisagreements": self.rpc_disagreements,
+            }
+
+    def broadcast(self, transaction: bytes) -> str:
+        encoded = base64.b64encode(transaction).decode()
+        params = [
+            encoded,
+            {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "finalized", "maxRetries": 3},
+        ]
+        signatures: dict[str, set[str]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.settings.rpc_set.endpoints)) as executor:
+            pending = {
+                executor.submit(self.rpc_endpoint, endpoint, "sendTransaction", params): endpoint
+                for endpoint in self.settings.rpc_set.endpoints
+            }
+            for future, endpoint in ((future, pending[future]) for future in pending):
+                try:
+                    signature = future.result(timeout=RPC_TIMEOUT_SECONDS + 1)
+                except Exception:
+                    continue
+                if isinstance(signature, str):
+                    signatures.setdefault(signature, set()).add(endpoint.trust_domain)
+        accepted = [signature for signature, domains in signatures.items() if len(domains) >= self.settings.rpc_set.threshold]
+        if len(accepted) != 1:
+            raise IssuerError("Signed transaction did not reach the required RPC quorum", HTTPStatus.SERVICE_UNAVAILABLE)
+        return accepted[0]
 
     def account(self, address: str) -> tuple[str, bytes]:
         result = self.rpc("getAccountInfo", [address, {"encoding": "base64", "commitment": "finalized"}])
@@ -657,13 +1506,22 @@ class SolanaVerifier:
             if not value:
                 return bytes(encoded)
 
-    def consume(self, address: str, receipt_address: str) -> str:
+    def _build_consume_transaction(
+        self, address: str, receipt_address: str
+    ) -> tuple[bytes, str, str, int]:
         expected = self.receipt_address(address)
         if receipt_address != expected:
             raise IssuerError("Stake receipt address changed", HTTPStatus.CONFLICT)
-        latest = self.rpc_primary("getLatestBlockhash", [{"commitment": "finalized"}])
-        blockhash = latest.get("value", {}).get("blockhash") if isinstance(latest, dict) else None
-        if not isinstance(blockhash, str) or len(base58_decode(blockhash)) != 32:
+        latest = self.rpc("getLatestBlockhash", [{"commitment": "finalized"}])
+        value = latest.get("value", {}) if isinstance(latest, dict) else {}
+        blockhash = value.get("blockhash")
+        last_valid_block_height = value.get("lastValidBlockHeight")
+        if (
+            not isinstance(blockhash, str)
+            or len(base58_decode(blockhash)) != 32
+            or not isinstance(last_valid_block_height, int)
+            or last_valid_block_height <= 0
+        ):
             raise IssuerError("Solana RPC returned no usable blockhash", HTTPStatus.SERVICE_UNAVAILABLE)
         receipt_key = public_key(receipt_address)
         clock_key = public_key("SysvarC1ock11111111111111111111111111111111")
@@ -681,18 +1539,40 @@ class SolanaVerifier:
         message.append(5)
         signature = self.issuer_private.sign(bytes(message))
         transaction = self.shortvec(1) + signature + bytes(message)
-        tx_signature = self.rpc_primary(
-            "sendTransaction",
-            [
-                base64.b64encode(transaction).decode(),
-                {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "finalized", "maxRetries": 3},
-            ],
-        )
-        if not isinstance(tx_signature, str):
-            raise IssuerError("Solana RPC returned no transaction signature", HTTPStatus.SERVICE_UNAVAILABLE)
+        return transaction, base58_encode(signature), blockhash, last_valid_block_height
+
+    def _stored_consume_signature(
+        self, address: str, receipt_address: str, transaction: bytes, blockhash: str
+    ) -> str:
+        if not isinstance(transaction, bytes) or len(transaction) != 270 or transaction[0] != 1:
+            raise IssuerError("Stored claim transaction is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
+        signature = transaction[1:65]
+        message = transaction[65:]
+        expected_keys = b"".join((
+            self.issuer_public,
+            public_key(receipt_address),
+            self.config_key,
+            public_key("SysvarC1ock11111111111111111111111111111111"),
+            self.program,
+        ))
+        if (
+            receipt_address != self.receipt_address(address)
+            or message[:4] != bytes((1, 0, 3, 5))
+            or message[4:164] != expected_keys
+            or message[164:196] != base58_decode(blockhash)
+            or message[196:] != bytes((1, 4, 4, 0, 2, 1, 3, 1, 5))
+        ):
+            raise IssuerError("Stored claim transaction does not match the claim", HTTPStatus.SERVICE_UNAVAILABLE)
+        try:
+            Ed25519PublicKey.from_public_bytes(self.issuer_public).verify(signature, message)
+        except (InvalidSignature, ValueError) as error:
+            raise IssuerError("Stored claim transaction signature is invalid", HTTPStatus.SERVICE_UNAVAILABLE) from error
+        return base58_encode(signature)
+
+    def _confirm_consumption(self, receipt_address: str, tx_signature: str) -> str:
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
-            result = self.rpc_primary("getSignatureStatuses", [[tx_signature], {"searchTransactionHistory": True}])
+            result = self.rpc("getSignatureStatuses", [[tx_signature], {"searchTransactionHistory": True}])
             values = result.get("value") if isinstance(result, dict) else None
             status = values[0] if isinstance(values, list) and values else None
             if isinstance(status, dict) and status.get("err") is not None:
@@ -703,6 +1583,91 @@ class SolanaVerifier:
                     return tx_signature
             time.sleep(0.5)
         raise IssuerError("On-chain claim consumption did not finalize", HTTPStatus.SERVICE_UNAVAILABLE)
+
+    def _broadcast_consume(self, transaction: bytes, expected_signature: str, receipt_address: str) -> str:
+        tx_signature = self.broadcast(transaction)
+        if tx_signature != expected_signature:
+            raise IssuerError("Solana RPC returned the wrong transaction signature", HTTPStatus.SERVICE_UNAVAILABLE)
+        return self._confirm_consumption(receipt_address, expected_signature)
+
+    def _signature_finalized(self, signature: str) -> bool:
+        result = self.rpc("getSignatureStatuses", [[signature], {"searchTransactionHistory": True}])
+        values = result.get("value") if isinstance(result, dict) else None
+        status = values[0] if isinstance(values, list) and values else None
+        return (
+            isinstance(status, dict)
+            and status.get("err") is None
+            and status.get("confirmationStatus") == "finalized"
+        )
+
+    def consumption_signature_finalized(self, receipt_address: str, signature: str) -> bool:
+        """Require quorum-finalized receipt consumption and signature finality."""
+        return self.consumed(receipt_address) and self._signature_finalized(signature)
+
+    def _attributed_finalized_signature(
+        self, stored_signature: str, attempted_signatures: tuple[str, ...] | None
+    ) -> str | None:
+        signatures = tuple(dict.fromkeys((*tuple(attempted_signatures or ()), stored_signature)))
+        finalized = [signature for signature in signatures if self._signature_finalized(signature)]
+        return finalized[0] if len(finalized) == 1 else None
+
+    def consume(
+        self,
+        address: str,
+        receipt_address: str,
+        persist_signed: Callable[[bytes, str, str, int], None] | None = None,
+    ) -> str:
+        transaction, expected_signature, blockhash, last_valid_block_height = self._build_consume_transaction(
+            address, receipt_address
+        )
+        if persist_signed:
+            persist_signed(transaction, expected_signature, blockhash, last_valid_block_height)
+        return self._broadcast_consume(transaction, expected_signature, receipt_address)
+
+    def resume_consume(
+        self,
+        address: str,
+        receipt_address: str,
+        signed_transaction: bytes,
+        stored_signature: str,
+        blockhash: str,
+        last_valid_block_height: int,
+        replace_signed: Callable[[bytes, str, str, int], None],
+        attempted_signatures: tuple[str, ...] | None = None,
+    ) -> str | None:
+        """Recover an ambiguously submitted consume without leaving CHAIN_SUBMITTED wedged."""
+        if (
+            not isinstance(stored_signature, str)
+            or not isinstance(blockhash, str)
+            or not isinstance(last_valid_block_height, int)
+            or last_valid_block_height <= 0
+        ):
+            raise IssuerError("Stored claim submission metadata is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
+        derived_signature = self._stored_consume_signature(
+            address, receipt_address, signed_transaction, blockhash
+        )
+        if not hmac.compare_digest(derived_signature, stored_signature):
+            raise IssuerError("Stored claim signature does not match its transaction", HTTPStatus.SERVICE_UNAVAILABLE)
+        if self.consumed(receipt_address):
+            return self._attributed_finalized_signature(stored_signature, attempted_signatures)
+        block_height = self.rpc("getBlockHeight", [{"commitment": "finalized"}])
+        if not isinstance(block_height, int) or block_height < 0:
+            raise IssuerError("Solana RPC returned no finalized block height", HTTPStatus.SERVICE_UNAVAILABLE)
+        if block_height <= last_valid_block_height:
+            return self._broadcast_consume(signed_transaction, stored_signature, receipt_address)
+        if self.consumed(receipt_address):
+            return self._attributed_finalized_signature(stored_signature, attempted_signatures)
+        replacement, replacement_signature, replacement_blockhash, replacement_height = self._build_consume_transaction(
+            address, receipt_address
+        )
+        replace_signed(replacement, replacement_signature, replacement_blockhash, replacement_height)
+        return self._broadcast_consume(replacement, replacement_signature, receipt_address)
+
+    def consumed(self, receipt_address: str) -> bool:
+        owner, data = self.account(receipt_address)
+        if owner != self.settings.program_id:
+            raise IssuerError("Stake receipt has the wrong owner", HTTPStatus.UNPROCESSABLE_ENTITY)
+        return parse_receipt(data)["issued_at"] > 0
 
 
 def parse_config(data: bytes) -> dict[str, Any]:
@@ -765,8 +1730,13 @@ class MatrixIssuer:
         request = urllib.request.Request(self.settings.matrix_url + path, data=payload, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
-                raw = response.read()
-                return json.loads(raw) if raw else {}
+                raw = response.read(MAX_RPC_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_RPC_RESPONSE_BYTES:
+                    raise IssuerError("Matrix response exceeded the issuer limit", HTTPStatus.SERVICE_UNAVAILABLE)
+                value = json.loads(raw) if raw else {}
+                if not isinstance(value, dict):
+                    raise IssuerError("Matrix returned an invalid response", HTTPStatus.SERVICE_UNAVAILABLE)
+                return value
         except urllib.error.HTTPError as error:
             if allow_not_found and error.code == HTTPStatus.NOT_FOUND:
                 return {}
@@ -774,19 +1744,43 @@ class MatrixIssuer:
         except (OSError, json.JSONDecodeError) as error:
             raise IssuerError("Matrix token service is unavailable", HTTPStatus.SERVICE_UNAVAILABLE) from error
 
-    def temporary_admin(self) -> tuple[str, str]:
+    def temporary_admin(
+        self, purpose: str = "reconciliation", related_claim_id: str | None = None
+    ) -> tuple[str, str]:
         shared = self.settings.matrix_secret_file.read_text().strip().encode()
         nonce = self.request_json("GET", "/_synapse/admin/v1/register")["nonce"]
-        username = f"neal_access_issuer_{secrets.token_hex(8)}"
+        operation_id = ""
+        expected_user_id = ""
+        if self.store:
+            operation_id, username, expected_user_id = self.store.plan_admin(purpose, related_claim_id)
+            self.store.transition_admin(operation_id, ("PLANNED",), "CREATE_REQUESTED")
+        else:
+            username = f"neal_access_issuer_{secrets.token_hex(16)}"
         password = secrets.token_urlsafe(48)
         mac_input = b"\x00".join((nonce.encode(), username.encode(), password.encode(), b"admin"))
         mac = hmac.new(shared, mac_input, hashlib.sha1).hexdigest()
-        result = self.request_json(
-            "POST",
-            "/_synapse/admin/v1/register",
-            body={"nonce": nonce, "username": username, "password": password, "admin": True, "mac": mac},
-        )
-        return result["user_id"], result["access_token"]
+        try:
+            result = self.request_json(
+                "POST",
+                "/_synapse/admin/v1/register",
+                body={"nonce": nonce, "username": username, "password": password, "admin": True, "mac": mac},
+            )
+            user_id = result["user_id"]
+            token = result["access_token"]
+            if expected_user_id and user_id != expected_user_id:
+                raise IssuerError("Synapse created an unexpected administrator identity", HTTPStatus.SERVICE_UNAVAILABLE)
+            if operation_id:
+                self.store.transition_admin(operation_id, ("CREATE_REQUESTED",), "ACTIVE")
+            return user_id, token
+        except Exception:
+            if operation_id:
+                self.store.transition_admin(
+                    operation_id,
+                    ("CREATE_REQUESTED",),
+                    "RECONCILIATION_REQUIRED",
+                    error_code="matrix_admin_create_ambiguous",
+                )
+            raise
 
     def ready(self) -> None:
         if self.store and self.store.unresolved_admin_cleanups():
@@ -797,23 +1791,117 @@ class MatrixIssuer:
         if not isinstance(versions.get("versions"), list):
             raise IssuerError("Matrix client API readiness check failed", HTTPStatus.SERVICE_UNAVAILABLE)
 
-    def deactivate(self, user_id: str, token: str) -> None:
-        self.request_json(
-            "POST",
-            f"/_synapse/admin/v1/deactivate/{urllib.parse.quote(user_id, safe='')}",
-            token=token,
-            body={"erase": True},
+    def registration_token_status(self, registration_token: str, admin_token: str) -> dict[str, Any] | None:
+        result = self.request_json(
+            "GET",
+            f"/_synapse/admin/v1/registration_tokens/{urllib.parse.quote(registration_token, safe='')}",
+            token=admin_token,
+            allow_not_found=True,
         )
+        return result if result.get("token") == registration_token else None
+
+    @staticmethod
+    def validate_registration_token_status(status: dict[str, Any], registration_token: str) -> int:
+        if status.get("token") != registration_token:
+            raise IssuerError("Synapse returned a different registration token", HTTPStatus.SERVICE_UNAVAILABLE)
+        pending = status.get("pending")
+        completed = status.get("completed")
+        expiry = status.get("expiry_time")
+        if not isinstance(pending, int) or not isinstance(completed, int) or not isinstance(expiry, int):
+            raise IssuerError("Synapse registration-token state is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
+        if completed > 0:
+            raise IssuerError("Registration token is already consumed", HTTPStatus.CONFLICT)
+        if pending > 0:
+            raise IssuerError("Registration token is already in use", HTTPStatus.CONFLICT)
+        return expiry
+
+    def observe_reserved_admin_prefix(self) -> list[str]:
+        """Journal active reserved-prefix identities without changing them."""
+        if not self.store:
+            raise IssuerError("Administrator scanning requires the issuer store", HTTPStatus.INTERNAL_SERVER_ERROR)
+        scanner_id = ""
+        scanner_token = ""
+        observed: list[str] = []
+        try:
+            scanner_id, scanner_token = self.temporary_admin("reserved-prefix-scan")
+            next_token: str | None = None
+            scanned = 0
+            while True:
+                query = "?limit=500"
+                if next_token:
+                    query += f"&from={urllib.parse.quote(next_token, safe='')}"
+                result = self.request_json("GET", f"/_synapse/admin/v2/users{query}", token=scanner_token)
+                users = result.get("users")
+                if not isinstance(users, list):
+                    raise IssuerError("Synapse user scan is invalid", HTTPStatus.SERVICE_UNAVAILABLE)
+                for user in users:
+                    if not isinstance(user, dict):
+                        continue
+                    user_id = user.get("name")
+                    if (
+                        not isinstance(user_id, str)
+                        or not user_id.startswith("@neal_access_issuer_")
+                        or user_id == scanner_id
+                        or user.get("deactivated") is True
+                    ):
+                        continue
+                    observed.append(user_id)
+                    operation = self.store.admin_operation_for_user(user_id)
+                    if operation and operation["state"] != "RESOLVED":
+                        self.store.mark_admin_reconciliation(user_id, "reserved_prefix_scan")
+                    else:
+                        self.store.add_admin_cleanup(user_id, None, "reserved_prefix_scan")
+                scanned += len(users)
+                if scanned > 50_000:
+                    raise IssuerError("Synapse user scan exceeded its safety limit", HTTPStatus.SERVICE_UNAVAILABLE)
+                candidate = result.get("next_token")
+                if not isinstance(candidate, str) or not candidate:
+                    break
+                next_token = candidate
+        finally:
+            if scanner_id and scanner_token:
+                self.deactivate(scanner_id, scanner_token)
+        return observed
+
+    def deactivate(self, user_id: str, token: str) -> None:
+        operation = self.store.admin_operation_for_user(user_id) if self.store else None
+        if operation:
+            self.store.transition_admin(
+                operation["operation_id"],
+                ("PLANNED", "CREATE_REQUESTED", "ACTIVE", "RECONCILIATION_REQUIRED"),
+                "CLEANUP_REQUESTED",
+            )
+        try:
+            self.request_json(
+                "POST",
+                f"/_synapse/admin/v1/deactivate/{urllib.parse.quote(user_id, safe='')}",
+                token=token,
+                body={"erase": True},
+            )
+        except Exception:
+            if operation:
+                self.store.transition_admin(
+                    operation["operation_id"],
+                    ("CLEANUP_REQUESTED",),
+                    "RECONCILIATION_REQUIRED",
+                    error_code="matrix_admin_cleanup_ambiguous",
+                )
+            raise
+        if operation:
+            self.store.transition_admin(
+                operation["operation_id"], ("CLEANUP_REQUESTED",), "RESOLVED"
+            )
 
     def reconcile_admin_cleanup(self, user_id: str) -> None:
         if not self.store:
             raise IssuerError("Reconciliation requires the issuer store", HTTPStatus.INTERNAL_SERVER_ERROR)
-        cleanup = self.store.admin_cleanup(user_id)
+        operation = self.store.admin_operation_for_user(user_id)
+        cleanup = None if operation else self.store.admin_cleanup(user_id)
         reconciler_id = ""
         reconciler_token = ""
         try:
             reconciler_id, reconciler_token = self.temporary_admin()
-            registration_token = cleanup["registration_token"]
+            registration_token = cleanup["registration_token"] if cleanup else None
             if registration_token:
                 self.request_json(
                     "DELETE",
@@ -822,7 +1910,8 @@ class MatrixIssuer:
                     allow_not_found=True,
                 )
             self.deactivate(user_id, reconciler_token)
-            self.store.resolve_admin_cleanup(user_id)
+            if cleanup:
+                self.store.resolve_admin_cleanup(user_id)
         finally:
             if reconciler_id and reconciler_token:
                 try:
@@ -834,25 +1923,84 @@ class MatrixIssuer:
                         HTTPStatus.SERVICE_UNAVAILABLE,
                     ) from error
 
-    def issue(self) -> tuple[str, int]:
+    def revoke_unused_registration_token(self, registration_token: str) -> None:
+        """Explicit operator primitive: prove unused, revoke, and verify absence."""
+        admin_id = ""
+        admin_token = ""
+        try:
+            admin_id, admin_token = self.temporary_admin("token-replacement")
+            status = self.registration_token_status(registration_token, admin_token)
+            if status is None:
+                return
+            pending = status.get("pending")
+            completed = status.get("completed")
+            if pending != 0 or completed != 0:
+                raise IssuerError(
+                    "Registration token has pending or completed uses",
+                    HTTPStatus.CONFLICT,
+                    code="registration_token_in_use",
+                )
+            self.request_json(
+                "DELETE",
+                f"/_synapse/admin/v1/registration_tokens/{urllib.parse.quote(registration_token, safe='')}",
+                token=admin_token,
+                allow_not_found=True,
+            )
+            if self.registration_token_status(registration_token, admin_token) is not None:
+                raise IssuerError(
+                    "Registration token revocation was not confirmed",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    code="registration_token_revocation_unconfirmed",
+                )
+        finally:
+            if admin_id and admin_token:
+                self.deactivate(admin_id, admin_token)
+
+    def issue(self, desired_token: str | None = None, related_claim_id: str | None = None) -> tuple[str, int]:
         if self.store and self.store.unresolved_admin_cleanups():
             raise IssuerError("Issuance is halted pending administrator cleanup", HTTPStatus.SERVICE_UNAVAILABLE)
         admin_id = ""
         admin_token = ""
         registration_token = ""
         try:
-            admin_id, admin_token = self.temporary_admin()
+            admin_id, admin_token = self.temporary_admin("claim-token", related_claim_id)
             expires_at_ms = int(time.time() * 1000) + self.settings.token_ttl_minutes * 60 * 1000
-            result = self.request_json(
-                "POST",
-                "/_synapse/admin/v1/registration_tokens/new",
-                token=admin_token,
-                body={"uses_allowed": 1, "expiry_time": expires_at_ms},
-            )
+            request_body: dict[str, Any] = {"uses_allowed": 1, "expiry_time": expires_at_ms}
+            if desired_token is not None:
+                request_body["token"] = desired_token
+            existing = self.registration_token_status(desired_token, admin_token) if desired_token is not None else None
+            if existing is not None:
+                expires_at_ms = self.validate_registration_token_status(existing, desired_token)
+                result = existing
+            else:
+                try:
+                    result = self.request_json(
+                        "POST",
+                        "/_synapse/admin/v1/registration_tokens/new",
+                        token=admin_token,
+                        body=request_body,
+                    )
+                except IssuerError:
+                    recovered = self.registration_token_status(desired_token, admin_token) if desired_token is not None else None
+                    if recovered is None:
+                        raise
+                    expires_at_ms = self.validate_registration_token_status(recovered, desired_token)
+                    result = recovered
             token = result.get("token")
             if not isinstance(token, str) or not token:
                 raise IssuerError("Synapse returned no registration token", HTTPStatus.SERVICE_UNAVAILABLE)
+            if desired_token is not None and not hmac.compare_digest(token, desired_token):
+                raise IssuerError("Synapse returned a different registration token", HTTPStatus.SERVICE_UNAVAILABLE)
             registration_token = token
+            if self.store:
+                operation = self.store.admin_operation_for_user(admin_id)
+                if operation:
+                    self.store.transition_admin(
+                        operation["operation_id"],
+                        ("ACTIVE",),
+                        "ACTIVE",
+                        token_commitment=hashlib.sha256(token.encode()).hexdigest(),
+                    )
             return token, expires_at_ms
         finally:
             if admin_id and admin_token:
@@ -860,8 +2008,9 @@ class MatrixIssuer:
                     self.deactivate(admin_id, admin_token)
                 except Exception as error:  # cleanup failure must be visible to operators
                     if self.store:
-                        self.store.add_admin_cleanup(admin_id, registration_token or None, str(error))
-                    print(f"temporary admin cleanup failed: {error}", file=sys.stderr)
+                        if not self.store.admin_operation_for_user(admin_id):
+                            self.store.add_admin_cleanup(admin_id, None, "matrix_admin_cleanup_ambiguous")
+                    print("temporary admin cleanup failed: matrix_admin_cleanup_ambiguous", file=sys.stderr)
                     raise IssuerError(
                         "Temporary administrator cleanup failed; issuance is halted for reconciliation",
                         HTTPStatus.SERVICE_UNAVAILABLE,
@@ -872,19 +2021,86 @@ class Application:
     def __init__(self, settings: Settings, matrix: MatrixIssuer | None = None, solana: SolanaVerifier | None = None):
         self.settings = settings
         self.store = Store(settings.database)
+        self.store.set_matrix_server_name(settings.matrix_server_name)
+        self.recovery_key = settings.recovery_key_file.read_bytes()
         self.matrix = matrix or MatrixIssuer(settings, self.store)
         self.solana = solana or SolanaVerifier(settings)
+        self.startup_admin_scan_error: str | None = None
+        scan = getattr(self.matrix, "observe_reserved_admin_prefix", None)
+        if callable(scan):
+            try:
+                if scan():
+                    self.startup_admin_scan_error = "reserved_admin_identity_active"
+            except Exception:
+                self.startup_admin_scan_error = "reserved_admin_scan_failed"
 
     def ready(self) -> dict[str, Any]:
+        if self.startup_admin_scan_error:
+            raise IssuerError(
+                "Reserved administrator reconciliation is required",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                code=self.startup_admin_scan_error,
+                retryable=self.startup_admin_scan_error == "reserved_admin_scan_failed",
+            )
+        if (self.settings.database.parent / "restore-reconciliation-required.json").exists():
+            raise IssuerError("Post-restore reconciliation is required", HTTPStatus.SERVICE_UNAVAILABLE)
         with self.store.connection() as database:
             database.execute("SELECT 1").fetchone()
         config = self.solana.config()
         self.matrix.ready()
         return {
+            "schema": "neal.issuer-readiness/v2",
             "status": "ready",
+            "checks": {
+                "database": "ok",
+                "restoreReconciliation": "ok",
+                "rpcQuorum": "ok",
+                "programAttestation": "ok",
+                "matrixControl": "ok",
+                "adminCleanup": "ok",
+            },
+            "chainId": self.settings.chain_id,
+            "sourceCommit": self.settings.source_commit,
+            "issuerImageId": self.settings.issuer_image_id,
+            "expectedWallet": self.settings.expected_wallet,
+            "verificationMode": self.settings.rpc_set.mode,
+            "programId": self.settings.program_id,
+            "programDataAddress": self.settings.program_data_address,
+            "programSha256": self.settings.program_sha256,
+            "configAddress": self.settings.config_address,
+            "mint": self.settings.mint,
             "requiredAtomicAmount": str(config["required_amount"]),
             "minimumLockSeconds": config["minimum_lock_seconds"],
             "configRevision": str(config["revision"]),
+        }
+
+    def metrics(self) -> dict[str, Any]:
+        result = self.store.metrics()
+        solana_metrics = getattr(self.solana, "metrics", None)
+        if callable(solana_metrics):
+            result.update(solana_metrics())
+        result["diskFreeBytes"] = shutil.disk_usage(self.settings.database.parent).free
+        receipt_path = self.settings.database.parent / "last-backup-receipt.json"
+        result["backupAgeSeconds"] = None
+        if receipt_path.is_file() and not receipt_path.is_symlink():
+            try:
+                receipt = json.loads(receipt_path.read_text())
+                created = datetime.fromisoformat(receipt["createdAt"].replace("Z", "+00:00"))
+                result["backupAgeSeconds"] = max(
+                    0, int((datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds())
+                )
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                result["backupAgeSeconds"] = -1
+        try:
+            balance = self.solana.rpc("getBalance", [base58_encode(self.solana.issuer_public), {"commitment": "finalized"}])
+            value = balance.get("value") if isinstance(balance, dict) else None
+            result["issuerLamports"] = value if isinstance(value, int) else None
+        except Exception:
+            result["issuerLamports"] = None
+        return {
+            "schema": "neal.issuer-metrics/v1",
+            "recordedAt": iso_millis(int(time.time())),
+            **result,
         }
 
     def sign_in_input(self, address: str, nonce: str, request_id: str, issued: int, expires: int) -> dict[str, Any]:
@@ -905,12 +2121,15 @@ class Application:
 
     def challenge(self, body: dict[str, Any], client_key: str) -> dict[str, Any]:
         address = body.get("address")
-        if body.get("schema") != "neal.wallet-challenge-request/v1" or body.get("chain") != self.settings.chain_id or not isinstance(address, str):
+        request_schema = body.get("schema")
+        if request_schema not in {"neal.wallet-challenge-request/v1", "neal.wallet-challenge-request/v2"} or body.get("chain") != self.settings.chain_id or not isinstance(address, str):
             raise IssuerError("Invalid wallet challenge request")
         public_key(address)
-        self.store.rate_limit(f"challenge:{client_key}:{address}", 10, 3600)
-        self.store.rate_limit(f"challenge-ip:{client_key}", 60, 3600)
+        if self.settings.expected_wallet is not None and address != self.settings.expected_wallet:
+            raise IssuerError("Wallet is not authorized for this acceptance runtime", HTTPStatus.FORBIDDEN, code="wallet_not_expected")
         self.store.rate_limit("challenge-global", 1_000, 60)
+        self.store.rate_limit(f"challenge-ip:{client_key}", 60, 3600)
+        self.store.rate_limit(f"challenge:{client_key}:{address}", 10, 3600)
         result: dict[str, Any] = {}
 
         def factory(nonce: str, request_id: str, issued: int, expires: int) -> bytes:
@@ -919,10 +2138,12 @@ class Application:
             return siws_message(result)
 
         self.store.create_challenge(address, factory, self.settings.challenge_ttl_seconds)
-        return {"schema": "neal.wallet-challenge/v1", "signInInput": result}
+        version = "v2" if request_schema.endswith("/v2") else "v1"
+        return {"schema": f"neal.wallet-challenge/{version}", "signInInput": result}
 
     def verify(self, body: dict[str, Any], client_key: str) -> tuple[dict[str, Any], str]:
-        if body.get("schema") != "neal.wallet-verification/v1":
+        request_schema = body.get("schema")
+        if request_schema not in {"neal.wallet-verification/v1", "neal.wallet-verification/v2"}:
             raise IssuerError("Invalid wallet verification")
         sign_in = body.get("signInInput")
         output = body.get("output")
@@ -935,6 +2156,8 @@ class Application:
         request_id = sign_in.get("requestId")
         if not isinstance(address, str) or not isinstance(request_id, str):
             raise IssuerError("Invalid wallet proof")
+        if self.settings.expected_wallet is not None and address != self.settings.expected_wallet:
+            raise IssuerError("Wallet is not authorized for this acceptance runtime", HTTPStatus.FORBIDDEN, code="wallet_not_expected")
         self.store.rate_limit(f"verify:{client_key}", 20, 600)
         key = public_key(address)
         if base64url_decode(account.get("publicKey", "")) != key:
@@ -950,39 +2173,319 @@ class Application:
         self.store.consume_challenge(request_id, address, message)
         session = self.store.create_session(address, self.settings.session_ttl_seconds)
         return {
-            "schema": "neal.wallet-authentication/v1",
+            "schema": f"neal.wallet-authentication/{'v2' if request_schema.endswith('/v2') else 'v1'}",
             "authenticated": True,
             "address": address,
             "sessionExpiresAt": (int(time.time()) + self.settings.session_ttl_seconds) * 1000,
         }, session
 
-    def access_token(self, session: str, client_key: str) -> dict[str, Any]:
+    def derive_registration_token(self, row: sqlite3.Row) -> str:
+        material = b"\0".join(
+            (
+                b"neal-access-issuer/registration-token/v1",
+                self.settings.chain_id.encode(),
+                (row["config_address"] or self.settings.config_address).encode(),
+                str(row["config_revision"] if row["config_revision"] is not None else self.settings.expected_revision).encode(),
+                row["receipt"].encode(),
+                str(row["recovery_key_version"]).encode(),
+                str(row["token_generation"]).encode(),
+            )
+        )
+        digest = hmac.new(self.recovery_key, material, hashlib.sha256).digest()
+        return f"neal_{base64.urlsafe_b64encode(digest).decode().rstrip('=')}"
+
+    @staticmethod
+    def processing_response(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "schema": "neal.matrix-access-token-operation/v2",
+            "state": "processing",
+            "operationId": row["operation_id"],
+            "receipt": row["receipt"],
+            "retryAfterMs": 2_000,
+        }
+
+    def advance_claim(self, row: sqlite3.Row, address: str) -> tuple[int, dict[str, Any]]:
+        receipt = row["receipt"]
+        for _step in range(8):
+            phase = row["phase"]
+            if row["attention_required"] and (
+                phase in {"MATRIX_TOKEN_ENSURING", "ADMIN_CLEANUP_PENDING"}
+                or row["last_error_code"] in EXPLICIT_CHAIN_RESOLUTION_ERRORS
+            ):
+                return HTTPStatus.ACCEPTED, self.processing_response(row)
+            if phase == "LEGACY_REVIEW":
+                raise IssuerError(
+                    "This pre-production claim requires manual review",
+                    HTTPStatus.CONFLICT,
+                    code="legacy_claim_review_required",
+                    operation_id=row["operation_id"],
+                )
+            if phase == "REGISTRATION_COMPLETED":
+                raise IssuerError(
+                    "Registration is already completed; sign in with the account password",
+                    HTTPStatus.CONFLICT,
+                    code="registration_completed",
+                    operation_id=row["operation_id"],
+                )
+            if phase in {"TOKEN_READY", "REGISTRATION_IN_PROGRESS"}:
+                if not row["expires_at_ms"] or row["expires_at_ms"] <= int(time.time() * 1000):
+                    raise IssuerError(
+                        "The registration token expired and requires operator review",
+                        HTTPStatus.CONFLICT,
+                        code="token_expired_operator_action",
+                        operation_id=row["operation_id"],
+                    )
+                token = self.derive_registration_token(row)
+                if not row["token_commitment"] or not hmac.compare_digest(
+                    row["token_commitment"], hashlib.sha256(token.encode()).hexdigest()
+                ):
+                    self.store.mark_claim_attention(receipt, "token_commitment_mismatch")
+                    raise IssuerError(
+                        "Registration-token recovery is unavailable",
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        code="token_commitment_mismatch",
+                        operation_id=row["operation_id"],
+                    )
+                return HTTPStatus.OK, {
+                    "schema": "neal.matrix-access-token/v2",
+                    "state": "token_ready",
+                    "operationId": row["operation_id"],
+                    "receipt": receipt,
+                    "token": token,
+                    "expiresAt": row["expires_at_ms"],
+                }
+            if phase == "RESERVED":
+                try:
+                    def persist_signed(
+                        transaction: bytes, signature: str, blockhash: str, last_valid_block_height: int
+                    ) -> None:
+                        self.store.transition_claim(
+                            receipt,
+                            ("RESERVED",),
+                            "CHAIN_SUBMITTED",
+                            event_type="chain_transaction_signed",
+                            fields={
+                                "signed_transaction": transaction,
+                                "chain_signature": signature,
+                                "chain_blockhash": blockhash,
+                                "chain_last_valid_block_height": last_valid_block_height,
+                            },
+                            chain_attempt={
+                                "transaction": transaction,
+                                "signature": signature,
+                                "blockhash": blockhash,
+                                "last_valid_block_height": last_valid_block_height,
+                            },
+                        )
+
+                    signature = self.solana.consume(address, receipt, persist_signed)
+                    row = self.store.transition_claim(
+                        receipt,
+                        ("CHAIN_SUBMITTED",),
+                        "CHAIN_CONSUMED",
+                        event_type="chain_consumption_finalized",
+                        fields={
+                            "chain_finalized_signature": signature,
+                            "attention_required": 0,
+                            "last_error_code": None,
+                        },
+                    )
+                    continue
+                except Exception as error:
+                    row = self.store.claim(receipt, address)
+                    if row and row["phase"] == "RESERVED":
+                        self.store.mark_claim_attention(receipt, "chain_submission_failed")
+                        raise IssuerError(
+                            "Finalized stake consumption is temporarily unavailable",
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            code="chain_submission_failed",
+                            retryable=True,
+                            operation_id=row["operation_id"],
+                        ) from error
+                    if row:
+                        self.store.mark_claim_attention(receipt, "chain_finality_ambiguous")
+                        return HTTPStatus.ACCEPTED, self.processing_response(row)
+                    raise
+            if phase in {"CHAIN_SUBMITTED", "CHAIN_RETRY_REQUIRED"}:
+                try:
+                    def replace_signed(
+                        transaction: bytes, signature: str, blockhash: str, last_valid_block_height: int
+                    ) -> None:
+                        self.store.transition_claim(
+                            receipt,
+                            (phase,),
+                            "CHAIN_RETRY_REQUIRED",
+                            event_type="chain_transaction_replaced",
+                            fields={
+                                "signed_transaction": transaction,
+                                "chain_signature": signature,
+                                "chain_blockhash": blockhash,
+                                "chain_last_valid_block_height": last_valid_block_height,
+                                "attention_required": 0,
+                                "last_error_code": None,
+                            },
+                            chain_attempt={
+                                "transaction": transaction,
+                                "signature": signature,
+                                "blockhash": blockhash,
+                                "last_valid_block_height": last_valid_block_height,
+                            },
+                        )
+
+                    signature = self.solana.resume_consume(
+                        address,
+                        receipt,
+                        row["signed_transaction"],
+                        row["chain_signature"],
+                        row["chain_blockhash"],
+                        row["chain_last_valid_block_height"],
+                        replace_signed,
+                        attempted_signatures=self.store.chain_attempt_signatures(receipt),
+                    )
+                except Exception:
+                    self.store.mark_claim_attention(receipt, "chain_finality_unavailable")
+                    return HTTPStatus.ACCEPTED, self.processing_response(row)
+                row = self.store.transition_claim(
+                    receipt,
+                    ("CHAIN_SUBMITTED", "CHAIN_RETRY_REQUIRED"),
+                    "CHAIN_CONSUMED",
+                    event_type="chain_consumption_recovered",
+                    fields={
+                        "chain_finalized_signature": signature,
+                        "attention_required": 0 if signature is not None else 1,
+                        "last_error_code": None if signature is not None else "chain_signature_ambiguous",
+                    },
+                )
+                continue
+            if phase == "CHAIN_CONSUMED":
+                row = self.store.transition_claim(
+                    receipt,
+                    ("CHAIN_CONSUMED",),
+                    "MATRIX_TOKEN_ENSURING",
+                    event_type="matrix_token_started",
+                )
+                continue
+            if phase == "MATRIX_TOKEN_ENSURING":
+                desired_token = self.derive_registration_token(row)
+                try:
+                    token, expires_at_ms = self.matrix.issue(desired_token, row["operation_id"])
+                except Exception:
+                    self.store.mark_claim_attention(receipt, "matrix_token_ambiguous")
+                    return HTTPStatus.ACCEPTED, self.processing_response(row)
+                if not hmac.compare_digest(token, desired_token):
+                    self.store.mark_claim_attention(receipt, "matrix_token_mismatch")
+                    raise IssuerError(
+                        "Matrix token identity did not match recovery state",
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        code="matrix_token_mismatch",
+                        operation_id=row["operation_id"],
+                    )
+                row = self.store.transition_claim(
+                    receipt,
+                    ("MATRIX_TOKEN_ENSURING",),
+                    "ADMIN_CLEANUP_PENDING",
+                    event_type="matrix_token_ensured",
+                    fields={
+                        "token_commitment": hashlib.sha256(token.encode()).hexdigest(),
+                        "expires_at_ms": expires_at_ms,
+                    },
+                )
+                continue
+            if phase == "ADMIN_CLEANUP_PENDING":
+                if self.store.unresolved_admin_cleanups():
+                    self.store.mark_claim_attention(receipt, "matrix_admin_cleanup_pending")
+                    return HTTPStatus.ACCEPTED, self.processing_response(row)
+                row = self.store.transition_claim(
+                    receipt,
+                    ("ADMIN_CLEANUP_PENDING",),
+                    "TOKEN_READY",
+                    event_type="matrix_admin_cleanup_confirmed",
+                    fields={"attention_required": 0, "last_error_code": None},
+                )
+                continue
+            raise IssuerError(
+                "Claim phase requires operator review",
+                HTTPStatus.CONFLICT,
+                code="claim_phase_unsupported",
+                operation_id=row["operation_id"],
+            )
+        return HTTPStatus.ACCEPTED, self.processing_response(row)
+
+    def access_token_v2(self, session: str, client_key: str) -> tuple[int, dict[str, Any]]:
         address = self.store.session_address(session)
+        if self.settings.expected_wallet is not None and address != self.settings.expected_wallet:
+            raise IssuerError("Wallet is not authorized for this acceptance runtime", HTTPStatus.FORBIDDEN, code="wallet_not_expected")
+        self.store.rate_limit("token-global", 1_000, 60)
         self.store.rate_limit(f"token:{client_key}:{address}", 5, 3600)
         receipt = self.solana.receipt_address(address)
-        existing = self.store.existing_claim(receipt, address)
-        if existing:
-            with self.store.connection() as database:
-                row = database.execute("SELECT expires_at_ms FROM claims WHERE receipt = ?", (receipt,)).fetchone()
-            return {"schema": "neal.matrix-access-token/v1", "token": existing, "expiresAt": row["expires_at_ms"], "receipt": receipt}
-        verified_receipt = self.solana.verify(address)
-        if verified_receipt != receipt:
-            raise IssuerError("Stake receipt verification changed", HTTPStatus.CONFLICT)
-        existing = self.store.reserve_claim(receipt, address)
-        if existing:
-            raise IssuerError("Unexpected duplicate claim state", HTTPStatus.CONFLICT)
-        try:
-            self.solana.consume(address, receipt)
-            self.store.mark_chain_consumed(receipt)
-            token, expires_at_ms = self.matrix.issue()
-            self.store.finish_claim(receipt, token, expires_at_ms)
-        except Exception as error:
-            self.store.fail_claim(receipt, str(error))
+        row = self.store.claim(receipt, address)
+        if row is None:
+            verified_receipt = self.solana.verify(address)
+            if verified_receipt != receipt:
+                raise IssuerError("Stake receipt verification changed", HTTPStatus.CONFLICT, code="receipt_changed")
+            row = self.store.reserve_claim(
+                receipt,
+                address,
+                self.settings.config_address,
+                self.settings.expected_revision,
+                self.settings.recovery_key_version,
+            )
+        return self.advance_claim(row, address)
+
+    def access_token(self, session: str, client_key: str) -> dict[str, Any]:
+        status, result = self.access_token_v2(session, client_key)
+        if status != HTTPStatus.OK:
             raise IssuerError(
-                "Token issuance was reserved but did not complete; an administrator must reconcile it before retrying",
+                "Token issuance is processing; retry with the v2 API",
                 HTTPStatus.SERVICE_UNAVAILABLE,
-            ) from error
-        return {"schema": "neal.matrix-access-token/v1", "token": token, "expiresAt": expires_at_ms, "receipt": receipt}
+                code="claim_processing",
+                retryable=True,
+                operation_id=result.get("operationId"),
+            )
+        return {
+            "schema": "neal.matrix-access-token/v1",
+            "token": result["token"],
+            "expiresAt": result["expiresAt"],
+            "receipt": result["receipt"],
+        }
+
+    def registration_stage(self, session: str, body: dict[str, Any]) -> dict[str, Any]:
+        address = self.store.session_address(session)
+        operation_id = body.get("operationId")
+        stage = body.get("stage")
+        if body.get("schema") != "neal.matrix-registration-stage/v2" or stage not in {
+            "registration_in_progress",
+            "registration_completed",
+        } or not isinstance(operation_id, str):
+            raise IssuerError("Invalid registration-stage request", code="invalid_registration_stage")
+        with self.store.connection() as database:
+            row = database.execute(
+                "SELECT * FROM claim_operations WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+        if not row or row["address"] != address:
+            raise IssuerError("Registration operation is unavailable", HTTPStatus.NOT_FOUND, code="operation_not_found")
+        if stage == "registration_in_progress" and row["phase"] == "TOKEN_READY":
+            row = self.store.transition_claim(
+                row["receipt"],
+                ("TOKEN_READY",),
+                "REGISTRATION_IN_PROGRESS",
+                event_type="registration_started",
+            )
+        elif stage == "registration_completed" and row["phase"] == "REGISTRATION_IN_PROGRESS":
+            row = self.store.transition_claim(
+                row["receipt"],
+                ("REGISTRATION_IN_PROGRESS",),
+                "REGISTRATION_COMPLETED",
+                event_type="registration_completed",
+                fields={"matrix_completed": 1},
+            )
+        elif row["phase"] != ("REGISTRATION_IN_PROGRESS" if stage == "registration_in_progress" else "REGISTRATION_COMPLETED"):
+            raise IssuerError("Registration stage conflicts with durable state", HTTPStatus.CONFLICT, code="registration_stage_conflict")
+        return {
+            "schema": "neal.matrix-registration-stage-result/v2",
+            "operationId": operation_id,
+            "stage": stage,
+        }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1003,12 +2506,27 @@ class Handler(BaseHTTPRequestHandler):
     def client_key(self) -> str:
         forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
         value = forwarded or self.peer_address()
-        return value[:128]
+        if value == "local":
+            return value
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return "untrusted"
+        if address.version == 6:
+            return f"{ipaddress.ip_network(f'{address}/64', strict=False).network_address}/64"
+        return str(address)
 
     def origin_allowed(self) -> bool:
         return self.headers.get("Origin") == self.app.settings.public_origin
 
-    def send_json(self, status: int, body: dict[str, Any], *, session: str | None = None) -> None:
+    def send_json(
+        self,
+        status: int,
+        body: dict[str, Any],
+        *,
+        session: str | None = None,
+        retry_after: int | None = None,
+    ) -> None:
         payload = json.dumps(body, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -1017,10 +2535,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", self.app.settings.public_origin)
         self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Vary", "Origin")
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         if session:
             self.send_header(
                 "Set-Cookie",
-                f"{COOKIE_NAME}={session}; Max-Age={self.app.settings.session_ttl_seconds}; Path=/v1/; Secure; HttpOnly; SameSite=Strict",
+                f"{COOKIE_NAME}={session}; Max-Age={self.app.settings.session_ttl_seconds}; Path=/; Secure; HttpOnly; SameSite=Strict",
             )
         self.end_headers()
         self.wfile.write(payload)
@@ -1048,7 +2568,11 @@ class Handler(BaseHTTPRequestHandler):
         return value.value
 
     def do_OPTIONS(self) -> None:  # noqa: N802
-        if not self.origin_allowed() or self.path not in {"/v1/challenge", "/v1/verify", "/v1/access-token"}:
+        routes = {
+            "/v1/challenge", "/v1/verify", "/v1/access-token",
+            "/v2/challenge", "/v2/verify", "/v2/access-token", "/v2/registration-stage",
+        }
+        if not self.origin_allowed() or self.path not in routes:
             self.send_error(HTTPStatus.FORBIDDEN)
             return
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -1062,15 +2586,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/healthz":
-            self.send_json(HTTPStatus.OK, {"status": "ok"})
+            self.send_json(HTTPStatus.OK, {"schema": "neal.health/v1", "status": "ok"})
         elif self.path == "/readyz":
             try:
                 self.send_json(HTTPStatus.OK, self.app.ready())
             except IssuerError as error:
-                self.send_json(error.status, {"status": "unavailable", "error": str(error)})
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                    "schema": "neal.issuer-readiness/v2",
+                    "status": "unavailable",
+                    "code": error.code,
+                })
             except Exception as error:
                 print(f"issuer readiness failed: {type(error).__name__}", file=sys.stderr)
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"status": "unavailable"})
+        elif self.path == "/metrics":
+            metrics = self.app.metrics()
+            metrics["workers"] = {
+                "active": getattr(self.server, "active_workers", 0),
+                "capacity": 32,
+            }
+            self.send_json(HTTPStatus.OK, metrics)
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1080,35 +2615,63 @@ class Handler(BaseHTTPRequestHandler):
                 raise IssuerError("Origin is not allowed", HTTPStatus.FORBIDDEN)
             body = self.read_json()
             session = None
-            if self.path == "/v1/challenge":
+            status = HTTPStatus.OK
+            if self.path in {"/v1/challenge", "/v2/challenge"}:
                 result = self.app.challenge(body, self.client_key())
-            elif self.path == "/v1/verify":
+            elif self.path in {"/v1/verify", "/v2/verify"}:
                 result, session = self.app.verify(body, self.client_key())
             elif self.path == "/v1/access-token":
                 if body.get("schema") != "neal.matrix-access-token-request/v1":
                     raise IssuerError("Invalid access-token request")
                 result = self.app.access_token(self.cookie(), self.client_key())
+            elif self.path == "/v2/access-token":
+                if body.get("schema") != "neal.matrix-access-token-request/v2":
+                    raise IssuerError("Invalid access-token request", code="invalid_access_token_request")
+                status, result = self.app.access_token_v2(self.cookie(), self.client_key())
+            elif self.path == "/v2/registration-stage":
+                result = self.app.registration_stage(self.cookie(), body)
             else:
                 raise IssuerError("Route not found", HTTPStatus.NOT_FOUND)
-            self.send_json(HTTPStatus.OK, result, session=session)
+            self.send_json(status, result, session=session, retry_after=2 if status == HTTPStatus.ACCEPTED else None)
         except IssuerError as error:
-            self.send_json(error.status, {"error": str(error)})
+            self.send_json(error.status, {
+                "schema": "neal.error/v1",
+                "code": error.code,
+                "message": str(error),
+                "retryable": error.retryable,
+                "operationId": error.operation_id,
+            })
         except Exception:
-            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "Internal issuer error"})
-            raise
+            print("issuer request failed: internal_error", file=sys.stderr)
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "schema": "neal.error/v1",
+                "code": "internal_error",
+                "message": "Internal issuer error",
+                "retryable": False,
+                "operationId": None,
+            })
 
 
 class BoundedThreadingMixIn(socketserver.ThreadingMixIn):
     daemon_threads = True
-    worker_slots = threading.BoundedSemaphore(32)
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        self.worker_slots = threading.BoundedSemaphore(32)
+        self.worker_lock = threading.Lock()
+        self.active_workers = 0
+        super().__init__(*args, **kwargs)
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self.worker_slots.acquire(blocking=False):
             self.shutdown_request(request)
             return
+        with self.worker_lock:
+            self.active_workers += 1
         try:
             super().process_request(request, client_address)
         except Exception:
+            with self.worker_lock:
+                self.active_workers -= 1
             self.worker_slots.release()
             raise
 
@@ -1116,6 +2679,8 @@ class BoundedThreadingMixIn(socketserver.ThreadingMixIn):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            with self.worker_lock:
+                self.active_workers -= 1
             self.worker_slots.release()
 
 

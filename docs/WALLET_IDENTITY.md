@@ -14,7 +14,7 @@ The UI and APIs must preserve these distinctions.
 
 ## Public standards
 
-The browser app uses the Wallet Standard registration handshake from `@wallet-standard/app`. A compatible wallet advertises its chains, accounts, and versioned features rather than being detected through a proprietary `window.solana` branch.
+The browser app uses the Wallet Standard registration handshake from `@wallet-standard/app`. A compatible wallet advertises its chains, accounts, and versioned features rather than being detected through a proprietary `window.solana` branch. Phantom is also supported through a narrowly scoped compatibility wrapper around its official `window.phantom.solana` provider when an installed extension does not register itself through Wallet Standard. The wrapper exposes only standard connect/events/disconnect, message signing, and transaction signing features; it never reads `window.solana`, so another multichain extension cannot displace Phantom by overwriting that legacy global.
 
 Required or capability-gated feature names:
 
@@ -28,7 +28,7 @@ Required or capability-gated feature names:
 | `solana:signTransaction` | Reviewed transaction handoff when signing without sending is genuinely required | Required if Castalia supports partial signing |
 | `solana:signAndSendTransaction` | Preferred reviewed transaction execution path | Required |
 
-Transaction methods take and return immutable serialized bytes. The website calls a feature only after both the wallet and selected account advertise it. Castalia is displayed first by name but receives no privileged authentication or transaction code path.
+Transaction methods take and return immutable serialized bytes. The website calls a feature only after both the wallet and selected account advertise it. Castalia is displayed first by name, Phantom is the next preferred standard provider, and neither receives privileged authentication or transaction rules.
 
 Current sources: [Wallet Standard registry](https://github.com/wallet-standard/wallet-standard/blob/master/packages/core/app/src/wallets.ts), [Solana Wallet Standard extensions](https://github.com/wallet-standard/wallet-standard/blob/master/extensions/solana.md), [Sign In With Solana](https://github.com/phantom/sign-in-with-solana), and [Mobile Wallet Adapter](https://github.com/solana-mobile/mobile-wallet-adapter/blob/main/spec/spec.md).
 
@@ -121,5 +121,6 @@ Castalia may expose a versioned `castalia:` extension for capabilities unique to
 
 - Producer: `wallet-policy.json` parses and is copied by the Vite production build.
 - Consumer: the vanilla TypeScript wallet controller typechecks and builds against pinned official Wallet Standard packages.
+- Phantom: native Wallet Standard registration is preferred; the official injected provider is wrapped only when native registration is absent.
 - Castalia: contract defined; wallet implementation repository not present in the current workspace, so conformance tests are pending.
 - Risk: additive and fallback-backed. Existing public-record consumers are unchanged.

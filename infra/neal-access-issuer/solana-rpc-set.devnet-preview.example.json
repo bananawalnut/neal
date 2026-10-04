@@ -1,0 +1,8 @@
+{
+  "schema": "neal.solana-rpc-set/v1",
+  "mode": "single-rpc-devnet-preview",
+  "threshold": 1,
+  "endpoints": [
+    {"id": "preview-provider", "trustDomain": "preview-operator", "url": "https://CREDENTIAL_BEARING_DEVNET_RPC_URL"}
+  ]
+}

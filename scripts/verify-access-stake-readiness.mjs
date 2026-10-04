@@ -71,6 +71,12 @@ const parseConfig = (data) => {
 
 export async function verifyAccessStake(policy, launchRecord, { checkEndpoints = true } = {}) {
   if (policy.schema !== 'neal.wallet-policy/v1') throw new Error('Unsupported wallet policy schema');
+  if (
+    policy.chain !== 'solana:mainnet'
+    || policy.verification?.mode !== 'quorum-2-of-3'
+    || policy.verification?.providerCount !== 3
+    || policy.verification?.threshold !== 2
+  ) throw new Error('Production readiness requires strict mainnet 2-of-3 verification');
   if (launchRecord.schema !== 'neal.public-record/v1') throw new Error('Unsupported public record schema');
   const stake = policy.accessStake;
   if (!stake || stake.status === 'planned') throw new Error('Access staking is still planned');
@@ -170,9 +176,9 @@ export async function verifyAccessStake(policy, launchRecord, { checkEndpoints =
   ) throw new Error('Canonical mint metadata authorities are not permanently revoked');
 
   const publicOrigin = 'https://nealtheseal.org';
-  const challenge = issuerEndpoint(policy.identity?.challengeEndpoint, 'identity.challengeEndpoint', '/v1/challenge');
-  const verify = issuerEndpoint(policy.identity?.verifyEndpoint, 'identity.verifyEndpoint', '/v1/verify');
-  const token = issuerEndpoint(stake.tokenEndpoint, 'accessStake.tokenEndpoint', '/v1/access-token');
+  const challenge = issuerEndpoint(policy.identity?.challengeEndpoint, 'identity.challengeEndpoint', '/v2/challenge');
+  const verify = issuerEndpoint(policy.identity?.verifyEndpoint, 'identity.verifyEndpoint', '/v2/verify');
+  const token = issuerEndpoint(stake.tokenEndpoint, 'accessStake.tokenEndpoint', '/v2/access-token');
   if (new Set([challenge.origin, verify.origin, token.origin]).size !== 1) {
     throw new Error('Issuer endpoints must share one HTTPS origin');
   }

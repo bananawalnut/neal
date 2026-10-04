@@ -1,7 +1,7 @@
 {
   "schema": "neal.wallet-policy/v1",
   "chain": "solana:mainnet",
-  "preferredWallets": ["Castalia"],
+  "preferredWallets": ["Castalia", "Phantom"],
   "walletStandard": {
     "requiredFeatures": ["standard:connect", "standard:events"],
     "preferredAuthentication": "solana:signIn",
@@ -16,6 +16,11 @@
     "statement": "Sign in to prove you control this wallet. No transaction. No fee.",
     "challengeEndpoint": null,
     "verifyEndpoint": null
+  },
+  "verification": {
+    "mode": "quorum-2-of-3",
+    "providerCount": 3,
+    "threshold": 2
   },
   "holderProof": {
     "rpcEndpoint": "https://solana-rpc.publicnode.com",

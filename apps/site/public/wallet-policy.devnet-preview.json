@@ -1,0 +1,47 @@
+{
+  "schema": "neal.wallet-policy/v1",
+  "chain": "solana:devnet",
+  "preferredWallets": ["Castalia", "Phantom"],
+  "walletStandard": {
+    "requiredFeatures": ["standard:connect", "standard:events"],
+    "preferredAuthentication": "solana:signIn",
+    "authenticationFallback": "solana:signMessage",
+    "capabilityGatedTransactions": ["solana:signTransaction", "solana:signAndSendTransaction"],
+    "mobileTransport": "mobile-wallet-adapter-2.x"
+  },
+  "identity": {
+    "subjectFormat": "solana:devnet/{address}",
+    "sessionStorage": "memory-only",
+    "nonceTtlSeconds": 300,
+    "statement": "Sign in to prove you control this wallet. No transaction. No fee.",
+    "challengeEndpoint": null,
+    "verifyEndpoint": null
+  },
+  "verification": {
+    "mode": "single-rpc-devnet-preview",
+    "providerCount": 1,
+    "threshold": 1
+  },
+  "holderProof": {
+    "rpcEndpoint": "https://api.devnet.solana.com",
+    "commitment": "finalized",
+    "mintSource": null,
+    "minimumAtomicBalance": "1"
+  },
+  "accessStake": {
+    "status": "planned",
+    "contractVersion": 2,
+    "programId": null,
+    "programDataAddress": null,
+    "programSha256": null,
+    "configAddress": null,
+    "configRevision": null,
+    "issuerAuthority": null,
+    "mint": null,
+    "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "tokenDecimals": 6,
+    "requiredAtomicAmount": "69000000000",
+    "minimumLockSeconds": 7776000,
+    "tokenEndpoint": null
+  }
+}

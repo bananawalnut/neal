@@ -4,6 +4,7 @@ import { mountNealPurchase } from './buy';
 import { mountMatrixGc } from './matrix-gc';
 import { mountMatrixAccessStake } from './access-stake';
 import { formatLocalStreak, getLocalYahooStats, onLocalYahooChange, recordLocalYahoo, type LocalYahooStats } from './local-yahoos';
+import { getLocalSurfaceMode, getRuntimeConfig, getRuntimeReadiness } from './runtime-config';
 
 type PublicRecord = {
   schema: 'neal.public-record/v1';
@@ -125,11 +126,49 @@ type YahooLeaderboardRecord = {
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing #app');
 
+const DEVNET_RUNTIME = getRuntimeConfig();
+const DEVNET_READINESS = getRuntimeReadiness();
+const SURFACE_MODE = getLocalSurfaceMode();
+if (DEVNET_RUNTIME) document.documentElement.dataset.devnetManual = 'true';
+if (SURFACE_MODE === 'local-preview') document.documentElement.dataset.localPreview = 'true';
+const devnetBanner = DEVNET_RUNTIME ? `
+  <aside class="devnet-manual-banner" role="status">
+    <strong>READY FOR MANUAL ACCEPTANCE · ISOLATED DEVNET · NOT PRODUCTION</strong>
+    <span>69,000 TEST NEAL · 120-SECOND REFUNDABLE LOCK · QUORUM 2 OF 3</span>
+    <small>Expected wallet ${DEVNET_RUNTIME.browserWallet.slice(0, 6)}…${DEVNET_RUNTIME.browserWallet.slice(-6)} · finalized agreement slot ${DEVNET_READINESS?.verification.finalizedAgreementSlot?.toLocaleString() ?? '—'} · expires ${new Date(DEVNET_RUNTIME.expiresAt).toLocaleString()}.</small>
+    <small>The Matrix account and room exist only on this computer. Never enter a production recovery phrase.</small>
+    <dl>
+      <div><dt>PROGRAM</dt><dd>${DEVNET_RUNTIME.programId}</dd></div>
+      <div><dt>CONFIG</dt><dd>${DEVNET_RUNTIME.configAddress}</dd></div>
+      <div><dt>MINT</dt><dd>${DEVNET_RUNTIME.mint}</dd></div>
+    </dl>
+  </aside>
+` : '';
+const localPreviewBanner = SURFACE_MODE === 'local-preview' ? `
+  <aside class="local-preview-banner" role="status">
+    <strong>LOCAL UI PREVIEW — CHAIN ACTIONS DISABLED</strong>
+    <span>Account actions are disabled too. Use the reviewed HTTPS manual-devnet launcher for stake, issuance, registration, recovery, and refund testing.</span>
+  </aside>
+` : '';
+const matrixEntryCopy = DEVNET_RUNTIME ? {
+  heroBadge: 'ISOLATED DEVNET GC · DIRECT JOIN',
+  heroCallout: 'ISOLATED DEVNET · ENTER ROOM ↓',
+  heading: 'BRING YOUR ACCOUNT.<br>ENTER THE ROOM.<br><em>JOIN THE RACKET.</em>',
+  roomBadge: 'DIRECT JOIN',
+} : {
+  heroBadge: 'FEDERATED GC · KNOCK TO JOIN',
+  heroCallout: 'FEDERATED · KNOCK TO JOIN ↓',
+  heading: 'BRING YOUR ACCOUNT.<br>KNOCK ON THE DOOR.<br><em>JOIN THE RACKET.</em>',
+  roomBadge: 'KNOCK TO JOIN',
+};
+
 let canonicalMintAddress: string | null = null;
 let localYahooMode = false;
 
 app.innerHTML = `
   <main class="shell">
+    ${localPreviewBanner}
+    ${devnetBanner}
     <nav class="topbar">
       <a class="brand" href="#top" aria-label="Neal the Seal home"><span class="brand-orb"><img src="/neal-favicon.png" width="96" height="96" alt="" /></span><span>NEAL</span><small>LOCAL UNIT</small></a>
       <p class="nav-meta"><span>EST. TASMANIA</span><span>BUILT ON SOLANA</span><span>VIBE: UNREASONABLE</span></p>
@@ -184,8 +223,8 @@ app.innerHTML = `
 
       <div class="hero-control-deck">
         <div class="hero-quests" aria-labelledby="hero-quests-title">
-          <div class="hero-quests-head"><div><span>THE KINGDOM / QUESTS</span><h2 id="hero-quests-title">The mob pitches. LORD NEAL seals the decree.</h2></div><b>FEDERATED GC · KNOCK TO JOIN</b></div>
-          <a class="hero-quest-callout" href="#gc"><strong>ENTER THE NEAL MATRIX GC.</strong><small>FEDERATED · KNOCK TO JOIN ↓</small></a>
+          <div class="hero-quests-head"><div><span>THE KINGDOM / QUESTS</span><h2 id="hero-quests-title">The mob pitches. LORD NEAL seals the decree.</h2></div><b>${matrixEntryCopy.heroBadge}</b></div>
+          <a class="hero-quest-callout" href="#gc"><strong>ENTER THE NEAL MATRIX GC.</strong><small>${matrixEntryCopy.heroCallout}</small></a>
         </div>
       </div>
       <div class="hero-marquee hero-marquee--bottom" aria-hidden="true"><span>LONG LIVE NEAL ✦ THE MOB IS YAPPING ✦ ARMY OF DEBAUCHERY ✦ CAUSE A SCENE ✦ LONG LIVE NEAL ✦ COMMUNITY QUESTS ARE COMING ✦</span></div>
@@ -331,7 +370,7 @@ app.innerHTML = `
       <section class="gc-portal" id="gc" aria-labelledby="gc-title">
         <div class="gc-portal-copy">
           <p class="eyebrow">FIRST-PARTY NEAL CLIENT / FEDERATED MATRIX</p>
-          <h3 id="gc-title">BRING YOUR ACCOUNT.<br>KNOCK ON THE DOOR.<br><em>JOIN THE RACKET.</em></h3>
+          <h3 id="gc-title">${matrixEntryCopy.heading}</h3>
           <p>Bring an existing account from any federated homeserver—or create one through an always-online provider. Chat with the mob, add stories and in-jokes, and help shape NEAL's egregore in real time. NEAL discovers the server and speaks Matrix directly: no Element detour and no NEAL credential backend.</p>
         </div>
         <div class="gc-room-board" id="matrix-client">
@@ -341,7 +380,7 @@ app.innerHTML = `
             <button class="gc-drawer-close" id="gc-drawer-close" type="button" aria-label="Close the NEAL group chat">×</button>
           </header>
           <code>#neal-gc:<wbr>matrix.nealtheseal.org</code>
-          <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>KNOCK TO JOIN</span><span>FEDERATED</span><span>UNENCRYPTED</span></div>
+          <div class="gc-room-badges" aria-label="Matrix room properties"><span>FIRST-PARTY CLIENT</span><span>${matrixEntryCopy.roomBadge}</span><span>FEDERATED</span><span>UNENCRYPTED</span></div>
           <ol class="matrix-public-messages" id="matrix-public-messages" aria-label="Public NEAL GC conversation">
             <li class="matrix-empty">LOADING THE PUBLIC CONVERSATION…</li>
           </ol>
@@ -548,6 +587,23 @@ const byId = <T extends HTMLElement>(id: string): T => {
   const element = document.querySelector<T>(`#${id}`);
   if (!element) throw new Error(`Missing #${id}`);
   return element;
+};
+
+const applyLocalPreviewLock = (): void => {
+  byId<HTMLButtonElement>('wallet-button').disabled = true;
+  for (const element of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLButtonElement>(
+    '#matrix-login-form input, #matrix-login-form button, #matrix-create-form input, #matrix-create-form button, #matrix-tab-login, #matrix-tab-create, #gc-login-toggle, #gc-create-toggle',
+  )) element.disabled = true;
+  const roomStatus = document.querySelector<HTMLElement>('#gc .gc-chat-header > strong span');
+  const dockStatus = document.querySelector<HTMLElement>('#gc-dock header > span');
+  const dockAction = document.querySelector<HTMLElement>('#gc-dock .gc-dock__open strong');
+  if (roomStatus) roomStatus.textContent = 'PREVIEW';
+  if (dockStatus) dockStatus.textContent = 'PREVIEW';
+  if (dockAction) dockAction.textContent = 'Preview chat';
+  byId<HTMLElement>('matrix-status').textContent = 'Local UI preview only. Matrix login and account creation are disabled.';
+  byId<HTMLOListElement>('matrix-public-messages').innerHTML = '<li class="matrix-empty">PUBLIC CHAT IS DISABLED IN LOCAL UI PREVIEW.</li>';
+  byId<HTMLElement>('gc-dock-state').textContent = 'Local UI preview · chat disabled';
+  byId<HTMLOListElement>('gc-dock-activity').innerHTML = '<li><b aria-hidden="true">◆</b><span>Chain and account actions disabled</span></li>';
 };
 
 const gcPortal = byId<HTMLElement>('gc');
@@ -771,7 +827,7 @@ function renderRecord(record: PublicRecord) {
   const launched = record.status === 'launched'
     && Boolean(record.execution.mintAddress)
     && Boolean(record.execution.creationTransaction);
-  canonicalMintAddress = launched ? record.execution.mintAddress : null;
+  canonicalMintAddress = DEVNET_RUNTIME?.mint ?? (launched ? record.execution.mintAddress : null);
   const status = byId<HTMLElement>('status-chip');
   status.className = `status-chip ${launched ? 'launched' : 'prelaunch'}`;
   status.innerHTML = `<i></i>${launched ? 'Canonical mint verified' : 'Pre-launch · no mint'}`;
@@ -866,7 +922,8 @@ function renderFailure() {
 }
 
 async function start() {
-  mountMatrixGc();
+  if (SURFACE_MODE === 'local-preview') applyLocalPreviewLock();
+  else mountMatrixGc();
   try {
     const response = await fetch('/launch-record.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`Public record returned ${response.status}`);
@@ -889,9 +946,10 @@ async function start() {
         renderYahooRows(byId<HTMLOListElement>('yahoo-top-rate'), [], 'LEADERBOARD UNAVAILABLE');
       }
     }
+    if (SURFACE_MODE === 'local-preview') return;
     const walletIdentity = await mountWalletIdentity(() => canonicalMintAddress);
     if (walletIdentity) {
-      mountNealPurchase(() => canonicalMintAddress, walletIdentity);
+      if (!DEVNET_RUNTIME) mountNealPurchase(() => canonicalMintAddress, walletIdentity);
       await mountMatrixAccessStake(() => canonicalMintAddress, walletIdentity);
     }
   }

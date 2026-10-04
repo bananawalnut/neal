@@ -9,6 +9,11 @@ const launch = JSON.parse(await fs.readFile(launchPath, 'utf8'));
 
 if (policy.schema !== 'neal.wallet-policy/v1') throw new Error('Unsupported wallet policy schema');
 if (policy.chain !== 'solana:mainnet') throw new Error('Production wallet policy must use Solana mainnet');
+if (
+  policy.verification?.mode !== 'quorum-2-of-3'
+  || policy.verification?.providerCount !== 3
+  || policy.verification?.threshold !== 2
+) throw new Error('Production wallet policy requires strict 2-of-3 RPC verification');
 const stake = policy.accessStake;
 if (!stake || !['planned', 'active', 'paused'].includes(stake.status)) {
   throw new Error('accessStake.status must be planned, active, or paused');
@@ -48,9 +53,9 @@ if (stake.status !== 'planned') {
     throw new Error('Active or paused policy contains an invalid program hash or config revision');
   }
   const routes = [
-    [policy.identity.challengeEndpoint, '/v1/challenge'],
-    [policy.identity.verifyEndpoint, '/v1/verify'],
-    [stake.tokenEndpoint, '/v1/access-token'],
+    [policy.identity.challengeEndpoint, '/v2/challenge'],
+    [policy.identity.verifyEndpoint, '/v2/verify'],
+    [stake.tokenEndpoint, '/v2/access-token'],
   ].map(([value, expectedPath]) => {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.pathname !== expectedPath || url.search || url.hash || url.username || url.password) {

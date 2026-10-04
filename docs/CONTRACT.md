@@ -46,6 +46,59 @@ A status string never overrides the readiness report. The final signing UI must 
 
 `neal.wallet-policy/v1` is an additive public contract consumed by the website and, later, Castalia conformance tests. It defines the Solana chain identifier, standard feature names, authentication preference, nonce lifetime, RPC commitment, and minimum atomic balance for holder status. Older site builds that do not read this file remain valid because it does not alter `neal.public-record/v1`.
 
+`neal.devnet-manual-runtime/v1` is a localhost-only, four-hour public projection
+for isolated Chrome acceptance. It binds one exact source commit, expiry,
+disposable browser public key, immutable program and hash, manual config,
+issuer, test mint, approved 69,000/120-second terms, strict 2-of-3 verification,
+an unpredictable per-run same-origin request nonce, and isolated Matrix
+server/room identifiers. The nonce is not a credential: it is readable only
+through the localhost same-origin contract and prevents cross-site submission
+to loopback state-changing routes. The projection contains no RPC URL, key,
+password, token, cookie, or filesystem path. The gateway serves it only from
+the exact `https://localhost:4280` origin, only for `solana:devnet`, and only
+before expiry.
+The gateway derives a temporary `neal.wallet-policy/v1` from this projection;
+the committed mainnet policy and the separate single-RPC preview policy remain
+unchanged. Older production consumers never request this runtime endpoint.
+
+`neal.devnet-manual-readiness/v1` is the sanitized acceptance handoff contract.
+It binds the exact browser commit and lease to seven fail-closed checks: lease,
+browser build, site, issuer attestation, isolated Matrix, finalized RPC quorum,
+and derived wallet policy. A ready response requires every check to be `ok` and
+records only the finalized agreement slot plus the public 2-of-3 shape. It never
+contains RPC URLs, credentials, passwords, cookies, tokens, wallet secrets, or
+filesystem paths. The manual browser refuses to render the application until a
+ready response matches `neal.devnet-manual-runtime/v1` and its own embedded
+source commit. Production and ordinary local-preview consumers never request
+this endpoint.
+
+`neal.access-stake-isolated-review-signature/v2` is the detached Ed25519
+signature envelope for manual acceptance. It binds the exact source commit,
+review JSON SHA-256, release-manifest SHA-256, SBF artifact SHA-256, issuer
+bundle SHA-256 (including its manifest and SBOM), CI-built manual-browser bundle
+SHA-256 (including its exact Node toolchain, package-lock hash, and every output
+file), reviewer identity, and review time. Manual `doctor` and `prepare` accept signatures only
+from the independent reviewer public key pinned in
+`infra/neal-access-rehearsal/independent-reviewer-public.pem`; an arbitrary
+operator-supplied public key cannot authorize a build. The underlying
+`neal.access-stake-isolated-review/v1` remains required and must report zero
+P0–P2 findings; the signed envelope must also report zero unaccepted P3
+findings.
+The former v1 envelope remains identifiable as historical evidence but cannot
+authorize manual acceptance because it did not bind a browser bundle.
+
+`neal.solana-rpc-set/v1` remains a private credential contract. Executing
+manual and formal devnet tooling requires `quorum-2-of-3`, threshold two, and
+exactly three distinct IDs, hosts, registrable domains, and trust domains. The
+issuer additionally binds Helius, QuickNode, and Alchemy IDs and host suffixes
+to its compiled approved trust-domain registry and rejects cross-host redirects.
+The manual deployment client also uses fetch redirect mode `error`; redirected
+provider responses, including local-address redirects, cannot participate in
+readiness, deployment, or teardown quorum.
+Tooling receives only the mode-`0600` credential path. URLs may contain provider
+credentials but must never appear in command arguments, browser contracts,
+logs, receipts, or GitHub artifacts.
+
 `neal.wallet-proof/v1` proves control of one address. Its subject is `solana:mainnet/{address}`. The proof records the wallet name, standard signing method, short-lived request ID, issue and expiry times, signed message, Ed25519 signature, public key, digest, and whether verification was local or server-backed. A local proof is never represented as a durable authenticated session.
 
 `neal.holder-proof/v1` binds a wallet-proof digest to the canonical mint, integer token balance, mint decimals, commitment, finalized or confirmed slot, and observation time. Holder status is true only when the integer balance meets the public policy threshold. It is a point-in-time observation, not a permanent role.

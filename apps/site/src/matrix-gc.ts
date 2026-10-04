@@ -1,27 +1,39 @@
 import type { MatrixClient, MatrixEvent, Room } from 'matrix-js-sdk';
+import { getRuntimeConfig, manualRequestHeaders } from './runtime-config';
 
-const ROOM_ALIAS = '#neal-gc:matrix.nealtheseal.org';
-const ROOM_ID = '!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org';
-const ROOM_VIA_SERVERS = [
-  'matrix.nealtheseal.org',
-  'salix.host',
-];
-const NATIVE_REGISTRATION_SERVERS = new Set([
-  'matrix.nealtheseal.org',
-  'salix.host',
-]);
-const DIRECT_HOMESERVER_BASE_URLS = new Map([
-  ['matrix.nealtheseal.org', 'https://matrix.nealtheseal.org'],
-]);
-const PUBLIC_FEED_URL = 'https://matrix.nealtheseal.org/_neal/gc/messages';
+const DEVNET_RUNTIME = getRuntimeConfig();
+const ROOM_ALIAS = DEVNET_RUNTIME?.matrix.roomAlias ?? '#neal-gc:matrix.nealtheseal.org';
+const ROOM_ID = DEVNET_RUNTIME?.matrix.roomId ?? '!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org';
+const ROOM_VIA_SERVERS = DEVNET_RUNTIME?.matrix.viaServers ?? ['matrix.nealtheseal.org', 'salix.host'];
+const NATIVE_REGISTRATION_SERVERS = new Set(DEVNET_RUNTIME
+  ? [DEVNET_RUNTIME.matrix.serverName]
+  : ['matrix.nealtheseal.org', 'salix.host']);
+const DIRECT_HOMESERVER_BASE_URLS = new Map<string, string>(DEVNET_RUNTIME
+  ? [[DEVNET_RUNTIME.matrix.serverName, DEVNET_RUNTIME.matrix.baseUrl] as const]
+  : [['matrix.nealtheseal.org', 'https://matrix.nealtheseal.org'] as const]);
+const PUBLIC_FEED_URL = DEVNET_RUNTIME ? '/_neal/devnet/public-messages' : 'https://matrix.nealtheseal.org/_neal/gc/messages';
 const PUBLIC_REFRESH_MS = 10_000;
-const NEAL_HOMESERVER_DOMAIN = 'matrix.nealtheseal.org';
+const NEAL_HOMESERVER_DOMAIN = DEVNET_RUNTIME?.matrix.serverName ?? 'matrix.nealtheseal.org';
+const ROOM_ENTRY_ACTION = DEVNET_RUNTIME ? 'join' : 'knock';
 const SESSION_KEY = 'neal.matrix.session.v1';
 const SSO_PENDING_KEY = 'neal.matrix.sso.pending.v1';
+const REGISTRATION_RECOVERY_KEY = 'neal.matrix.registration-recovery.v2';
 const SSO_MAX_AGE_MS = 20 * 60 * 1000;
 const MATRIX_SDK_LOAD_FAILURE = 'The chat client could not load. Check your connection, reload the page, then sign in again.';
 
 type MatrixSdk = typeof import('matrix-js-sdk');
+type MatrixClientOptions = Parameters<MatrixSdk['createClient']>[0];
+
+const matrixFetch: typeof globalThis.fetch = (input, init = {}) => {
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(manualRequestHeaders())) headers.set(name, value);
+  return globalThis.fetch(input, { ...init, headers });
+};
+
+const createMatrixClient = (sdk: MatrixSdk, options: MatrixClientOptions): MatrixClient => sdk.createClient({
+  ...options,
+  ...(DEVNET_RUNTIME ? { fetchFn: matrixFetch } : {}),
+});
 
 type MatrixSession = {
   baseUrl: string;
@@ -36,6 +48,15 @@ type PendingSso = {
   action: 'login' | 'register';
   state: string;
   createdAt: number;
+};
+
+type RegistrationRecovery = {
+  schema: 'neal.matrix-registration-recovery/v2';
+  baseUrl: string;
+  provider: string;
+  username: string;
+  uiaSession: string;
+  completed: string[];
 };
 
 type PublicMessage = {
@@ -139,7 +160,11 @@ export const parseMatrixId = (value: string): { userId: string; domain: string }
   if (!userId.startsWith('@') || separator < 2 || separator === userId.length - 1) {
     throw new Error('Use your NEAL username, like neal, or a full Matrix ID like @name:matrix.org.');
   }
-  return { userId, domain: userId.slice(separator + 1) };
+  const domain = userId.slice(separator + 1);
+  if (DEVNET_RUNTIME && domain !== DEVNET_RUNTIME.matrix.serverName) {
+    throw new Error('Isolated devnet acceptance permits only its local Matrix server.');
+  }
+  return { userId, domain };
 };
 
 const normalizeHomeserverDomain = (value: string): string => {
@@ -151,6 +176,9 @@ const normalizeHomeserverDomain = (value: string): string => {
   const parsed = new URL(`https://${candidate}/`);
   if (!parsed.hostname || parsed.username || parsed.password) {
     throw new Error('Use a valid Matrix homeserver domain.');
+  }
+  if (DEVNET_RUNTIME && parsed.host !== DEVNET_RUNTIME.matrix.serverName) {
+    throw new Error('Isolated devnet acceptance permits only its local Matrix server.');
   }
   return parsed.host;
 };
@@ -169,6 +197,10 @@ const readSession = (): MatrixSession | null => {
       && typeof value.accessToken === 'string'
       && typeof value.userId === 'string'
       && typeof value.deviceId === 'string'
+      && (!DEVNET_RUNTIME || (
+        value.baseUrl === DEVNET_RUNTIME.matrix.baseUrl
+        && value.userId.endsWith(`:${DEVNET_RUNTIME.matrix.serverName}`)
+      ))
     ) return value as MatrixSession;
   } catch {
     // Invalid client state is discarded below.
@@ -194,12 +226,46 @@ const readPendingSso = (): PendingSso | null => {
       && typeof value.state === 'string'
       && typeof value.createdAt === 'number'
       && Date.now() - value.createdAt <= SSO_MAX_AGE_MS
+      && (!DEVNET_RUNTIME || (
+        value.baseUrl === DEVNET_RUNTIME.matrix.baseUrl
+        && value.domain === DEVNET_RUNTIME.matrix.serverName
+      ))
     ) return value as PendingSso;
   } catch {
     // Invalid or expired SSO state is discarded below.
   }
   sessionStorage.removeItem(SSO_PENDING_KEY);
   return null;
+};
+
+const saveRegistrationRecovery = (recovery: RegistrationRecovery): void => {
+  sessionStorage.setItem(REGISTRATION_RECOVERY_KEY, JSON.stringify(recovery));
+};
+
+const readRegistrationRecovery = (): RegistrationRecovery | null => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(REGISTRATION_RECOVERY_KEY) ?? 'null') as Partial<RegistrationRecovery> | null;
+    if (
+      value?.schema !== 'neal.matrix-registration-recovery/v2'
+      || typeof value.baseUrl !== 'string'
+      || typeof value.provider !== 'string'
+      || typeof value.username !== 'string'
+      || typeof value.uiaSession !== 'string'
+      || !Array.isArray(value.completed)
+      || !value.completed.every((stage) => typeof stage === 'string')
+    ) return null;
+    return value as RegistrationRecovery;
+  } catch {
+    return null;
+  }
+};
+
+const clearRegistrationRecovery = (): void => {
+  sessionStorage.removeItem(REGISTRATION_RECOVERY_KEY);
+};
+
+const publishRegistrationStage = (stage: 'registration_in_progress' | 'registration_completed'): void => {
+  document.dispatchEvent(new CustomEvent('neal:matrix-registration-stage', { detail: { stage } }));
 };
 
 const setStatus = (ui: ClientUi, message: string, state: 'idle' | 'working' | 'good' | 'bad' = 'idle'): void => {
@@ -376,7 +442,7 @@ const renderPublicMessages = (ui: ClientUi, messages: PublicMessage[]): void => 
 
 const refreshPublicMessages = async (ui: ClientUi): Promise<void> => {
   try {
-    const response = await fetch(PUBLIC_FEED_URL, {
+    const response = await matrixFetch(PUBLIC_FEED_URL, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
@@ -513,8 +579,13 @@ const renderRoom = async (ui: ClientUi, client: MatrixClient, sdk: MatrixSdk): P
     setActivityDockState('INVITED · OPEN CHAT TO ENTER', 'good');
   } else {
     startPublicTimeline(ui);
-    setStatus(ui, 'Authenticated. Knock to request entry.', 'idle');
-    setActivityDockState('SIGNED IN · KNOCK TO SEE ACTIVITY', 'idle');
+    if (ROOM_ENTRY_ACTION === 'join') {
+      setStatus(ui, 'Authenticated. Enter the isolated room to start chatting.', 'idle');
+      setActivityDockState('SIGNED IN · ENTER THE ISOLATED ROOM', 'idle');
+    } else {
+      setStatus(ui, 'Authenticated. Knock to request entry.', 'idle');
+      setActivityDockState('SIGNED IN · KNOCK TO SEE ACTIVITY', 'idle');
+    }
   }
 };
 
@@ -523,7 +594,7 @@ let activeClient: MatrixClient | null = null;
 const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<void> => {
   const sdk = await loadSdk();
   activeClient?.stopClient();
-  const client = sdk.createClient({
+  const client = createMatrixClient(sdk, {
     baseUrl: session.baseUrl,
     accessToken: session.accessToken,
     userId: session.userId,
@@ -580,9 +651,12 @@ const connectSession = async (ui: ClientUi, session: MatrixSession): Promise<voi
 };
 
 const discoverHomeserver = async (sdk: MatrixSdk, domain: string): Promise<string> => {
+  if (DEVNET_RUNTIME && domain !== DEVNET_RUNTIME.matrix.serverName) {
+    throw new Error('Isolated devnet acceptance permits only its local Matrix server.');
+  }
   const directBaseUrl = DIRECT_HOMESERVER_BASE_URLS.get(domain);
   if (directBaseUrl) {
-    const response = await fetch(`${directBaseUrl}/_matrix/client/versions`, {
+    const response = await matrixFetch(`${directBaseUrl}/_matrix/client/versions`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
@@ -604,7 +678,7 @@ const beginSso = async (ui: ClientUi, domain: string, action: 'login' | 'registe
   const sdk = await loadSdk();
   setStatus(ui, `Discovering ${domain}…`, 'working');
   const baseUrl = await discoverHomeserver(sdk, domain);
-  const client = sdk.createClient({ baseUrl });
+  const client = createMatrixClient(sdk, { baseUrl });
   const flows = await client.loginFlows();
   const flow = flows.flows.find((candidate) => candidate.type === 'm.login.sso')
     ?? flows.flows.find((candidate) => candidate.type === 'm.login.cas');
@@ -642,7 +716,7 @@ const registrationRequest = async (
   baseUrl: string,
   body: Record<string, unknown>,
 ): Promise<{ response: Response; payload: RegistrationResponse }> => {
-  const response = await fetch(`${baseUrl}/_matrix/client/v3/register`, {
+  const response = await matrixFetch(`${baseUrl}/_matrix/client/v3/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -675,73 +749,127 @@ const registrationSession = (payload: RegistrationResponse, baseUrl: string): Ma
 const completeNativeRegistration = async (
   ui: ClientUi,
   baseUrl: string,
+  provider: string,
   username: string,
   password: string,
   token: string,
 ): Promise<void> => {
-  const availability = await fetch(
-    `${baseUrl}/_matrix/client/v3/register/available?username=${encodeURIComponent(username)}`,
-    { headers: { Accept: 'application/json' } },
-  );
-  const availabilityPayload = await availability.json() as { available?: unknown; error?: unknown };
-  if (!availability.ok || availabilityPayload.available !== true) {
-    throw new Error(typeof availabilityPayload.error === 'string' ? availabilityPayload.error : 'That Matrix username is unavailable.');
-  }
-
   const registrationBody = {
     username,
     password,
     initial_device_display_name: 'NEAL web GC',
   };
-  const started = await registrationRequest(baseUrl, registrationBody);
-  let session = registrationSession(started.payload, baseUrl);
-  if (session) {
-    saveSession(session);
-    await connectSession(ui, session);
-    return;
+  const existing = readRegistrationRecovery();
+  let recovery: RegistrationRecovery;
+  let session: MatrixSession | null = null;
+  if (existing?.baseUrl === baseUrl && existing.provider === provider && existing.username === username) {
+    recovery = existing;
+  } else {
+    clearRegistrationRecovery();
+    const availability = await matrixFetch(
+      `${baseUrl}/_matrix/client/v3/register/available?username=${encodeURIComponent(username)}`,
+      { headers: { Accept: 'application/json' } },
+    );
+    const availabilityPayload = await availability.json() as { available?: unknown; error?: unknown };
+    if (!availability.ok || availabilityPayload.available !== true) {
+      throw new Error(typeof availabilityPayload.error === 'string' ? availabilityPayload.error : 'That Matrix username is unavailable.');
+    }
+    const started = await registrationRequest(baseUrl, registrationBody);
+    session = registrationSession(started.payload, baseUrl);
+    if (session) {
+      saveSession(session);
+      await connectSession(ui, session);
+      publishRegistrationStage('registration_completed');
+      return;
+    }
+    if (started.response.status !== 401) {
+      throw new Error(typeof started.payload.error === 'string' ? started.payload.error : 'The homeserver rejected account creation.');
+    }
+    const supportsTokenFlow = started.payload.flows?.some((flow) => (
+      Array.isArray(flow.stages)
+      && flow.stages.includes('m.login.registration_token')
+      && flow.stages.includes('m.login.dummy')
+    ));
+    if (!supportsTokenFlow) {
+      throw new Error('That homeserver does not offer NEAL\'s access-token registration flow.');
+    }
+    recovery = {
+      schema: 'neal.matrix-registration-recovery/v2',
+      baseUrl,
+      provider,
+      username,
+      uiaSession: requireRegistrationSession(started.payload),
+      completed: Array.isArray(started.payload.completed)
+        ? started.payload.completed.filter((stage): stage is string => typeof stage === 'string')
+        : [],
+    };
+    saveRegistrationRecovery(recovery);
   }
-  if (started.response.status !== 401) {
-    throw new Error(typeof started.payload.error === 'string' ? started.payload.error : 'The homeserver rejected account creation.');
-  }
+  publishRegistrationStage('registration_in_progress');
 
-  const uiaSession = requireRegistrationSession(started.payload);
-  const supportsTokenFlow = started.payload.flows?.some((flow) => (
-    Array.isArray(flow.stages)
-    && flow.stages.includes('m.login.registration_token')
-    && flow.stages.includes('m.login.dummy')
-  ));
-  if (!supportsTokenFlow) {
-    throw new Error('That homeserver does not offer NEAL\'s access-token registration flow.');
-  }
-
-  const tokenStage = await registrationRequest(baseUrl, {
+  if (!recovery.completed.includes('m.login.registration_token')) {
+    const tokenStage = await registrationRequest(baseUrl, {
       ...registrationBody,
       auth: {
         type: 'm.login.registration_token',
         token,
-        session: uiaSession,
+        session: recovery.uiaSession,
       },
     });
-  session = registrationSession(tokenStage.payload, baseUrl);
-  if (!session) {
-    if (tokenStage.response.status !== 401) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The homeserver rejected that access token.');
-    }
-    const completed = Array.isArray(tokenStage.payload.completed) ? tokenStage.payload.completed : [];
-    if (!completed.includes('m.login.registration_token')) {
-      throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The one-use access token was not accepted.');
-    }
-    const finalStage = await registrationRequest(baseUrl, {
-      ...registrationBody,
-      auth: { type: 'm.login.dummy', session: uiaSession },
-    });
-    session = registrationSession(finalStage.payload, baseUrl);
+    session = registrationSession(tokenStage.payload, baseUrl);
     if (!session) {
-      throw new Error(typeof finalStage.payload.error === 'string' ? finalStage.payload.error : 'The homeserver did not finish account creation.');
+      if (tokenStage.response.status !== 401) {
+        throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The homeserver rejected that access token.');
+      }
+      const completed = Array.isArray(tokenStage.payload.completed)
+        ? tokenStage.payload.completed.filter((stage): stage is string => typeof stage === 'string')
+        : [];
+      if (!completed.includes('m.login.registration_token')) {
+        throw new Error(typeof tokenStage.payload.error === 'string' ? tokenStage.payload.error : 'The one-use access token was not accepted.');
+      }
+      recovery = { ...recovery, completed };
+      saveRegistrationRecovery(recovery);
+    }
+  }
+
+  if (!session) {
+    let finalFailure = 'The homeserver did not finish account creation.';
+    try {
+      const finalStage = await registrationRequest(baseUrl, {
+      ...registrationBody,
+        auth: { type: 'm.login.dummy', session: recovery.uiaSession },
+      });
+      session = registrationSession(finalStage.payload, baseUrl);
+      if (!session && typeof finalStage.payload.error === 'string') finalFailure = finalStage.payload.error;
+    } catch {
+      // A lost final response is ambiguous. The ordinary login below safely
+      // distinguishes an account that completed from one still needing UIA.
+    }
+    if (!session) {
+      try {
+        const sdk = await loadSdk();
+        const client = createMatrixClient(sdk, { baseUrl });
+        const response = await client.loginRequest({
+          type: 'm.login.password',
+          identifier: { type: 'm.id.user', user: username },
+          password,
+          initial_device_display_name: 'NEAL web GC',
+        });
+        session = {
+          baseUrl,
+          accessToken: response.access_token,
+          userId: response.user_id,
+          deviceId: response.device_id,
+        };
+      } catch {
+        throw new Error(`${finalFailure} Enter the password again to resume this same registration.`);
+      }
     }
   }
 
   saveSession(session);
+  clearRegistrationRecovery();
+  publishRegistrationStage('registration_completed');
   await connectSession(ui, session);
 };
 
@@ -804,7 +932,7 @@ const consumeSsoCallback = async (ui: ClientUi): Promise<boolean> => {
 
   const sdk = await loadSdk();
   setStatus(ui, `Completing ${pending.domain} sign-in…`, 'working');
-  const response = await sdk.createClient({ baseUrl: pending.baseUrl }).loginRequest({
+  const response = await createMatrixClient(sdk, { baseUrl: pending.baseUrl }).loginRequest({
     type: 'm.login.token',
     token: loginToken,
     initial_device_display_name: 'NEAL web GC',
@@ -864,6 +992,12 @@ export const mountMatrixGc = (): void => {
     knockList: required(root, '#matrix-knocks'),
   };
 
+  if (DEVNET_RUNTIME) {
+    ui.createDomainInput.value = DEVNET_RUNTIME.matrix.serverName;
+    ui.createDomainInput.readOnly = true;
+    ui.knockButton.textContent = 'ENTER THE ISOLATED ROOM';
+  }
+
   ui.loginTab.addEventListener('click', () => showEntryMode(ui, 'login'));
   ui.createTab.addEventListener('click', () => showEntryMode(ui, 'create'));
   ui.createDomainInput.addEventListener('input', () => updateCreateProvider(ui));
@@ -882,7 +1016,7 @@ export const mountMatrixGc = (): void => {
       const { userId, domain } = parseMatrixId(ui.userInput.value);
       setStatus(ui, `Discovering ${domain}…`, 'working');
       const baseUrl = await discoverHomeserver(sdk, domain);
-      const loginClient = sdk.createClient({ baseUrl });
+      const loginClient = createMatrixClient(sdk, { baseUrl });
       const flows = await loginClient.loginFlows();
       if (!flows.flows.some((flow) => flow.type === 'm.login.password')) {
         throw new Error('That homeserver does not offer password login. Use the homeserver sign-in button instead.');
@@ -943,14 +1077,14 @@ export const mountMatrixGc = (): void => {
         if (password.length < 12) throw new Error('Use a password of at least 12 characters.');
         if (password !== confirmation) throw new Error('The two passwords do not match.');
         if (!token) {
-          throw new Error(domain === 'matrix.nealtheseal.org'
+          throw new Error(domain === NEAL_HOMESERVER_DOMAIN
             ? 'Complete the NEAL account-access step above first.'
             : 'Get a one-use registration token from Salix first.');
         }
         const sdk = await loadSdk();
         setStatus(ui, `Creating an email-free account directly with ${domain}…`, 'working');
         const baseUrl = await discoverHomeserver(sdk, domain);
-        await completeNativeRegistration(ui, baseUrl, username, password, token);
+        await completeNativeRegistration(ui, baseUrl, domain, username, password, token);
         ui.createPasswordInput.value = '';
         ui.createConfirmInput.value = '';
         ui.createTokenInput.value = '';
@@ -971,8 +1105,15 @@ export const mountMatrixGc = (): void => {
   ui.knockButton.addEventListener('click', async () => {
     if (!activeClient) return;
     ui.knockButton.disabled = true;
-    setStatus(ui, 'Knocking on the NEAL GC…', 'working');
     try {
+      if (ROOM_ENTRY_ACTION === 'join') {
+        setStatus(ui, 'Entering the isolated NEAL GC…', 'working');
+        await activeClient.joinRoom(ROOM_ID, { viaServers: ROOM_VIA_SERVERS });
+        const sdk = await loadSdk();
+        await renderRoom(ui, activeClient, sdk);
+        return;
+      }
+      setStatus(ui, 'Knocking on the NEAL GC…', 'working');
       await activeClient.knockRoom(ROOM_ID, {
         reason: 'Requesting entry through the NEAL web client.',
         viaServers: ROOM_VIA_SERVERS,

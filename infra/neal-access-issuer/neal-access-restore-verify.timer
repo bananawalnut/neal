@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly NEAL off-host immutable backup restore verification
+
+[Timer]
+OnCalendar=*-*-01 03:00:00 UTC
+Persistent=true
+AccuracySec=5min
+Unit=neal-access-restore-verify.service
+
+[Install]
+WantedBy=timers.target

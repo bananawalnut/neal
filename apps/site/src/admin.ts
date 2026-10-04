@@ -5,20 +5,13 @@ const SERVER_NAME = 'matrix.nealtheseal.org';
 const ROOM_ALIAS = '#neal-gc:matrix.nealtheseal.org';
 const ROOM_ID = '!KliLLiEXeNPupDcYwe:matrix.nealtheseal.org';
 const HERMES_USER_ID = '@neal:matrix.nealtheseal.org';
-const HERMES_HEALTH_TYPE = 'org.neal.hermes.health';
-const HERMES_HEALTH_KEY = 'primary';
 const HERMES_FRESH_MS = 150_000;
 const REFRESH_MS = 30_000;
-const SESSION_KEY = 'neal.admin.matrix-session.v1';
-const LOCAL_ADMIN_MONITOR_PATHS = new Set([
-  '/_neal/admin/users',
-  '/_neal/admin/server',
-]);
 const USE_LOCAL_ADMIN_MONITOR_PROXY = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname);
+const ADMIN_API_ORIGIN = USE_LOCAL_ADMIN_MONITOR_PROXY ? '' : HOMESERVER;
 
-type MatrixSession = {
-  accessToken: string;
-  deviceId: string;
+type BrokerSession = {
+  schema?: unknown;
   userId: string;
 };
 
@@ -52,7 +45,16 @@ type HermesHealth = {
   service_managed?: unknown;
 };
 
-type Settled<T> = { value: T; error: null } | { value: null; error: string };
+type AdminSnapshot = {
+  schema?: unknown;
+  session?: unknown;
+  server?: unknown;
+  users?: unknown;
+  alias?: unknown;
+  state?: unknown;
+  hermes?: unknown;
+  generatedAt?: unknown;
+};
 
 class RequestError extends Error {
   readonly status: number;
@@ -84,7 +86,7 @@ app.innerHTML = `
 
       <form class="admin-login" id="admin-login">
         <h2>Administrator sign in</h2>
-        <p>Credentials go directly to the Neal Matrix homeserver. The session stays in this browser tab.</p>
+        <p>Credentials are verified by the Neal monitor. Its short-lived Matrix session is encrypted server-side and never exposed to this page.</p>
         <label><span>NEAL USERNAME</span><input id="admin-username" name="username" autocomplete="username" placeholder="beaver" required /></label>
         <label><span>PASSWORD</span><input id="admin-password" name="password" type="password" autocomplete="current-password" required /></label>
         <button id="admin-login-button" type="submit">SIGN IN AND LOAD STATUS</button>
@@ -176,7 +178,7 @@ const refreshButton = required<HTMLButtonElement>('#refresh');
 const autoRefreshButton = required<HTMLButtonElement>('#auto-refresh');
 const logoutButton = required<HTMLButtonElement>('#admin-logout');
 
-let activeSession: MatrixSession | null = null;
+let activeSession: BrokerSession | null = null;
 let autoRefresh = true;
 let refreshTimer: number | null = null;
 
@@ -203,63 +205,28 @@ const errorMessage = (error: unknown): string => error instanceof Error ? error.
 const readError = async (response: Response): Promise<string> => {
   try {
     const payload = asRecord(await response.json());
-    return asString(payload.error) || `Matrix returned HTTP ${response.status}.`;
+    return asString(payload.message) || asString(payload.error) || `Monitor returned HTTP ${response.status}.`;
   } catch {
     return `Matrix returned HTTP ${response.status}.`;
   }
 };
 
-const requestJson = async <T>(path: string, session: MatrixSession, init: RequestInit = {}): Promise<T> => {
+const requestJson = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   const headers = new Headers(init.headers);
   headers.set('Accept', 'application/json');
-  headers.set('Authorization', `Bearer ${session.accessToken}`);
   if (init.body) headers.set('Content-Type', 'application/json');
-  const requestUrl = USE_LOCAL_ADMIN_MONITOR_PROXY && LOCAL_ADMIN_MONITOR_PATHS.has(path)
-    ? path
-    : `${HOMESERVER}${path}`;
-  const response = await fetch(requestUrl, { ...init, headers, cache: 'no-store' });
+  const response = await fetch(`${ADMIN_API_ORIGIN}${path}`, {
+    ...init,
+    headers,
+    credentials: 'include',
+    cache: 'no-store',
+  });
   if (!response.ok) throw new RequestError(response.status, await readError(response));
   return await response.json() as T;
 };
 
-const settle = async <T>(promise: Promise<T>): Promise<Settled<T>> => {
-  try {
-    return { value: await promise, error: null };
-  } catch (error) {
-    return { value: null, error: errorMessage(error) };
-  }
-};
-
-const normalizeUserId = (value: string): string => {
-  const candidate = value.trim().toLowerCase();
-  if (/^[a-z0-9._=\/-]+$/.test(candidate)) return `@${candidate}:${SERVER_NAME}`;
-  if (/^@[a-z0-9._=\/-]+:matrix\.nealtheseal\.org$/.test(candidate)) return candidate;
-  throw new Error('Use a local Neal username or full Neal Matrix ID.');
-};
-
-const saveSession = (session: MatrixSession): void => {
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
-};
-
 const clearSession = (): void => {
-  sessionStorage.removeItem(SESSION_KEY);
   activeSession = null;
-};
-
-const readSession = (): MatrixSession | null => {
-  try {
-    const payload = asRecord(JSON.parse(sessionStorage.getItem(SESSION_KEY) ?? 'null'));
-    const session = {
-      accessToken: asString(payload.accessToken),
-      deviceId: asString(payload.deviceId),
-      userId: asString(payload.userId),
-    };
-    if (session.accessToken && session.deviceId && session.userId.endsWith(`:${SERVER_NAME}`)) return session;
-  } catch {
-    // Invalid tab state is discarded below.
-  }
-  sessionStorage.removeItem(SESSION_KEY);
-  return null;
 };
 
 const badge = (label: string, state: 'good' | 'warn' | 'bad' | 'neutral'): string => (
@@ -390,62 +357,61 @@ const renderHermes = (health: HermesHealth | null, events: MatrixStateEvent[]): 
   return state;
 };
 
-const refresh = async (): Promise<void> => {
-  if (!activeSession) return;
+const refresh = async (quietUnauthorized = false): Promise<void> => {
   refreshButton.disabled = true;
   setStatus('Refreshing the monitor…', 'working');
-  const session = activeSession;
-  const encodedRoom = encodeURIComponent(ROOM_ID);
-  const encodedAlias = encodeURIComponent(ROOM_ALIAS);
-  const encodedHealthType = encodeURIComponent(HERMES_HEALTH_TYPE);
-  const [usersResult, serverResult, aliasResult, stateResult, healthResult] = await Promise.all([
-    settle(requestJson<SynapseUsersResponse>('/_neal/admin/users', session)),
-    settle(requestJson<Record<string, unknown>>('/_neal/admin/server', session)),
-    settle(requestJson<Record<string, unknown>>(`/_matrix/client/v3/directory/room/${encodedAlias}`, session)),
-    settle(requestJson<MatrixStateEvent[]>(`/_matrix/client/v3/rooms/${encodedRoom}/state`, session)),
-    settle(requestJson<HermesHealth>(`/_matrix/client/v3/rooms/${encodedRoom}/state/${encodedHealthType}/${HERMES_HEALTH_KEY}`, session)),
-  ]);
+  try {
+    const payload = await requestJson<AdminSnapshot>('/_neal/admin/snapshot');
+    if (payload.schema !== 'neal.admin-snapshot/v1') throw new Error('The monitor returned an unsupported snapshot.');
+    const sessionPayload = asRecord(payload.session);
+    const userId = asString(sessionPayload.userId);
+    if (!userId.endsWith(`:${SERVER_NAME}`)) throw new Error('The monitor returned an invalid administrator session.');
+    const session = { schema: 'neal.admin-session/v1', userId };
+    activeSession = session;
+    showDashboard(session);
+    const users = asRecord(payload.users) as SynapseUsersResponse;
+    const server = asRecord(payload.server);
+    const alias = asRecord(payload.alias);
+    const events = Array.isArray(payload.state) ? payload.state.map((item) => asRecord(item) as MatrixStateEvent) : [];
+    const health = asRecord(payload.hermes) as HermesHealth;
 
-  if (!activeSession || activeSession.accessToken !== session.accessToken) return;
-  if (usersResult.value === null) {
-    const usersError = usersResult.error || 'Unknown account monitor error.';
-    if (/admin|forbidden|unauthor/i.test(usersError)) {
+    const accounts = renderAccounts(users);
+    required<HTMLElement>('#summary-accounts').textContent = String(accounts.active);
+    required<HTMLElement>('#summary-admins').textContent = `${accounts.admins} administrator${accounts.admins === 1 ? '' : 's'}`;
+
+    const serverVersion = asString(server.server_version);
+    required<HTMLElement>('#summary-server').textContent = 'Online';
+    required<HTMLElement>('#summary-version').textContent = serverVersion ? `Synapse ${serverVersion}` : 'Version not reported';
+
+    const memberSummary = renderMembers(events);
+    required<HTMLElement>('#summary-members').textContent = String(memberSummary.joined);
+    required<HTMLElement>('#summary-federated').textContent = `${memberSummary.federated} federated · ${memberSummary.knock} waiting`;
+
+    renderChecks(events, asString(alias.room_id));
+    const hermesState = renderHermes(health, events);
+    required<HTMLElement>('#summary-hermes').textContent = hermesState === 'online' ? 'Online' : hermesState === 'stale' ? 'Stale' : 'Offline';
+    required<HTMLElement>('#summary-heartbeat').textContent = asString(health.observed_at)
+      ? `Heartbeat ${relativeTime(asString(health.observed_at))}`
+      : 'No current heartbeat';
+
+    const updated = typeof payload.generatedAt === 'number'
+      ? new Date(payload.generatedAt * 1000).toISOString()
+      : new Date().toISOString();
+    required<HTMLElement>('#last-updated').textContent = `Last updated ${formatTime(updated)}`;
+    topbarStatus.textContent = `${session.userId} · MONITORING`;
+    setStatus('All requested monitoring data loaded.', 'good');
+    scheduleRefresh();
+  } catch (error) {
+    if (error instanceof RequestError && error.status === 401) {
       clearSession();
       showSignedOut();
+      if (!quietUnauthorized) setStatus('Administrator session expired. Sign in again.', 'bad');
+    } else {
+      setStatus(errorMessage(error), 'bad');
     }
-    setStatus(`Account monitor unavailable: ${usersError}`, 'bad');
+  } finally {
     refreshButton.disabled = false;
-    return;
   }
-
-  const accounts = renderAccounts(usersResult.value);
-  required<HTMLElement>('#summary-accounts').textContent = String(accounts.active);
-  required<HTMLElement>('#summary-admins').textContent = `${accounts.admins} administrator${accounts.admins === 1 ? '' : 's'}`;
-
-  const serverVersion = serverResult.value ? asString(serverResult.value.server_version) : '';
-  required<HTMLElement>('#summary-server').textContent = serverResult.error ? 'Check' : 'Online';
-  required<HTMLElement>('#summary-version').textContent = serverVersion ? `Synapse ${serverVersion}` : (serverResult.error || 'Version not reported');
-
-  const events = Array.isArray(stateResult.value) ? stateResult.value : [];
-  const memberSummary = renderMembers(events);
-  required<HTMLElement>('#summary-members').textContent = String(memberSummary.joined);
-  required<HTMLElement>('#summary-federated').textContent = `${memberSummary.federated} federated · ${memberSummary.knock} waiting`;
-
-  const aliasRoomId = aliasResult.value ? asString(aliasResult.value.room_id) : '';
-  renderChecks(events, aliasRoomId);
-  const hermesState = renderHermes(healthResult.value, events);
-  required<HTMLElement>('#summary-hermes').textContent = hermesState === 'online' ? 'Online' : hermesState === 'stale' ? 'Stale' : 'Offline';
-  required<HTMLElement>('#summary-heartbeat').textContent = healthResult.value && asString(healthResult.value.observed_at)
-    ? `Heartbeat ${relativeTime(asString(healthResult.value.observed_at))}`
-    : 'No current heartbeat';
-
-  const errors = [serverResult.error, aliasResult.error, stateResult.error].filter(Boolean);
-  const updated = new Date().toISOString();
-  required<HTMLElement>('#last-updated').textContent = `Last updated ${formatTime(updated)}`;
-  topbarStatus.textContent = `${session.userId} · ${errors.length ? 'REVIEW NEEDED' : 'MONITORING'}`;
-  setStatus(errors.length ? `${errors.length} monitor check${errors.length === 1 ? '' : 's'} need review.` : 'All requested monitoring data loaded.', errors.length ? 'bad' : 'good');
-  refreshButton.disabled = false;
-  scheduleRefresh();
 };
 
 const scheduleRefresh = (): void => {
@@ -454,7 +420,7 @@ const scheduleRefresh = (): void => {
   if (autoRefresh && activeSession) refreshTimer = window.setTimeout(() => void refresh(), REFRESH_MS);
 };
 
-const showDashboard = (session: MatrixSession): void => {
+const showDashboard = (session: BrokerSession): void => {
   activeSession = session;
   loginForm.hidden = true;
   dashboard.hidden = false;
@@ -469,61 +435,28 @@ const showSignedOut = (): void => {
   topbarStatus.textContent = 'SIGNED OUT';
 };
 
-const verifyAdministrator = async (session: MatrixSession): Promise<void> => {
-  try {
-    await requestJson<SynapseUsersResponse>('/_neal/admin/users', session);
-  } catch (error) {
-    if (error instanceof RequestError && [401, 403].includes(error.status)) {
-      throw new Error('This account does not have Neal administrator access.');
-    }
-    throw error;
-  }
-};
-
 loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   loginButton.disabled = true;
   let password = passwordInput.value;
-  let pendingSession: MatrixSession | null = null;
   try {
-    const userId = normalizeUserId(usernameInput.value);
-    setStatus('Signing in directly with the Neal Matrix homeserver…', 'working');
-    const response = await fetch(`${HOMESERVER}/_matrix/client/v3/login`, {
+    setStatus('Signing in through the protected Neal monitor…', 'working');
+    const session = await requestJson<BrokerSession>('/_neal/admin/session', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      cache: 'no-store',
       body: JSON.stringify({
-        type: 'm.login.password',
-        identifier: { type: 'm.id.user', user: userId },
+        schema: 'neal.admin-session-request/v1',
+        username: usernameInput.value.trim(),
         password,
-        initial_device_display_name: 'NEAL admin monitor',
       }),
     });
     password = '';
     passwordInput.value = '';
-    if (!response.ok) throw new RequestError(response.status, await readError(response));
-    const payload = asRecord(await response.json());
-    const session: MatrixSession = {
-      accessToken: asString(payload.access_token),
-      deviceId: asString(payload.device_id),
-      userId: asString(payload.user_id),
-    };
-    if (!session.accessToken || !session.deviceId || session.userId !== userId) throw new Error('Matrix returned an incomplete sign-in session.');
-    pendingSession = session;
-    setStatus('Confirming administrator access…', 'working');
-    await verifyAdministrator(session);
-    saveSession(session);
-    pendingSession = null;
+    if (session.schema !== 'neal.admin-session/v1' || !session.userId.endsWith(`:${SERVER_NAME}`)) {
+      throw new Error('The monitor returned an invalid administrator session.');
+    }
     showDashboard(session);
     await refresh();
   } catch (error) {
-    if (pendingSession) {
-      try {
-        await requestJson('/_matrix/client/v3/logout', pendingSession, { method: 'POST', body: '{}' });
-      } catch {
-        // A failed authorization attempt must not become a saved local session.
-      }
-    }
     setStatus(errorMessage(error), 'bad');
   } finally {
     password = '';
@@ -542,27 +475,17 @@ autoRefreshButton.addEventListener('click', () => {
 });
 
 logoutButton.addEventListener('click', async () => {
-  const session = activeSession;
   clearSession();
   showSignedOut();
-  setStatus('Signed out. This tab no longer holds an access token.', 'good');
-  if (!session) return;
+  setStatus('Signed out. The broker is revoking its Matrix session.', 'good');
   try {
-    await requestJson('/_matrix/client/v3/logout', session, { method: 'POST', body: '{}' });
+    await requestJson('/_neal/admin/session', { method: 'DELETE' });
   } catch {
-    // The local session is already cleared; remote logout failure is non-blocking.
+    // The opaque browser cookie is cleared by the broker even if Matrix is unavailable.
   }
 });
 
-const restored = readSession();
-if (restored) {
-  showDashboard(restored);
-  setStatus('Restoring this tab session…', 'working');
-  void verifyAdministrator(restored)
-    .then(() => refresh())
-    .catch((error: unknown) => {
-      clearSession();
-      showSignedOut();
-      setStatus(errorMessage(error), 'bad');
-    });
-}
+setStatus('Checking for an existing secure monitor session…', 'working');
+void refresh(true).then(() => {
+  if (!activeSession) setStatus('Sign in with the Beaver administrator account.', 'idle');
+});

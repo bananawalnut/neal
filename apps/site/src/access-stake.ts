@@ -20,11 +20,84 @@ import {
 } from '@solana/wallet-standard-features';
 import bs58 from 'bs58';
 import type { WalletIdentityController, WalletTransactionSession } from './wallet';
+import { getRuntimeConfig, manualRequestHeaders, refreshRuntimeReadiness } from './runtime-config';
 
 const CONFIG_DISCRIMINATOR = 'NEALACFG';
 const STAKE_DISCRIMINATOR = 'NEALSTAK';
-const NEAL_SERVER = 'matrix.nealtheseal.org';
+const NEAL_SERVER = getRuntimeConfig()?.matrix.serverName ?? 'matrix.nealtheseal.org';
+const MANUAL_BROWSER_WALLET = getRuntimeConfig()?.browserWallet ?? null;
 const UPGRADEABLE_LOADER_ID = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111');
+const ACCESS_OPERATION_KEY = 'neal.matrix-access-operation.v2';
+
+const resolveHolderProofEndpoint = (endpoint: string): string => {
+  if (!MANUAL_BROWSER_WALLET) return endpoint;
+  const acceptanceOrigin = 'https://localhost:4280';
+  const resolved = new URL(endpoint, window.location.origin);
+  if (
+    window.location.origin !== acceptanceOrigin
+    || resolved.origin !== acceptanceOrigin
+    || resolved.pathname !== '/_neal/devnet/rpc'
+    || resolved.search !== ''
+    || resolved.hash !== ''
+  ) {
+    throw new Error('The isolated devnet RPC route is not the reviewed same-origin gateway.');
+  }
+  return resolved.toString();
+};
+
+type AccessOperation = {
+  schema: 'neal.matrix-access-operation-tab/v1';
+  endpoint: string;
+  operationId: string;
+  receipt: string;
+};
+
+const saveAccessOperation = (value: AccessOperation): void => {
+  sessionStorage.setItem(ACCESS_OPERATION_KEY, JSON.stringify(value));
+};
+
+const readAccessOperation = (): AccessOperation | null => {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(ACCESS_OPERATION_KEY) ?? 'null') as Partial<AccessOperation> | null;
+    if (
+      value?.schema !== 'neal.matrix-access-operation-tab/v1'
+      || typeof value.endpoint !== 'string'
+      || typeof value.operationId !== 'string'
+      || typeof value.receipt !== 'string'
+    ) return null;
+    return value as AccessOperation;
+  } catch {
+    return null;
+  }
+};
+
+const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+const registrationStageEndpoint = (endpoint: string): string => {
+  const url = new URL(endpoint, window.location.origin);
+  url.pathname = url.pathname.replace(/\/v2\/access-token$/u, '/v2/registration-stage');
+  if (!url.pathname.endsWith('/v2/registration-stage')) throw new Error('Invalid account-access endpoint.');
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+};
+
+const reportRegistrationStage = async (stage: 'registration_in_progress' | 'registration_completed'): Promise<void> => {
+  const operation = readAccessOperation();
+  if (!operation) return;
+  const response = await fetch(registrationStageEndpoint(operation.endpoint), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...manualRequestHeaders() },
+    body: JSON.stringify({
+      schema: 'neal.matrix-registration-stage/v2',
+      operationId: operation.operationId,
+      stage,
+    }),
+  });
+  if (!response.ok && response.status !== 409) return;
+  if (stage === 'registration_completed') sessionStorage.removeItem(ACCESS_OPERATION_KEY);
+};
 
 type AccessStakePolicy = {
   status: 'planned' | 'active' | 'paused';
@@ -46,6 +119,7 @@ type AccessStakePolicy = {
 type WalletPolicy = {
   schema: 'neal.wallet-policy/v1';
   identity: { challengeEndpoint: string | null; verifyEndpoint: string | null };
+  verification: { mode: 'single-rpc-devnet-preview' | 'quorum-2-of-3'; providerCount: number; threshold: number };
   holderProof: { rpcEndpoint: string; commitment: 'confirmed' | 'finalized' };
   accessStake?: AccessStakePolicy;
 };
@@ -60,6 +134,18 @@ type ConfiguredPolicy = AccessStakePolicy & {
   issuerAuthority: string;
   requiredAtomicAmount: string;
   minimumLockSeconds: number;
+};
+
+type TokenOperationResponse = {
+  schema?: unknown;
+  state?: unknown;
+  operationId?: unknown;
+  receipt?: unknown;
+  token?: unknown;
+  expiresAt?: unknown;
+  retryAfterMs?: unknown;
+  code?: unknown;
+  message?: unknown;
 };
 
 type ConfigState = {
@@ -113,12 +199,21 @@ const validPublicKey = (value: string | null): boolean => {
   }
 };
 
+const assertExpectedWallet = (address: string): void => {
+  if (MANUAL_BROWSER_WALLET && address !== MANUAL_BROWSER_WALLET) {
+    throw new Error(`Wrong devnet wallet. Connect ${MANUAL_BROWSER_WALLET.slice(0, 6)}…${MANUAL_BROWSER_WALLET.slice(-6)} to continue.`);
+  }
+};
+
 const parseConfiguredPolicy = (walletPolicy: WalletPolicy, canonicalMint: string | null): ConfiguredPolicy | null => {
   const policy = walletPolicy.accessStake;
   if (!policy || policy.status === 'planned') return null;
   try {
     if (
       !['active', 'paused'].includes(policy.status)
+      || walletPolicy.verification?.mode !== 'quorum-2-of-3'
+      || walletPolicy.verification?.providerCount !== 3
+      || walletPolicy.verification?.threshold !== 2
       || policy.contractVersion !== 2
       || !validPublicKey(policy.programId)
       || !validPublicKey(policy.programDataAddress)
@@ -288,7 +383,7 @@ const sendInstructions = async (
   instructions: TransactionInstruction[],
 ): Promise<string> => {
   const payer = new PublicKey(session.account.address);
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
   const message = new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions }).compileToV0Message();
   const transaction = new VersionedTransaction(message);
   const wire = transaction.serialize();
@@ -297,7 +392,7 @@ const sendInstructions = async (
     | undefined;
   let signature: string;
 
-  if (sendFeature && session.account.features.includes(SolanaSignAndSendTransaction)) {
+  if (!MANUAL_BROWSER_WALLET && sendFeature && session.account.features.includes(SolanaSignAndSendTransaction)) {
     const output = (await sendFeature.signAndSendTransaction({
       account: session.account,
       transaction: wire,
@@ -325,6 +420,25 @@ const sendInstructions = async (
     });
   }
 
+  if (MANUAL_BROWSER_WALLET) {
+    const wallDeadline = Date.now() + 120_000;
+    while (Date.now() < wallDeadline) {
+      const statuses = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      const status = statuses.value[0];
+      if (status?.err) throw new Error(`Stake transaction failed: ${JSON.stringify(status.err)}`);
+      if (status?.confirmationStatus === 'finalized') return signature;
+      const finalizedHeight = await connection.getBlockHeight('finalized');
+      if (finalizedHeight > lastValidBlockHeight) {
+        const finalStatuses = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+        const finalStatus = finalStatuses.value[0];
+        if (finalStatus?.err) throw new Error(`Stake transaction failed: ${JSON.stringify(finalStatus.err)}`);
+        if (finalStatus?.confirmationStatus === 'finalized') return signature;
+        throw new Error('Stake transaction expired before finalized quorum confirmation. Re-read the receipt before retrying.');
+      }
+      await delay(500);
+    }
+    throw new Error('Stake transaction finality remained unavailable. Re-read the receipt before retrying.');
+  }
   const confirmation = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'finalized');
   if (confirmation.value.err) throw new Error(`Stake transaction failed: ${JSON.stringify(confirmation.value.err)}`);
   return signature;
@@ -448,7 +562,10 @@ export async function mountMatrixAccessStake(
   const configAddress = new PublicKey(policy.configAddress);
   const mint = new PublicKey(policy.mint);
   const requiredAmount = BigInt(policy.requiredAtomicAmount);
-  const connection = new Connection(walletPolicy.holderProof.rpcEndpoint, 'finalized');
+  const connection = new Connection(resolveHolderProofEndpoint(walletPolicy.holderProof.rpcEndpoint), {
+    commitment: 'finalized',
+    httpHeaders: manualRequestHeaders(),
+  });
   let receipt: ReceiptState | null = null;
   let rendering = false;
   let accessPaused = policy.status === 'paused';
@@ -460,11 +577,15 @@ export async function mountMatrixAccessStake(
       programAttested = true;
     }
     const state = await readConfig(connection, program, configAddress);
+    const expectedRevision = BigInt(policy.configRevision);
+    const drainingPause = Boolean(
+      MANUAL_BROWSER_WALLET && allowPaused && state.paused && state.revision === expectedRevision + 1n
+    );
     if (
       !state.mint.equals(mint)
       || !state.tokenProgram.equals(TOKEN_2022_PROGRAM_ID)
       || !state.issuerAuthority.equals(new PublicKey(policy.issuerAuthority))
-      || state.revision !== BigInt(policy.configRevision)
+      || (state.revision !== expectedRevision && !drainingPause)
       || state.requiredAmount !== requiredAmount
       || state.minimumLockSeconds !== policy.minimumLockSeconds
     ) throw new Error('Published stake terms do not match the finalized on-chain config.');
@@ -503,6 +624,20 @@ export async function mountMatrixAccessStake(
         accessPaused
           ? 'New staking and token claims are paused. Connect only to check or recover an existing stake.'
           : 'Connect the wallet that will own and recover the stake.',
+      );
+      syncRegistrationGate();
+      rendering = false;
+      return;
+    }
+    if (MANUAL_BROWSER_WALLET && authentication.address !== MANUAL_BROWSER_WALLET) {
+      receipt = null;
+      ui.walletButton.hidden = false;
+      ui.walletButton.textContent = 'SELECT TEST WALLET';
+      registrationBlockLabel = 'WRONG DEVNET WALLET';
+      setStatus(
+        ui,
+        `Wrong devnet wallet. Connect ${MANUAL_BROWSER_WALLET.slice(0, 6)}…${MANUAL_BROWSER_WALLET.slice(-6)}. No transaction was constructed.`,
+        'bad',
       );
       syncRegistrationGate();
       rendering = false;
@@ -562,6 +697,11 @@ export async function mountMatrixAccessStake(
 
   ui.walletButton.addEventListener('click', () => {
     void (async () => {
+      const authentication = walletController.getAuthenticationState();
+      if (MANUAL_BROWSER_WALLET && authentication.address && authentication.address !== MANUAL_BROWSER_WALLET) {
+        walletController.openWalletPicker();
+        return;
+      }
       if (accessPaused && !walletController.getAuthenticationState().connected) {
         walletController.openWalletPicker();
         return;
@@ -587,8 +727,10 @@ export async function mountMatrixAccessStake(
       ui.stakeButton.disabled = true;
       setStatus(ui, 'Checking finalized terms and preparing the refundable stake…', 'busy');
       try {
+        await refreshRuntimeReadiness();
         const configState = await assertConfig();
         const staker = new PublicKey(session.account.address);
+        assertExpectedWallet(staker.toBase58());
         const receiptKey = receiptAddress(program, configAddress, staker);
         const sourceAccounts = await connection.getParsedTokenAccountsByOwner(staker, { mint }, 'finalized');
         const source = sourceAccounts.value.find(({ account }) => {
@@ -649,8 +791,10 @@ export async function mountMatrixAccessStake(
       }
       ui.claimButton.disabled = true;
       try {
+        await refreshRuntimeReadiness();
         await assertConfig();
         const staker = new PublicKey(session.account.address);
+        assertExpectedWallet(staker.toBase58());
         receipt = await readReceipt(connection, program, configAddress, staker);
         if (!receipt || receipt.released) throw new Error('No active stake receipt is available.');
         if (receipt.claimedAt === 0) {
@@ -667,22 +811,64 @@ export async function mountMatrixAccessStake(
           });
           await sendInstructions(connection, session, [claim]);
         }
-        setStatus(ui, 'Finalized claim found. Creating one short-lived registration token…', 'busy');
-        const tokenResponse = await fetch(policy.tokenEndpoint, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v1' }),
-        });
-        const body = await tokenResponse.json() as { token?: unknown; error?: unknown };
-        if (tokenResponse.status === 401) {
-          walletController.invalidateServerAuthentication();
-          throw new Error('Wallet session expired. Verify the wallet again; the stake will not be repeated.');
+        setStatus(ui, 'Finalized claim found. Recovering the registration operation…', 'busy');
+        let ready: TokenOperationResponse | null = null;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const tokenResponse = await fetch(policy.tokenEndpoint, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json', ...manualRequestHeaders() },
+            body: JSON.stringify({ schema: 'neal.matrix-access-token-request/v2' }),
+          });
+          const body = await tokenResponse.json() as TokenOperationResponse;
+          if (tokenResponse.status === 401) {
+            walletController.invalidateServerAuthentication();
+            throw new Error('Wallet session expired. Verify the wallet again; the stake will not be repeated.');
+          }
+          if (
+            tokenResponse.status === 202
+            && body.state === 'processing'
+            && typeof body.operationId === 'string'
+            && typeof body.receipt === 'string'
+          ) {
+            saveAccessOperation({
+              schema: 'neal.matrix-access-operation-tab/v1',
+              endpoint: policy.tokenEndpoint,
+              operationId: body.operationId,
+              receipt: body.receipt,
+            });
+            const headerSeconds = Number(tokenResponse.headers.get('Retry-After'));
+            const bodyDelay = typeof body.retryAfterMs === 'number' ? body.retryAfterMs : 2_000;
+            const wait = Number.isFinite(headerSeconds) && headerSeconds > 0
+              ? headerSeconds * 1_000
+              : bodyDelay;
+            setStatus(ui, 'The claim is safely processing. Waiting for finalized recovery…', 'busy');
+            await delay(Math.min(8_000, Math.max(500, wait * 2 ** Math.min(attempt, 2))));
+            continue;
+          }
+          if (
+            tokenResponse.ok
+            && body.state === 'token_ready'
+            && typeof body.token === 'string'
+            && body.token
+            && typeof body.operationId === 'string'
+            && typeof body.receipt === 'string'
+          ) {
+            saveAccessOperation({
+              schema: 'neal.matrix-access-operation-tab/v1',
+              endpoint: policy.tokenEndpoint,
+              operationId: body.operationId,
+              receipt: body.receipt,
+            });
+            ready = body;
+            break;
+          }
+          throw new Error(typeof body.message === 'string' ? body.message : 'The access-token issuer rejected this receipt.');
         }
-        if (!tokenResponse.ok || typeof body.token !== 'string' || !body.token) {
-          throw new Error(typeof body.error === 'string' ? body.error : 'The access-token issuer rejected this receipt.');
+        if (!ready || typeof ready.token !== 'string') {
+          throw new Error('The claim is still processing. Use GET ACCESS TOKEN again; the stake will not be repeated.');
         }
-        ui.tokenInput.value = body.token;
+        ui.tokenInput.value = ready.token;
         ui.tokenInput.dispatchEvent(new Event('input', { bubbles: true }));
         setStatus(ui, 'One-use access token ready. Choose a username and password to create the account.', 'good');
       } catch (error) {
@@ -701,7 +887,10 @@ export async function mountMatrixAccessStake(
       ui.releaseButton.disabled = true;
       setStatus(ui, 'Preparing the full stake refund…', 'busy');
       try {
+        const configState = await assertConfig(true);
+        if (!configState.paused) await refreshRuntimeReadiness();
         const staker = new PublicKey(session.account.address);
+        assertExpectedWallet(staker.toBase58());
         receipt = await readReceipt(connection, program, configAddress, staker);
         if (!receipt || receipt.released) throw new Error('No active stake is available to release.');
         if (Math.floor(Date.now() / 1000) < receipt.unlockAt) throw new Error('The minimum lock has not ended yet.');
@@ -739,5 +928,11 @@ export async function mountMatrixAccessStake(
 
   ui.domainInput.addEventListener('input', () => void render());
   document.addEventListener('neal:wallet-session-change', () => void render());
+  document.addEventListener('neal:matrix-registration-stage', (event) => {
+    const stage = (event as CustomEvent<{ stage?: unknown }>).detail?.stage;
+    if (stage === 'registration_in_progress' || stage === 'registration_completed') {
+      void reportRegistrationStage(stage);
+    }
+  });
   await render();
 }

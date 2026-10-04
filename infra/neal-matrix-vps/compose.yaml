@@ -55,6 +55,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - /run/neal-access-issuer:/run/neal-access-issuer:ro
+      - /run/neal-admin-monitor:/run/neal-admin-monitor:ro
       - caddy-data:/data
       - caddy-config:/config
     read_only: true
