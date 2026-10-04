@@ -767,7 +767,7 @@ test('CI artifacts bind to the exact pull-request head rather than the synthetic
   const workflow = await fs.readFile(path.join(process.cwd(), '.github/workflows/ci.yml'), 'utf8');
   assert.equal(
     workflow.match(/ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/gu)?.length,
-    4,
+    5,
   );
   assert.match(workflow, /--commit "\$\(git rev-parse HEAD\)"/u);
   assert.doesNotMatch(workflow, /--commit "\$GITHUB_SHA"/u);
