@@ -21,6 +21,7 @@ import {
 } from '@solana/wallet-standard-features';
 import { createSignInMessage, verifySignIn, verifySignMessage } from '@solana/wallet-standard-util';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { validatePhantomSignedTransaction } from './phantom-transaction';
 import { manualRequestHeaders } from './runtime-config';
 
 type WalletPolicy = {
@@ -250,8 +251,15 @@ export const createInjectedPhantomWallet = (provider: PhantomProvider): Wallet =
               throw new Error('Phantom was asked to sign for an unsupported Solana chain');
             }
             const transaction = VersionedTransaction.deserialize(new Uint8Array(input.transaction));
+            const expectedMessage = new Uint8Array(transaction.message.serialize());
             const signed = await provider.signTransaction(transaction);
-            outputs.push({ signedTransaction: new Uint8Array(signed.serialize()) });
+            const signedWire = new Uint8Array(signed.serialize());
+            const validatedWire = await validatePhantomSignedTransaction(
+              expectedMessage,
+              signedWire,
+              new Uint8Array(input.account.publicKey),
+            );
+            outputs.push({ signedTransaction: validatedWire });
           }
           return outputs;
         },

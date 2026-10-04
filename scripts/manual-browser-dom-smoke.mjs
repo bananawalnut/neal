@@ -192,6 +192,7 @@ try {
   await send('Runtime.enable');
   await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    window.__nealWalletSmoke = { fallbackConnects: 0, legacyConnects: 0, nativeConnects: 0 };
     const listeners = new Map();
     const publicKey = {
       toBase58: () => ${JSON.stringify(KEY)},
@@ -211,6 +212,7 @@ try {
         listeners.set(event, values);
       },
       async connect() {
+        window.__nealWalletSmoke.fallbackConnects += 1;
         this.isConnected = true;
         this.publicKey = publicKey;
         emit('connect', publicKey);
@@ -224,6 +226,17 @@ try {
       async signMessage(message) { return { signature: new Uint8Array(64), publicKey }; },
       async signTransaction(transaction) { return transaction; }
     };
+    Object.defineProperty(window, 'solana', {
+      configurable: true,
+      value: {
+        isPhantom: true,
+        async connect() { window.__nealWalletSmoke.legacyConnects += 1; return { publicKey }; },
+        async disconnect() {},
+        async signMessage() { throw new Error('window.solana must never be used'); },
+        async signTransaction() { throw new Error('window.solana must never be used'); },
+        on() {}
+      }
+    });
     Object.defineProperty(window, 'phantom', { configurable: true, value: { solana: provider } });
   })();` });
   await send('Page.navigate', { url: 'https://localhost:4280/#gc' });
@@ -288,8 +301,82 @@ try {
     }
     return connection;
   });
+  const fallbackCounters = await send('Runtime.evaluate', {
+    expression: 'JSON.stringify(window.__nealWalletSmoke)', returnByValue: true,
+  });
+  assert.deepEqual(JSON.parse(fallbackCounters.result.value), {
+    fallbackConnects: 1, legacyConnects: 0, nativeConnects: 0,
+  });
+
+  const nativeRegistered = await send('Runtime.evaluate', {
+    expression: `(() => {
+      const publicKey = new Uint8Array(32);
+      const account = Object.freeze({
+        address: ${JSON.stringify(KEY)},
+        publicKey,
+        chains: Object.freeze(['solana:devnet']),
+        features: Object.freeze(['solana:signMessage', 'solana:signTransaction']),
+        label: 'Native Phantom'
+      });
+      let accounts = [];
+      const listeners = new Set();
+      const native = Object.freeze({
+        version: '1.0.0',
+        name: 'Phantom',
+        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
+        chains: Object.freeze(['solana:devnet']),
+        get accounts() { return accounts; },
+        features: Object.freeze({
+          'standard:connect': Object.freeze({
+            version: '1.0.0',
+            connect: async () => {
+              window.__nealWalletSmoke.nativeConnects += 1;
+              accounts = Object.freeze([account]);
+              for (const listener of listeners) listener({ accounts });
+              return { accounts };
+            }
+          }),
+          'standard:events': Object.freeze({
+            version: '1.0.0',
+            on: (_event, listener) => { listeners.add(listener); return () => listeners.delete(listener); }
+          }),
+          'solana:signMessage': Object.freeze({ version: '1.1.0', signMessage: async () => [] }),
+          'solana:signTransaction': Object.freeze({
+            version: '1.0.0', supportedTransactionVersions: Object.freeze(['legacy', 0]), signTransaction: async () => []
+          })
+        })
+      });
+      window.dispatchEvent(new CustomEvent('wallet-standard:register-wallet', {
+        detail: ({ register }) => register(native)
+      }));
+      return true;
+    })()`, returnByValue: true,
+  });
+  assert.equal(nativeRegistered.result.value, true);
+  const native = await waitFor(async () => {
+    const selected = await send('Runtime.evaluate', {
+      expression: `(() => {
+        document.querySelector('#wallet-button')?.click();
+        const choices = [...document.querySelectorAll('#wallet-list .wallet-choice')];
+        const phantoms = choices.filter((candidate) => candidate.textContent?.includes('Phantom'));
+        if (phantoms.length !== 1) return JSON.stringify({ selected: false, count: phantoms.length });
+        phantoms[0].click();
+        return JSON.stringify({ selected: true, count: phantoms.length });
+      })()`, returnByValue: true,
+    });
+    const selection = JSON.parse(selected.result.value);
+    if (!selection.selected) throw new Error(`Native Phantom did not displace fallback: ${JSON.stringify(selection)}`);
+    const counters = await send('Runtime.evaluate', {
+      expression: 'JSON.stringify(window.__nealWalletSmoke)', returnByValue: true,
+    });
+    const value = JSON.parse(counters.result.value);
+    if (value.nativeConnects !== 1) throw new Error(`Native Phantom was not selected: ${JSON.stringify(value)}`);
+    return value;
+  });
+  assert.deepEqual(native, { fallbackConnects: 1, legacyConnects: 0, nativeConnects: 1 });
   console.log(JSON.stringify({
     schema: 'neal.devnet-browser-dom-smoke/v1', sourceCommit, status: 'passed', phantom: phantom.provider,
+    fallback: 'verified', nativePrecedence: 'verified', legacyGlobalIgnored: 'verified',
   }));
 } finally {
   try { socket?.close(); } catch {}
