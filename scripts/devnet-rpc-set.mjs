@@ -164,6 +164,85 @@ const settled = async (endpoints, operation) => Promise.all(endpoints.map(async 
   }
 }));
 
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export async function quorumFinalizedBalance(
+  rpcSet,
+  address,
+  { call = rpcCall } = {},
+) {
+  const results = await settled(rpcSet.endpoints, async (endpoint) => {
+    const result = await call(endpoint, 'getBalance', [String(address), { commitment: 'finalized' }]);
+    const balance = result?.value;
+    if (!Number.isSafeInteger(balance) || balance < 0) throw new Error('RPC returned an invalid finalized balance');
+    return balance;
+  });
+  const groups = new Map();
+  for (const result of results) {
+    if (!Number.isSafeInteger(result.value)) continue;
+    const group = groups.get(result.value) ?? [];
+    group.push(result.endpoint.id);
+    groups.set(result.value, group);
+  }
+  const agreement = [...groups.entries()].find(([, providers]) => providers.length >= rpcSet.threshold);
+  if (!agreement) throw new Error('Independent RPCs do not agree on the finalized account balance');
+  return { balance: agreement[0], agreeingProviderIds: agreement[1].sort() };
+}
+
+export async function fundDevnetAccount(
+  rpcSet,
+  address,
+  targetLamports,
+  {
+    call = rpcCall,
+    wait = sleep,
+    attempts = 12,
+    pollsPerAttempt = 15,
+    maximumAirdropLamports = 1_000_000_000,
+  } = {},
+) {
+  if (!Number.isSafeInteger(targetLamports) || targetLamports <= 0) {
+    throw new Error('Devnet funding target is invalid');
+  }
+  const account = String(address);
+  let observed = await quorumFinalizedBalance(rpcSet, account, { call });
+  for (let attempt = 0; attempt < attempts && observed.balance < targetLamports; attempt += 1) {
+    const amount = Math.min(maximumAirdropLamports, targetLamports - observed.balance);
+    let requested = false;
+    for (let offset = 0; offset < rpcSet.endpoints.length; offset += 1) {
+      const endpoint = rpcSet.endpoints[(attempt + offset) % rpcSet.endpoints.length];
+      try {
+        const signature = await call(endpoint, 'requestAirdrop', [account, amount, { commitment: 'finalized' }]);
+        if (typeof signature !== 'string' || signature.length < 32) throw new Error('RPC returned an invalid airdrop signature');
+        requested = true;
+        break;
+      } catch {
+        // Devnet faucets are best-effort. Rotate providers without exposing endpoint details.
+      }
+    }
+    if (!requested) {
+      await wait(3_000);
+      continue;
+    }
+    const priorBalance = observed.balance;
+    for (let poll = 0; poll < pollsPerAttempt; poll += 1) {
+      await wait(2_000);
+      try {
+        observed = await quorumFinalizedBalance(rpcSet, account, { call });
+        if (observed.balance >= targetLamports) return observed;
+        if (observed.balance > priorBalance) break;
+      } catch {
+        // Finalized 2-of-3 agreement may lag a successful faucet response.
+      }
+    }
+  }
+  observed = await quorumFinalizedBalance(rpcSet, account, { call });
+  if (observed.balance < targetLamports) {
+    throw new Error('Devnet faucets could not fund the disposable account with finalized 2-of-3 agreement');
+  }
+  return observed;
+}
+
 export async function establishDevnetAgreement(rpcSet) {
   const genesisResults = await settled(rpcSet.endpoints, (endpoint) => rpcCall(endpoint, 'getGenesisHash'));
   const canonical = genesisResults.filter((entry) => entry.value === DEVNET_GENESIS).map((entry) => entry.endpoint);

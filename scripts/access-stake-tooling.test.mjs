@@ -23,7 +23,13 @@ import { expectProgramError, matrixAttempt, parseCli, validateReview } from './r
 import { buildSbfCommand, buildSbfEnvironment } from './reproduce-access-stake-release.mjs';
 import { createProposalManifest, validateProposalManifest } from './squads-access-authority.mjs';
 import { validateProductionReview } from './verify-production-review.mjs';
-import { establishDevnetAgreement, rpcCall, validateRpcSetCredential } from './devnet-rpc-set.mjs';
+import {
+  establishDevnetAgreement,
+  fundDevnetAccount,
+  quorumFinalizedBalance,
+  rpcCall,
+  validateRpcSetCredential,
+} from './devnet-rpc-set.mjs';
 import {
   MANUAL_RUNTIME_SCHEMA,
   MANUAL_LEASE_SECONDS,
@@ -40,7 +46,9 @@ import {
   processAlive,
   reviewSignaturePayload,
   validateDockerImageId,
+  validatePrepareRecoveryMarker,
   validateSignedIsolatedReview,
+  waitForCleanReconciliation,
 } from './manual-devnet.mjs';
 
 const SHA = 'a'.repeat(64);
@@ -157,6 +165,83 @@ test('manual issuer image identity accepts one exact Docker digest only', () => 
   assert.throws(() => validateDockerImageId(''), /image ID is invalid/u);
   assert.throws(() => validateDockerImageId(`${imageId}\n${imageId}`), /image ID is invalid/u);
   assert.throws(() => validateDockerImageId(`sha256:${'A'.repeat(64)}`), /image ID is invalid/u);
+});
+
+test('manual preparation recovery marker is exact', () => {
+  const runtime = path.join(os.tmpdir(), COMMIT);
+  const marker = {
+    schema: 'neal.devnet-manual-prepare-recovery/v1',
+    sourceCommit: COMMIT,
+    failedAt: '2026-10-04T00:00:00.000Z',
+    status: 'operator_recovery_required',
+  };
+  assert.equal(validatePrepareRecoveryMarker(marker, runtime), marker);
+  assert.throws(
+    () => validatePrepareRecoveryMarker({ ...marker, status: 'prepared' }, runtime),
+    /unsupported/u,
+  );
+});
+
+test('manual devnet funding rotates providers and requires finalized 2-of-3 balance', async () => {
+  const rpcSet = {
+    threshold: 2,
+    endpoints: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  };
+  let balance = 0;
+  const requests = [];
+  const call = async (endpoint, method, params) => {
+    if (method === 'getBalance') return { value: endpoint.id === 'c' ? Math.max(0, balance - 1) : balance };
+    if (method === 'requestAirdrop') {
+      requests.push(endpoint.id);
+      if (endpoint.id === 'a') throw new Error('faucet unavailable');
+      balance += params[1];
+      return 's'.repeat(64);
+    }
+    throw new Error('unexpected method');
+  };
+  const funded = await fundDevnetAccount(rpcSet, KEY, 2_000_000_000, {
+    call, wait: async () => {}, attempts: 4, pollsPerAttempt: 2,
+  });
+  assert.equal(funded.balance, 2_000_000_000);
+  assert.deepEqual(funded.agreeingProviderIds, ['a', 'b']);
+  assert.deepEqual(requests, ['a', 'b', 'b']);
+});
+
+test('manual devnet balance fails closed without two matching providers', async () => {
+  const rpcSet = {
+    threshold: 2,
+    endpoints: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  };
+  await assert.rejects(
+    () => quorumFinalizedBalance(rpcSet, KEY, {
+      call: async (endpoint) => ({ value: { a: 1, b: 2, c: 3 }[endpoint.id] }),
+    }),
+    /do not agree/u,
+  );
+});
+
+test('manual teardown waits for two clean reconciliation observations', async () => {
+  const observations = [
+    { incomplete: [], administrators: [{ state: 'CREATE_REQUESTED' }] },
+    { incomplete: [], administrators: [] },
+    { incomplete: [], administrators: [] },
+  ];
+  let reads = 0;
+  const result = await waitForCleanReconciliation({
+    read: async () => observations[Math.min(reads++, observations.length - 1)],
+    wait: async () => {},
+    attempts: 3,
+  });
+  assert.deepEqual(result, { incomplete: [], administrators: [] });
+  assert.equal(reads, 3);
+  await assert.rejects(
+    () => waitForCleanReconciliation({
+      read: async () => ({ incomplete: [], administrators: [{ state: 'RECONCILIATION_REQUIRED' }] }),
+      wait: async () => {},
+      attempts: 2,
+    }),
+    /remains incomplete/u,
+  );
 });
 
 test('manual acceptance port preflight reports an occupied listener without stopping it', async () => {

@@ -33,7 +33,12 @@ import {
   validateManualReadiness,
   validateManualPublicRuntime,
 } from './manual-devnet-contracts.mjs';
-import { establishDevnetAgreement, loadRpcSetCredential, rpcCall } from './devnet-rpc-set.mjs';
+import {
+  establishDevnetAgreement,
+  fundDevnetAccount,
+  loadRpcSetCredential,
+  rpcCall,
+} from './devnet-rpc-set.mjs';
 import { DEVNET_GENESIS, PRODUCTION_LOCK_SECONDS, assertPublicEvidence, readAndValidateReleaseManifest, sha256File } from './access-stake-contracts.mjs';
 import { extractManualBrowserBundle, validateManualBrowserBundle } from './manual-browser-bundle.mjs';
 import {
@@ -43,7 +48,6 @@ import {
   configCommand,
   dockerSolana,
   fundSigners,
-  fundWithAirdrop,
   pauseCommand,
   renderSynapse,
   run,
@@ -68,11 +72,12 @@ const CHROME = '/Applications/Google Chrome.app';
 const REVIEW_SIGNATURE_SCHEMA = 'neal.access-stake-isolated-review-signature/v2';
 const REVIEWER_IDENTITY = 'neal-independent-reviewer:ed25519:sha256:676df1e3181d1541bf6351a7dae066fb19370b94161f0b5b9006e99db15edbed';
 const REVIEWER_PUBLIC_KEY_SHA256 = '676df1e3181d1541bf6351a7dae066fb19370b94161f0b5b9006e99db15edbed';
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const parseCli = (argv) => {
   const command = argv[0];
-  if (!['doctor', 'prepare', 'start', 'verify', 'status', 'fault', 'stop', 'guardian'].includes(command)) {
-    throw new Error('Usage: manual-devnet <doctor|prepare|start|verify|status|fault|stop> [options]');
+  if (!['doctor', 'prepare', 'recover-prepare', 'start', 'verify', 'status', 'fault', 'stop', 'guardian'].includes(command)) {
+    throw new Error('Usage: manual-devnet <doctor|prepare|recover-prepare|start|verify|status|fault|stop> [options]');
   }
   const options = { command, execute: false, acknowledgeDevnet: false, acknowledgeCertificateTrusted: false };
   for (let index = 1; index < argv.length; index += 1) {
@@ -486,6 +491,115 @@ const createManualMint = async (connection, deployer, browserWallet) => {
   return mint;
 };
 
+const completeManualPreparation = async ({
+  runtime,
+  project,
+  head,
+  rpcSet,
+  agreement,
+  browserWallet,
+  release,
+  signedReview,
+  browserArtifactDirectory,
+  browserArtifactSha256,
+  certificate,
+  issuerImageId,
+  evidenceManifest,
+  evidenceArtifact,
+  evidenceReview,
+  evidenceSignature,
+  evidenceIssuerBundle,
+  evidenceBrowserBundle,
+  deployer,
+  issuer,
+  program,
+}) => {
+  const rpcSetFile = path.join(runtime, 'solana-rpc-set.json');
+  const primaryRpc = rpcSet.endpoints[0].url;
+  await writePrivate(path.join(runtime, 'solana-cli.yml'), [
+    '---', `json_rpc_url: ${JSON.stringify(primaryRpc)}`, "websocket_url: ''",
+    'keypair_path: /rehearsal/deployer.json', 'address_labels:', '  {}', 'commitment: finalized', '',
+  ].join('\n'));
+  const connection = new Connection(primaryRpc, 'finalized');
+  await fundDevnetAccount(rpcSet, deployer.publicKey, 4 * LAMPORTS_PER_SOL);
+  await fundSigners(connection, deployer, [issuer]);
+  await fundDevnetAccount(rpcSet, browserWallet, Math.floor(0.25 * LAMPORTS_PER_SOL));
+  await dockerSolana(runtime, release.artifactFile, [
+    'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'deploy', `/release/${path.basename(release.artifactFile)}`,
+    '--program-id', '/rehearsal/program.json', '--upgrade-authority', '/rehearsal/deployer.json',
+    '--keypair', '/rehearsal/deployer.json', '--commitment', 'finalized',
+  ], { failure: 'Manual devnet program deployment failed' });
+  const programId = program.publicKey;
+  const [programData] = PublicKey.findProgramAddressSync([programId.toBuffer()], UPGRADEABLE_LOADER);
+  await dockerSolana(runtime, release.artifactFile, [
+    'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'set-upgrade-authority', programId.toBase58(), '--final',
+    '--upgrade-authority', '/rehearsal/deployer.json', '--keypair', '/rehearsal/deployer.json', '--commitment', 'finalized',
+  ], { failure: 'Could not revoke the manual devnet program upgrade authority' });
+  await dockerSolana(runtime, release.artifactFile, [
+    'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'dump', programId.toBase58(), '/rehearsal/deployed.so',
+  ], { failure: 'Could not dump the immutable manual devnet program' });
+  if (await sha256File(path.join(runtime, 'deployed.so')) !== release.manifest.artifact.sha256) {
+    throw new Error('Manual devnet deployed bytes differ from the release artifact');
+  }
+  const programHash = await attestProgram(connection, programId, programData, release.manifest.artifact.sha256);
+  const mint = await createManualMint(connection, deployer, browserWallet);
+  const parityConfig = await configCommand({
+    runtime, artifactFile: release.artifactFile, rpcSetFile, programId, programData, hash: programHash,
+    mint, deployer, issuer, configId: 0, amount: MANUAL_AMOUNT, lock: PRODUCTION_LOCK_SECONDS,
+  });
+  const manualConfig = await configCommand({
+    runtime, artifactFile: release.artifactFile, rpcSetFile, programId, programData, hash: programHash,
+    mint, deployer, issuer, configId: 1, amount: MANUAL_AMOUNT, lock: MANUAL_LOCK_SECONDS,
+  });
+  const state = {
+    schema: MANUAL_STATE_SCHEMA,
+    mode: MANUAL_MODE,
+    status: 'prepared',
+    sourceCommit: head,
+    preparedAt: new Date().toISOString(),
+    runtime,
+    project,
+    processNonce: randomBytes(16).toString('hex'),
+    rpcSetFile,
+    requestNonce: randomBytes(32).toString('hex'),
+    browserArtifact: {
+      directory: browserArtifactDirectory,
+      sha256: browserArtifactSha256,
+      bundleSha256: signedReview.browserBundle.sha256,
+    },
+    releaseEvidence: {
+      manifest: evidenceManifest,
+      artifact: evidenceArtifact,
+      review: evidenceReview,
+      signature: evidenceSignature,
+      issuerBundle: evidenceIssuerBundle,
+      browserBundle: evidenceBrowserBundle,
+    },
+    browserWallet: browserWallet.toBase58(),
+    programId: programId.toBase58(),
+    programDataAddress: programData.toBase58(),
+    programSha256: programHash,
+    mint: mint.toBase58(),
+    issuerAuthority: issuer.publicKey.toBase58(),
+    parityConfigAddress: parityConfig.address.toBase58(),
+    manualConfigAddress: manualConfig.address.toBase58(),
+    configRevision: '0',
+    roomId: null,
+    expiresAt: null,
+    pids: {},
+    certificate,
+    issuerImageId,
+    reviewSha256: await sha256File(signedReview.reviewPath),
+    reviewSignatureSha256: await sha256File(signedReview.signaturePath),
+    reviewerPublicKeySha256: signedReview.publicKeySha256,
+    finalizedAgreement: agreement,
+    reviewSchema: signedReview.review.schema,
+    reviewSignatureSchema: signedReview.envelope.schema,
+  };
+  await writeState(runtime, state);
+  return state;
+};
+
 const verifyTrustedCertificate = async (state) => run('/usr/bin/security', [
   'verify-cert', '-c', state.certificate.certificate, '-p', 'ssl', '-n', 'localhost', '-L', '-q',
   '-k', path.join(os.homedir(), 'Library/Keychains/login.keychain-db'),
@@ -634,89 +748,13 @@ const prepare = async (options) => {
       capture: true, failure: 'Could not identify the exact manual issuer image',
     }));
     await buildToolchain();
-    const primaryRpc = rpcSet.endpoints[0].url;
-    await writePrivate(path.join(runtime, 'solana-cli.yml'), [
-      '---', `json_rpc_url: ${JSON.stringify(primaryRpc)}`, "websocket_url: ''",
-      'keypair_path: /rehearsal/deployer.json', 'address_labels:', '  {}', 'commitment: finalized', '',
-    ].join('\n'));
-    const connection = new Connection(primaryRpc, 'finalized');
     chainWritesStarted = true;
-    await fundWithAirdrop(connection, deployer.publicKey, 4 * LAMPORTS_PER_SOL);
-    await fundSigners(connection, deployer, [issuer]);
-    await fundWithAirdrop(connection, browserWallet, Math.floor(0.25 * LAMPORTS_PER_SOL));
-    await dockerSolana(runtime, release.artifactFile, [
-      'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'deploy', `/release/${path.basename(release.artifactFile)}`,
-      '--program-id', '/rehearsal/program.json', '--upgrade-authority', '/rehearsal/deployer.json',
-      '--keypair', '/rehearsal/deployer.json', '--commitment', 'finalized',
-    ], { failure: 'Manual devnet program deployment failed' });
-    const programId = program.publicKey;
-    const [programData] = PublicKey.findProgramAddressSync([programId.toBuffer()], UPGRADEABLE_LOADER);
-    await dockerSolana(runtime, release.artifactFile, [
-      'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'set-upgrade-authority', programId.toBase58(), '--final',
-      '--upgrade-authority', '/rehearsal/deployer.json', '--keypair', '/rehearsal/deployer.json', '--commitment', 'finalized',
-    ], { failure: 'Could not revoke the manual devnet program upgrade authority' });
-    await dockerSolana(runtime, release.artifactFile, [
-      'solana', '--config', '/rehearsal/solana-cli.yml', 'program', 'dump', programId.toBase58(), '/rehearsal/deployed.so',
-    ], { failure: 'Could not dump the immutable manual devnet program' });
-    if (await sha256File(path.join(runtime, 'deployed.so')) !== release.manifest.artifact.sha256) {
-      throw new Error('Manual devnet deployed bytes differ from the release artifact');
-    }
-    const programHash = await attestProgram(connection, programId, programData, release.manifest.artifact.sha256);
-    const mint = await createManualMint(connection, deployer, browserWallet);
-    const parityConfig = await configCommand({
-      runtime, artifactFile: release.artifactFile, rpcSetFile, programId, programData, hash: programHash,
-      mint, deployer, issuer, configId: 0, amount: MANUAL_AMOUNT, lock: PRODUCTION_LOCK_SECONDS,
+    const state = await completeManualPreparation({
+      runtime, project, head, rpcSet, agreement, browserWallet, release, signedReview,
+      browserArtifactDirectory, browserArtifactSha256, certificate, issuerImageId,
+      evidenceManifest, evidenceArtifact, evidenceReview, evidenceSignature,
+      evidenceIssuerBundle, evidenceBrowserBundle, deployer, issuer, program,
     });
-    const manualConfig = await configCommand({
-      runtime, artifactFile: release.artifactFile, rpcSetFile, programId, programData, hash: programHash,
-      mint, deployer, issuer, configId: 1, amount: MANUAL_AMOUNT, lock: MANUAL_LOCK_SECONDS,
-    });
-    const state = {
-      schema: MANUAL_STATE_SCHEMA,
-      mode: MANUAL_MODE,
-      status: 'prepared',
-      sourceCommit: head,
-      preparedAt: new Date().toISOString(),
-      runtime,
-      project,
-      processNonce: randomBytes(16).toString('hex'),
-      rpcSetFile,
-      requestNonce: randomBytes(32).toString('hex'),
-      browserArtifact: {
-        directory: browserArtifactDirectory,
-        sha256: browserArtifactSha256,
-        bundleSha256: signedReview.browserBundle.sha256,
-      },
-      releaseEvidence: {
-        manifest: evidenceManifest,
-        artifact: evidenceArtifact,
-        review: evidenceReview,
-        signature: evidenceSignature,
-        issuerBundle: evidenceIssuerBundle,
-        browserBundle: evidenceBrowserBundle,
-      },
-      browserWallet: browserWallet.toBase58(),
-      programId: programId.toBase58(),
-      programDataAddress: programData.toBase58(),
-      programSha256: programHash,
-      mint: mint.toBase58(),
-      issuerAuthority: issuer.publicKey.toBase58(),
-      parityConfigAddress: parityConfig.address.toBase58(),
-      manualConfigAddress: manualConfig.address.toBase58(),
-      configRevision: '0',
-      roomId: null,
-      expiresAt: null,
-      pids: {},
-      certificate,
-      issuerImageId,
-      reviewSha256: await sha256File(signedReview.reviewPath),
-      reviewSignatureSha256: await sha256File(signedReview.signaturePath),
-      reviewerPublicKeySha256: signedReview.publicKeySha256,
-      finalizedAgreement: agreement,
-      reviewSchema: signedReview.review.schema,
-      reviewSignatureSchema: signedReview.envelope.schema,
-    };
-    await writeState(runtime, state);
     console.log(JSON.stringify({
       schema: 'neal.devnet-manual-prepare-result/v1', runtime, sourceCommit: head,
       browserWallet: state.browserWallet, programId: state.programId, mint: state.mint,
@@ -737,6 +775,129 @@ const prepare = async (options) => {
     await fs.rm(runtime, { recursive: true, force: true });
     throw error;
   }
+};
+
+const readRecoveryKeypair = async (runtime, name) => {
+  const file = path.join(runtime, `${name}.json`);
+  const metadata = await fs.lstat(file).catch(() => null);
+  if (!metadata?.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
+    throw new Error(`Preserved ${name} keypair is unavailable or unsafe`);
+  }
+  let bytes;
+  try { bytes = JSON.parse(await fs.readFile(file, 'utf8')); } catch { throw new Error(`Preserved ${name} keypair is malformed`); }
+  if (!Array.isArray(bytes) || bytes.length !== 64 || bytes.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    throw new Error(`Preserved ${name} keypair is malformed`);
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(bytes));
+};
+
+export const validatePrepareRecoveryMarker = (marker, runtime) => {
+  if (
+    marker?.schema !== 'neal.devnet-manual-prepare-recovery/v1'
+    || marker?.status !== 'operator_recovery_required'
+    || !/^[0-9a-f]{40}$/u.test(marker?.sourceCommit)
+    || path.basename(path.resolve(runtime)) !== marker.sourceCommit
+    || Object.keys(marker).sort().join(',') !== 'failedAt,schema,sourceCommit,status'
+    || Number.isNaN(Date.parse(marker.failedAt))
+  ) throw new Error('Manual preparation recovery marker is unsupported');
+  return marker;
+};
+
+const recoverPrepare = async (options) => {
+  requireOptions(options, ['runtime', 'wallet']);
+  if (options.execute !== true || options.acknowledgeDevnet !== true) {
+    throw new Error('Devnet preparation recovery requires --execute --acknowledge-devnet');
+  }
+  await assertAcceptancePortsAvailable();
+  await run('docker', ['version', '--format', '{{.Server.Version}}'], { capture: true, failure: 'Docker Desktop must be running' });
+  const runtime = path.resolve(options.runtime);
+  const runtimeMetadata = await fs.lstat(runtime).catch(() => null);
+  if (!runtimeMetadata?.isDirectory() || runtimeMetadata.isSymbolicLink() || (runtimeMetadata.mode & 0o077) !== 0) {
+    throw new Error('Manual recovery runtime is unavailable or unsafe');
+  }
+  if (fsSync.existsSync(stateFile(runtime))) throw new Error('Manual runtime is already prepared');
+  const markerFile = path.join(runtime, 'prepare-recovery-required.json');
+  let marker;
+  try { marker = JSON.parse(await fs.readFile(markerFile, 'utf8')); } catch { throw new Error('Manual preparation recovery marker is unavailable or malformed'); }
+  validatePrepareRecoveryMarker(marker, runtime);
+  const head = await assertExactCleanCheckout(marker.sourceCommit);
+  await assertGreenCi(head);
+  const browserWallet = new PublicKey(options.wallet);
+  const evidenceDirectory = path.join(runtime, 'release-evidence');
+  const evidenceManifest = path.join(evidenceDirectory, 'release-manifest.json');
+  const release = await readAndValidateReleaseManifest(evidenceManifest);
+  if (release.manifest.sourceCommit !== head) throw new Error('Preserved release manifest does not cover the exact checkout commit');
+  const evidenceArtifact = release.artifactFile;
+  const evidenceReview = path.join(evidenceDirectory, 'isolated-review.json');
+  const evidenceSignature = path.join(evidenceDirectory, 'isolated-review-signature.json');
+  const evidenceIssuerBundle = path.join(evidenceDirectory, 'issuer-bundle.tar');
+  const evidenceBrowserBundle = path.join(evidenceDirectory, 'manual-browser-bundle.json');
+  const signedReview = await validateSignedIsolatedReview({
+    reviewFile: evidenceReview,
+    signatureFile: evidenceSignature,
+    issuerBundleFile: evidenceIssuerBundle,
+    browserBundleFile: evidenceBrowserBundle,
+    sourceCommit: head,
+    release,
+  });
+  const rpcSetFile = path.join(runtime, 'solana-rpc-set.json');
+  const rpcSet = await loadRpcSetCredential(rpcSetFile);
+  const agreement = await establishDevnetAgreement(rpcSet);
+  const [deployer, issuer, program] = await Promise.all([
+    readRecoveryKeypair(runtime, 'deployer'),
+    readRecoveryKeypair(runtime, 'issuer'),
+    readRecoveryKeypair(runtime, 'program'),
+  ]);
+  const accountResults = await Promise.all(rpcSet.endpoints.map(async (endpoint) => {
+    try {
+      const value = await rpcCall(endpoint, 'getAccountInfo', [program.publicKey.toBase58(), {
+        commitment: 'finalized', encoding: 'base64',
+      }]);
+      return value?.value === null ? 'absent' : 'present';
+    } catch { return 'unavailable'; }
+  }));
+  if (accountResults.includes('present') || accountResults.filter((value) => value === 'absent').length < rpcSet.threshold) {
+    throw new Error('Recovery refuses to continue because the program account is present or lacks 2-of-3 absence proof');
+  }
+  const browserArtifactDirectory = path.join(runtime, 'site-dist');
+  const browserArtifactSha256 = await directoryDigest(browserArtifactDirectory);
+  const recoveredBrowserParent = await fs.mkdtemp(path.join(runtime, '.signed-browser-'));
+  const recoveredBrowserDirectory = path.join(recoveredBrowserParent, 'site-dist');
+  try {
+    await extractManualBrowserBundle(signedReview.browserBundle, recoveredBrowserDirectory);
+    if (await directoryDigest(recoveredBrowserDirectory) !== browserArtifactSha256) {
+      throw new Error('Preserved browser artifact differs from the signed browser bundle');
+    }
+  } finally {
+    await fs.rm(recoveredBrowserParent, { recursive: true, force: true });
+  }
+  const certificate = {
+    key: path.join(runtime, 'localhost.key.pem'),
+    certificate: path.join(runtime, 'localhost.cert.pem'),
+    fingerprint: await certificateFingerprint(path.join(runtime, 'localhost.cert.pem')),
+  };
+  const project = `neal-manual-${head.slice(0, 12)}`;
+  await manualCompose(project, runtime, ['build', 'issuer'], {
+    env: { NEAL_ISSUER_SOURCE_COMMIT: head },
+    failure: 'Could not rebuild the exact Ubuntu 24.04 manual issuer image during recovery',
+  });
+  const issuerImageId = validateDockerImageId(await run('docker', [
+    'image', 'inspect', `${project}-issuer:latest`, '--format', '{{.Id}}',
+  ], { capture: true, failure: 'Could not identify the exact preserved manual issuer image' }));
+  await buildToolchain();
+  const state = await completeManualPreparation({
+    runtime, project, head, rpcSet, agreement, browserWallet, release, signedReview,
+    browserArtifactDirectory, browserArtifactSha256, certificate, issuerImageId,
+    evidenceManifest, evidenceArtifact, evidenceReview, evidenceSignature,
+    evidenceIssuerBundle, evidenceBrowserBundle, deployer, issuer, program,
+  });
+  await fs.unlink(markerFile);
+  console.log(JSON.stringify({
+    schema: 'neal.devnet-manual-prepare-recovery-result/v1', status: 'prepared', runtime,
+    sourceCommit: head, browserWallet: state.browserWallet, programId: state.programId,
+    mint: state.mint, manualConfigAddress: state.manualConfigAddress,
+    certificate: state.certificate.certificate, certificateSha1: state.certificate.fingerprint,
+  }, null, 2));
 };
 
 const matrixRequest = async (pathname, { method = 'GET', token, body } = {}) => {
@@ -1101,6 +1262,28 @@ const reconciliationState = async (runtime, state) => {
   return { incomplete, administrators: result.administrators };
 };
 
+export const waitForCleanReconciliation = async ({ read, wait = sleep, attempts = 60 }) => {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const candidate = await read();
+      if (!candidate.incomplete.length && !candidate.administrators.length) {
+        await wait(1_000);
+        const confirmed = await read();
+        if (!confirmed.incomplete.length && !confirmed.administrators.length) return confirmed;
+      }
+    } catch {
+      // The container or startup administrator scan may still be converging.
+    }
+    await wait(1_000);
+  }
+  throw new Error('Issuer registration or administrator reconciliation remains incomplete');
+};
+
+const waitForReconciliationState = (runtime, state, attempts = 60) => waitForCleanReconciliation({
+  read: () => reconciliationState(runtime, state),
+  attempts,
+});
+
 const quorumConfigReceipts = async (rpcSet, programId, configAddress) => {
   await establishDevnetAgreement(rpcSet);
   const results = await Promise.all(rpcSet.endpoints.map(async (endpoint) => {
@@ -1242,9 +1425,7 @@ const stop = async (options) => {
   if (fsSync.existsSync(environmentFile(runtime)) && fsSync.existsSync(path.join(runtime, 'issuer.sqlite3'))) {
     try {
       await manualCompose(state.project, runtime, ['up', '--detach']);
-      await waitHttp('http://127.0.0.1:18008/_matrix/client/versions', [200]);
-      await waitHttp('http://127.0.0.1:18009/healthz', [200]);
-      const reconciliation = await reconciliationState(runtime, state);
+      const reconciliation = await waitForReconciliationState(runtime, state);
       if (reconciliation.incomplete.length || reconciliation.administrators.length) {
         throw new Error('Refusing teardown: issuer registration or administrator reconciliation remains incomplete');
       }
@@ -1280,6 +1461,7 @@ async function main() {
   const options = parseCli(process.argv.slice(2));
   if (options.command === 'doctor') await doctor(options);
   else if (options.command === 'prepare') await prepare(options);
+  else if (options.command === 'recover-prepare') await recoverPrepare(options);
   else if (options.command === 'start') await start(options);
   else if (options.command === 'verify') await verify(options);
   else if (options.command === 'status') await status(options);

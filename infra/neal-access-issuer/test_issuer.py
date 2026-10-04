@@ -223,6 +223,17 @@ class IssuerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_matrix_request_json_uses_the_bounded_response_limit(self) -> None:
+        matrix = issuer.MatrixIssuer(self.settings)
+        response = contextlib.nullcontext(io.BytesIO(b'{"status":"ok"}'))
+        with patch("issuer.urllib.request.urlopen", return_value=response):
+            self.assertEqual(matrix.request_json("GET", "/_matrix/client/versions"), {"status": "ok"})
+
+        oversized = contextlib.nullcontext(io.BytesIO(b"x" * (issuer.MAX_RPC_RESPONSE_BYTES + 1)))
+        with patch("issuer.urllib.request.urlopen", return_value=oversized):
+            with self.assertRaisesRegex(issuer.IssuerError, "response exceeded"):
+                matrix.request_json("GET", "/_matrix/client/versions")
+
     def test_siws_message_matches_wallet_standard_shape(self) -> None:
         value = {
             "domain": "nealtheseal.org",

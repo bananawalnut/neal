@@ -1730,8 +1730,8 @@ class MatrixIssuer:
         request = urllib.request.Request(self.settings.matrix_url + path, data=payload, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
-                raw = response.read(MAX_RPC_RESPONSE + 1)
-                if len(raw) > MAX_RPC_RESPONSE:
+                raw = response.read(MAX_RPC_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_RPC_RESPONSE_BYTES:
                     raise IssuerError("Matrix response exceeded the issuer limit", HTTPStatus.SERVICE_UNAVAILABLE)
                 value = json.loads(raw) if raw else {}
                 if not isinstance(value, dict):
