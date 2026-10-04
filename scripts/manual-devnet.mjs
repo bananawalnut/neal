@@ -317,6 +317,56 @@ const manualCompose = (project, runtime, args, options = {}) => {
   });
 };
 
+export const validateManualComposeConfig = (config, expectedIssuerImage) => {
+  const services = config?.services;
+  const networks = config?.networks;
+  const synapse = services?.synapse;
+  const issuer = services?.issuer;
+  const loopback = services?.['matrix-loopback'];
+  if (!services || !networks || !synapse || !issuer || !loopback) {
+    throw new Error('Rendered manual compose configuration is incomplete');
+  }
+  if (Array.isArray(synapse.ports) && synapse.ports.length > 0) {
+    throw new Error('Rendered manual compose configuration exposes Synapse directly');
+  }
+  if (Object.keys(synapse.networks ?? {}).sort().join(',') !== 'rehearsal-internal' || networks['rehearsal-internal']?.internal !== true) {
+    throw new Error('Rendered manual compose configuration does not isolate Synapse');
+  }
+  const issuerNetworks = Object.keys(issuer.networks ?? {}).sort();
+  if (issuerNetworks.join(',') !== 'manual-egress,rehearsal-internal') {
+    throw new Error('Rendered manual compose configuration has unexpected issuer networks');
+  }
+  const publishedPorts = (issuer.ports ?? []).map((entry) => (
+    `${entry.host_ip}:${entry.published}:${entry.target}:${entry.protocol}`
+  )).sort();
+  if (publishedPorts.join(',') !== '127.0.0.1:18009:18009:tcp,127.0.0.1:18011:18011:tcp') {
+    throw new Error('Rendered manual compose configuration has unexpected host publications');
+  }
+  if (
+    loopback.image !== expectedIssuerImage
+    || loopback.network_mode !== 'service:issuer'
+    || loopback.command?.join(',') !== '/opt/issuer/matrix_loopback.py'
+    || loopback.ports !== undefined
+    || loopback.networks !== undefined
+    || loopback.volumes !== undefined
+    || loopback.environment !== undefined
+    || loopback.secrets !== undefined
+  ) throw new Error('Rendered Matrix loopback configuration is not the fixed minimal bridge');
+  if (loopback.depends_on?.issuer?.condition !== 'service_healthy') {
+    throw new Error('Rendered Matrix loopback does not wait for the attested issuer namespace');
+  }
+  return config;
+};
+
+const assertManualComposeIsolation = async (project, runtime) => {
+  const rendered = await manualCompose(project, runtime, ['config', '--format', 'json'], {
+    capture: true, failure: 'Could not render the manual compose security boundary',
+  });
+  let config;
+  try { config = JSON.parse(rendered); } catch { throw new Error('Rendered manual compose configuration is malformed'); }
+  validateManualComposeConfig(config, `${project}-issuer:latest`);
+};
+
 const serializeRpcSet = (rpcSet) => ({
   schema: rpcSet.schema,
   mode: rpcSet.mode,
@@ -740,6 +790,7 @@ const prepare = async (options) => {
     const matrixSecret = randomBytes(48).toString('base64url');
     await renderSynapse(runtime, matrixSecret);
     const certificate = await createCertificate(runtime);
+    await assertManualComposeIsolation(project, runtime);
     await manualCompose(project, runtime, ['build', 'issuer'], {
       env: { NEAL_ISSUER_SOURCE_COMMIT: head },
       failure: 'Could not build the Ubuntu 24.04 manual issuer image',
@@ -879,6 +930,7 @@ const recoverPrepare = async (options) => {
     fingerprint: await certificateFingerprint(path.join(runtime, 'localhost.cert.pem')),
   };
   const project = `neal-manual-${head.slice(0, 12)}`;
+  await assertManualComposeIsolation(project, runtime);
   await manualCompose(project, runtime, ['build', 'issuer'], {
     env: { NEAL_ISSUER_SOURCE_COMMIT: head },
     failure: 'Could not rebuild the exact Ubuntu 24.04 manual issuer image during recovery',
@@ -1027,6 +1079,7 @@ const start = async (options) => {
   }
   await verifyTrustedCertificate(state);
   await run('docker', ['version', '--format', '{{.Server.Version}}'], { capture: true, failure: 'Docker Desktop must be running' });
+  await assertManualComposeIsolation(state.project, runtime);
   const environment = issuerEnvironment(runtime, state);
   await writeEnvironment(runtime, environment);
   const pids = {};

@@ -1,4 +1,7 @@
 services:
+  synapse:
+    ports: !reset []
+
   issuer:
     build:
       context: ../..

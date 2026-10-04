@@ -47,6 +47,7 @@ import {
   reviewSignaturePayload,
   validateDockerImageId,
   validatePrepareRecoveryMarker,
+  validateManualComposeConfig,
   validateSignedIsolatedReview,
   waitForCleanReconciliation,
 } from './manual-devnet.mjs';
@@ -631,12 +632,47 @@ test('manual compose keeps Synapse internal while giving only the issuer RPC egr
   ]);
   assert.match(base, /synapse:[\s\S]*?networks:\n\s+- rehearsal-internal/u);
   assert.match(base, /rehearsal-internal:\n\s+internal: true/u);
-  assert.doesNotMatch(manual, /^\s{2}synapse:/mu);
+  assert.match(manual, /^\s{2}synapse:\n\s+ports: !reset \[\]/mu);
   assert.match(manual, /issuer:[\s\S]*?networks:\n\s+- rehearsal-internal\n\s+- manual-egress/u);
   assert.match(manual, /issuer:[\s\S]*?127\.0\.0\.1:18011:18011/u);
   assert.match(manual, /matrix-loopback:[\s\S]*?network_mode: "service:issuer"/u);
   assert.match(manual, /matrix-loopback:[\s\S]*?image: \$\{NEAL_MANUAL_ISSUER_IMAGE:\?set NEAL_MANUAL_ISSUER_IMAGE\}/u);
   assert.doesNotMatch(manual, /matrix-loopback:[\s\S]*?\n\s+volumes:/u);
+});
+
+test('rendered manual compose rejects direct Synapse publication and loopback drift', () => {
+  const expectedImage = 'neal-manual-test-issuer:latest';
+  const fixture = {
+    networks: { 'rehearsal-internal': { internal: true }, 'manual-egress': {} },
+    services: {
+      synapse: { networks: { 'rehearsal-internal': null } },
+      issuer: {
+        networks: { 'rehearsal-internal': null, 'manual-egress': null },
+        ports: [
+          { host_ip: '127.0.0.1', published: '18009', target: 18009, protocol: 'tcp' },
+          { host_ip: '127.0.0.1', published: '18011', target: 18011, protocol: 'tcp' },
+        ],
+      },
+      'matrix-loopback': {
+        image: expectedImage,
+        network_mode: 'service:issuer',
+        command: ['/opt/issuer/matrix_loopback.py'],
+        depends_on: { issuer: { condition: 'service_healthy' } },
+      },
+    },
+  };
+  assert.equal(validateManualComposeConfig(fixture, expectedImage), fixture);
+  assert.throws(() => validateManualComposeConfig({
+    ...fixture,
+    services: { ...fixture.services, synapse: { ...fixture.services.synapse, ports: [{ published: '18008' }] } },
+  }, expectedImage), /exposes Synapse directly/u);
+  assert.throws(() => validateManualComposeConfig({
+    ...fixture,
+    services: {
+      ...fixture.services,
+      'matrix-loopback': { ...fixture.services['matrix-loopback'], volumes: [{ source: '/runtime' }] },
+    },
+  }, expectedImage), /fixed minimal bridge/u);
 });
 
 test('port 4282 admin surface is inert and Vite has no production admin proxy', async () => {
