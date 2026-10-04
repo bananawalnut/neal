@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 
 SCHEMA = "neal.matrix-loopback/v1"
@@ -18,26 +19,42 @@ MAX_BODY_BYTES = 1024 * 1024
 UPSTREAM_HOST = "synapse"
 UPSTREAM_PORT = 8008
 UPSTREAM_TIMEOUT_SECONDS = 60
+WORKER_LIMIT = 32
 ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 REQUEST_HEADERS = frozenset({"accept", "authorization", "content-type", "user-agent"})
 RESPONSE_HEADERS = frozenset({"cache-control", "content-type", "etag", "retry-after"})
 
 
-def route_allowed(method: str, raw_target: str) -> bool:
+def validated_target(method: str, raw_target: str) -> str | None:
     if method not in ALLOWED_METHODS:
-        return False
-    target = urlsplit(raw_target)
-    if target.scheme or target.netloc or target.fragment:
-        return False
+        return None
     try:
+        target = urlsplit(raw_target)
+        if target.scheme or target.netloc or target.fragment:
+            return None
+        if re.search(r"%(?![0-9A-Fa-f]{2})", f"{target.path}?{target.query}"):
+            return None
+        if re.search(r"%2f|%5c", target.path, flags=re.IGNORECASE):
+            return None
         decoded_path = unquote(target.path, errors="strict")
-    except UnicodeDecodeError:
-        return False
-    if "\\" in decoded_path or "\0" in decoded_path or any(
+        query_pairs = parse_qsl(
+            target.query, keep_blank_values=True, encoding="utf-8", errors="strict"
+        )
+    except (UnicodeError, ValueError):
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in decoded_path) or "\\" in decoded_path or any(
         segment in {".", ".."} for segment in decoded_path.split("/")
     ):
-        return False
-    return decoded_path.startswith("/_matrix/") or decoded_path == "/_synapse/admin/v1/register"
+        return None
+    if not (decoded_path.startswith("/_matrix/") or decoded_path == "/_synapse/admin/v1/register"):
+        return None
+    canonical_path = quote(decoded_path, safe="/:@!$&'()*+,;=-._~")
+    canonical_query = urlencode(query_pairs, doseq=True, quote_via=quote, safe=":@!$'()*,-._~")
+    return f"{canonical_path}?{canonical_query}" if canonical_query else canonical_path
+
+
+def route_allowed(method: str, raw_target: str) -> bool:
+    return validated_target(method, raw_target) is not None
 
 
 def filtered_headers(headers, allowed: frozenset[str]) -> dict[str, str]:
@@ -98,7 +115,8 @@ class MatrixLoopbackHandler(BaseHTTPRequestHandler):
             except Exception:
                 self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"schema": SCHEMA, "status": "unavailable"})
             return
-        if not route_allowed(self.command, self.path):
+        target = validated_target(self.command, self.path)
+        if target is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"schema": SCHEMA, "status": "denied"})
             return
         try:
@@ -117,7 +135,7 @@ class MatrixLoopbackHandler(BaseHTTPRequestHandler):
         connection = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=UPSTREAM_TIMEOUT_SECONDS)
         response_started = False
         try:
-            connection.request(self.command, self.path, body=body or None, headers=headers)
+            connection.request(self.command, target, body=body or None, headers=headers)
             upstream = connection.getresponse()
             response_body = upstream.read(MAX_BODY_BYTES + 1)
             if len(response_body) > MAX_BODY_BYTES:
@@ -148,10 +166,10 @@ class MatrixLoopbackHandler(BaseHTTPRequestHandler):
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    request_queue_size = 32
+    request_queue_size = WORKER_LIMIT
 
     def __init__(self, *args, **kwargs):
-        self._worker_slots = threading.BoundedSemaphore(32)
+        self._worker_slots = threading.BoundedSemaphore(WORKER_LIMIT)
         super().__init__(*args, **kwargs)
 
     def process_request(self, request, client_address) -> None:

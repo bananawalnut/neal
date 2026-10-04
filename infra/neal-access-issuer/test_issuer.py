@@ -41,6 +41,16 @@ class MatrixLoopbackTests(unittest.TestCase):
         self.assertFalse(matrix_loopback.route_allowed("CONNECT", "/_matrix/client/versions"))
         self.assertFalse(matrix_loopback.route_allowed("GET", "http://example.invalid/_matrix/client/versions"))
         self.assertFalse(matrix_loopback.route_allowed("GET", "/_matrix/%2e%2e/_synapse/admin/v2/users"))
+        self.assertFalse(matrix_loopback.route_allowed("GET", "//["))
+        self.assertFalse(matrix_loopback.route_allowed("GET", "//[::1"))
+        self.assertFalse(matrix_loopback.route_allowed("GET", "/_matrix/client/%ZZ"))
+        self.assertEqual(matrix_loopback.WORKER_LIMIT, 32)
+        self.assertEqual(
+            matrix_loopback.validated_target(
+                "GET", "/_matrix/client/v3/sync?since=opaque%26value&timeout=30000"
+            ),
+            "/_matrix/client/v3/sync?since=opaque%26value&timeout=30000",
+        )
 
     def test_headers_are_allowlisted_and_reject_injected_values(self) -> None:
         headers = {
@@ -64,6 +74,8 @@ class MatrixLoopbackTests(unittest.TestCase):
 
             def _respond(self) -> None:
                 calls.append((self.command, self.path, self.headers.get("Authorization")))
+                if self.path == "/_matrix/slow":
+                    time.sleep(0.1)
                 body = b"x" * (matrix_loopback.MAX_BODY_BYTES + 1) if self.path == "/_matrix/large" else b'{"ok":true}'
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
@@ -74,11 +86,18 @@ class MatrixLoopbackTests(unittest.TestCase):
             do_GET = _respond
             do_POST = _respond
 
-        upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        class QuietThreadingHTTPServer(ThreadingHTTPServer):
+            daemon_threads = True
+
+            def handle_error(self, _request, _client_address) -> None:
+                return
+
+        upstream = QuietThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
         proxy = matrix_loopback.BoundedThreadingHTTPServer(
             ("127.0.0.1", 0), matrix_loopback.MatrixLoopbackHandler
         )
         original_host, original_port = matrix_loopback.UPSTREAM_HOST, matrix_loopback.UPSTREAM_PORT
+        original_timeout = matrix_loopback.UPSTREAM_TIMEOUT_SECONDS
         matrix_loopback.UPSTREAM_HOST = "127.0.0.1"
         matrix_loopback.UPSTREAM_PORT = upstream.server_address[1]
         threads = [
@@ -120,6 +139,14 @@ class MatrixLoopbackTests(unittest.TestCase):
             self.assertEqual(response.status, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             response.read()
             connection.close()
+
+            matrix_loopback.UPSTREAM_TIMEOUT_SECONDS = 0.01
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=5)
+            connection.request("GET", "/_matrix/slow")
+            response = connection.getresponse()
+            self.assertEqual(response.status, HTTPStatus.BAD_GATEWAY)
+            response.read()
+            connection.close()
         finally:
             proxy.shutdown()
             upstream.shutdown()
@@ -127,6 +154,7 @@ class MatrixLoopbackTests(unittest.TestCase):
             upstream.server_close()
             matrix_loopback.UPSTREAM_HOST = original_host
             matrix_loopback.UPSTREAM_PORT = original_port
+            matrix_loopback.UPSTREAM_TIMEOUT_SECONDS = original_timeout
 
 
 class FakeAccessDenied(RuntimeError):
