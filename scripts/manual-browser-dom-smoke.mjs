@@ -149,6 +149,7 @@ await new Promise((resolve, reject) => {
 const debugPort = await freePort();
 const chrome = spawn(chromePath, [
   '--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run', '--no-default-browser-check',
+  '--disable-background-networking', '--disable-component-update', '--disable-sync',
   '--ignore-certificate-errors', `--remote-debugging-port=${debugPort}`,
   `--user-data-dir=${path.join(temporary, 'chrome-profile')}`, 'about:blank',
 ], { stdio: 'ignore' });
@@ -236,5 +237,8 @@ try {
     await chromeExited;
   }
   await new Promise((resolve) => server.close(resolve));
-  await fsp.rm(temporary, { recursive: true, force: true });
+  // Chrome can briefly keep profile files open after its root process exits.
+  // Use Node's bounded recursive-removal retry support so a successful browser
+  // acceptance smoke cannot be reported as failed by that teardown race.
+  await fsp.rm(temporary, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }
