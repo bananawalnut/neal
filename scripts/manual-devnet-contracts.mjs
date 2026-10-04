@@ -89,7 +89,7 @@ export function buildManualWalletPolicy(runtime) {
   return {
     schema: 'neal.wallet-policy/v1',
     chain: 'solana:devnet',
-    preferredWallets: ['Castalia'],
+    preferredWallets: ['Castalia', 'Phantom'],
     walletStandard: {
       requiredFeatures: ['standard:connect', 'standard:events'],
       preferredAuthentication: 'solana:signIn',

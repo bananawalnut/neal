@@ -1,5 +1,5 @@
 import { getWallets } from '@wallet-standard/app';
-import type { Wallet, WalletAccount } from '@wallet-standard/base';
+import type { Wallet, WalletAccount, WalletIcon } from '@wallet-standard/base';
 import {
   StandardConnect,
   StandardDisconnect,
@@ -20,6 +20,7 @@ import {
   type SolanaSignMessageOutput,
 } from '@solana/wallet-standard-features';
 import { createSignInMessage, verifySignIn, verifySignMessage } from '@solana/wallet-standard-util';
+import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { manualRequestHeaders } from './runtime-config';
 
 type WalletPolicy = {
@@ -126,6 +127,140 @@ type TokenAccountsResult = {
   }>;
 };
 
+type PhantomPublicKey = {
+  toBase58(): string;
+  toBytes(): Uint8Array;
+};
+
+type PhantomProvider = {
+  readonly isPhantom: true;
+  readonly isConnected?: boolean;
+  readonly publicKey?: PhantomPublicKey | null;
+  connect(options?: { onlyIfTrusted?: boolean }): Promise<{ publicKey: PhantomPublicKey }>;
+  disconnect(): Promise<void>;
+  signMessage(message: Uint8Array, display?: 'utf8'): Promise<{ signature: Uint8Array }>;
+  signTransaction(transaction: VersionedTransaction): Promise<VersionedTransaction>;
+  on(event: 'connect' | 'disconnect' | 'accountChanged', listener: (publicKey?: PhantomPublicKey | null) => void): void;
+};
+
+const PHANTOM_CHAINS = ['solana:mainnet', 'solana:devnet', 'solana:testnet', 'solana:localnet'] as const;
+const PHANTOM_ACCOUNT_FEATURES = [SolanaSignMessage, SolanaSignTransaction] as const;
+const PHANTOM_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgdmlld0JveD0iMCAwIDY0IDY0Ij48cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNiIgZmlsbD0iI0FCOUZGMiIvPjxwYXRoIGQ9Ik0xOCAzOWMwLTE0IDEwLTIzIDIzLTIzIDggMCAxMyA1IDEzIDEyIDAgMTItOCAyMS0xNyAyMS00IDAtNi0yLTYtNSAwLTIgMS00IDItNi0zIDUtNyAxMS0xMiAxMS0zIDAtNS0yLTUtNSAwLTIgMS00IDItNXptMjgtMTNjLTIgMC0zIDItMyA0czEgMyAzIDMgMy0xIDMtMy0xLTQtMy00em0tMTAgMGMtMiAwLTMgMi0zIDRzMSAzIDMgMyAzLTEgMy0zLTEtNC0zLTR6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==' as WalletIcon;
+
+const phantomAccount = (publicKey: PhantomPublicKey): WalletAccount => {
+  const bytes = new Uint8Array(publicKey.toBytes());
+  const address = new PublicKey(bytes).toBase58();
+  if (address !== publicKey.toBase58()) throw new Error('Phantom returned an inconsistent Solana public key');
+  return Object.freeze({
+    address,
+    publicKey: bytes,
+    chains: PHANTOM_CHAINS,
+    features: PHANTOM_ACCOUNT_FEATURES,
+    label: 'Phantom',
+    icon: PHANTOM_ICON,
+  });
+};
+
+const injectedPhantomProvider = (): PhantomProvider | null => {
+  const candidate = (window as Window & { phantom?: { solana?: unknown } }).phantom?.solana as
+    | Partial<PhantomProvider>
+    | undefined;
+  if (
+    candidate?.isPhantom !== true
+    || typeof candidate.connect !== 'function'
+    || typeof candidate.disconnect !== 'function'
+    || typeof candidate.signMessage !== 'function'
+    || typeof candidate.signTransaction !== 'function'
+    || typeof candidate.on !== 'function'
+  ) return null;
+  return candidate as PhantomProvider;
+};
+
+export const createInjectedPhantomWallet = (provider: PhantomProvider): Wallet => {
+  let account = provider.isConnected && provider.publicKey ? phantomAccount(provider.publicKey) : null;
+  const listeners = new Set<(properties: { accounts?: readonly WalletAccount[] }) => void>();
+  const emitAccounts = (): void => {
+    const accounts = account ? [account] : [];
+    for (const listener of listeners) listener({ accounts });
+  };
+  const setAccount = (publicKey?: PhantomPublicKey | null): void => {
+    account = publicKey ? phantomAccount(publicKey) : null;
+    emitAccounts();
+  };
+  const requireCurrentAccount = (candidate: WalletAccount): void => {
+    if (!account || candidate.address !== account.address) throw new Error('Phantom account changed before signing');
+  };
+
+  provider.on('connect', (publicKey) => setAccount(publicKey ?? provider.publicKey));
+  provider.on('accountChanged', (publicKey) => setAccount(publicKey));
+  provider.on('disconnect', () => setAccount(null));
+
+  const wallet: Wallet = {
+    version: '1.0.0',
+    name: 'Phantom',
+    icon: PHANTOM_ICON,
+    chains: PHANTOM_CHAINS,
+    get accounts() { return account ? [account] : []; },
+    features: {
+      [StandardConnect]: {
+        version: '1.0.0',
+        connect: async (input?: { silent?: boolean }) => {
+          const output = await provider.connect(input?.silent ? { onlyIfTrusted: true } : undefined);
+          setAccount(output.publicKey ?? provider.publicKey);
+          return { accounts: account ? [account] : [] };
+        },
+      },
+      [StandardDisconnect]: {
+        version: '1.0.0',
+        disconnect: async () => {
+          await provider.disconnect();
+          setAccount(null);
+        },
+      },
+      [StandardEvents]: {
+        version: '1.0.0',
+        on: (_event: 'change', listener: (properties: { accounts?: readonly WalletAccount[] }) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      [SolanaSignMessage]: {
+        version: '1.1.0',
+        signMessage: async (...inputs: readonly { account: WalletAccount; message: Uint8Array }[]) => {
+          const outputs = [];
+          for (const input of inputs) {
+            requireCurrentAccount(input.account);
+            const message = new Uint8Array(input.message);
+            const output = await provider.signMessage(message, 'utf8');
+            const signature = new Uint8Array(output.signature);
+            if (signature.length !== 64) throw new Error('Phantom returned an invalid Ed25519 signature');
+            outputs.push({ signedMessage: message, signature, signatureType: 'ed25519' as const });
+          }
+          return outputs;
+        },
+      },
+      [SolanaSignTransaction]: {
+        version: '1.0.0',
+        supportedTransactionVersions: ['legacy', 0],
+        signTransaction: async (...inputs: readonly { account: WalletAccount; transaction: Uint8Array; chain?: string }[]) => {
+          const outputs = [];
+          for (const input of inputs) {
+            requireCurrentAccount(input.account);
+            if (input.chain && !PHANTOM_CHAINS.includes(input.chain as typeof PHANTOM_CHAINS[number])) {
+              throw new Error('Phantom was asked to sign for an unsupported Solana chain');
+            }
+            const transaction = VersionedTransaction.deserialize(new Uint8Array(input.transaction));
+            const signed = await provider.signTransaction(transaction);
+            outputs.push({ signedTransaction: new Uint8Array(signed.serialize()) });
+          }
+          return outputs;
+        },
+      },
+    },
+  };
+  return Object.freeze(wallet);
+};
+
 const requireElement = <T extends HTMLElement>(id: string): T => {
   const element = document.querySelector<T>(`#${id}`);
   if (!element) throw new Error(`Missing #${id}`);
@@ -181,6 +316,7 @@ export class WalletIdentityController {
   #walletProof: WalletProof | null = null;
   #holderProof: HolderProof | null = null;
   #removeWalletListener: (() => void) | null = null;
+  #injectedPhantomWallet: Wallet | null = null;
 
   readonly #dialog = requireElement<HTMLDialogElement>('wallet-dialog');
   readonly #walletList = requireElement<HTMLElement>('wallet-list');
@@ -260,15 +396,21 @@ export class WalletIdentityController {
     this.#registry.on('register', () => this.#renderWalletList());
     this.#registry.on('unregister', () => this.#renderWalletList());
     await this.#registerMobileWalletAdapter();
+    this.#registerInjectedPhantomFallback();
     this.#renderWalletList();
     this.#render();
   }
 
   #wallets(): readonly Wallet[] {
-    return [...this.#registry.get()]
-      .filter((wallet) => wallet.chains.some((chain) => chain === this.#policy.chain))
-      .filter((wallet) => Boolean(featureVersion(wallet, StandardConnect)))
-      .filter((wallet) => Boolean(featureVersion(wallet, StandardEvents)))
+    const byName = new Map<string, Wallet>();
+    for (const wallet of this.#registry.get().filter((candidate) => this.#supportsPolicy(candidate))) {
+      const name = wallet.name.toLowerCase();
+      const existing = byName.get(name);
+      if (!existing || (existing === this.#injectedPhantomWallet && wallet !== this.#injectedPhantomWallet)) {
+        byName.set(name, wallet);
+      }
+    }
+    return [...byName.values()]
       .sort((a, b) => {
         const preferredA = isCastalia(a) ? -1 : this.#policy.preferredWallets.indexOf(a.name);
         const preferredB = isCastalia(b) ? -1 : this.#policy.preferredWallets.indexOf(b.name);
@@ -686,6 +828,22 @@ export class WalletIdentityController {
     } catch (error) {
       console.warn('Mobile Wallet Adapter registration failed', error);
     }
+  }
+
+  #registerInjectedPhantomFallback(): void {
+    if (this.#registry.get().some((wallet) => (
+      wallet.name.toLowerCase() === 'phantom' && this.#supportsPolicy(wallet)
+    ))) return;
+    const provider = injectedPhantomProvider();
+    if (!provider) return;
+    this.#injectedPhantomWallet = createInjectedPhantomWallet(provider);
+    this.#registry.register(this.#injectedPhantomWallet);
+  }
+
+  #supportsPolicy(wallet: Wallet): boolean {
+    return wallet.chains.some((chain) => chain === this.#policy.chain)
+      && Boolean(featureVersion(wallet, StandardConnect))
+      && Boolean(featureVersion(wallet, StandardEvents));
   }
 }
 

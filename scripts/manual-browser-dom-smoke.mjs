@@ -191,6 +191,41 @@ try {
   });
   await send('Runtime.enable');
   await send('Page.enable');
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    const listeners = new Map();
+    const publicKey = {
+      toBase58: () => ${JSON.stringify(KEY)},
+      toString: () => ${JSON.stringify(KEY)},
+      toBytes: () => new Uint8Array(32)
+    };
+    const emit = (event, value) => {
+      for (const listener of listeners.get(event) ?? []) listener(value);
+    };
+    const provider = {
+      isPhantom: true,
+      isConnected: false,
+      publicKey: null,
+      on(event, listener) {
+        const values = listeners.get(event) ?? new Set();
+        values.add(listener);
+        listeners.set(event, values);
+      },
+      async connect() {
+        this.isConnected = true;
+        this.publicKey = publicKey;
+        emit('connect', publicKey);
+        return { publicKey };
+      },
+      async disconnect() {
+        this.isConnected = false;
+        this.publicKey = null;
+        emit('disconnect');
+      },
+      async signMessage(message) { return { signature: new Uint8Array(64), publicKey }; },
+      async signTransaction(transaction) { return transaction; }
+    };
+    Object.defineProperty(window, 'phantom', { configurable: true, value: { solana: provider } });
+  })();` });
   await send('Page.navigate', { url: 'https://localhost:4280/#gc' });
   await waitFor(async () => {
     const state = await send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true });
@@ -228,7 +263,34 @@ try {
   assert.match(rendered.banner, /69,000 TEST NEAL · 120-SECOND REFUNDABLE LOCK/u);
   assert.match(rendered.terms, /STAKE 69,000 NEAL · REFUNDABLE AFTER 120 SECONDS/u);
   assert.equal(exceptions.some((message) => /Endpoint URL must start with/u.test(message)), false);
-  console.log(JSON.stringify({ schema: 'neal.devnet-browser-dom-smoke/v1', sourceCommit, status: 'passed' }));
+  const phantom = await waitFor(async () => {
+    const state = await send('Runtime.evaluate', {
+      expression: `(() => {
+        document.querySelector('#wallet-button')?.click();
+        const choices = [...document.querySelectorAll('#wallet-list .wallet-choice')];
+        const choice = choices.find((candidate) => candidate.textContent?.includes('Phantom'));
+        if (!choice) return JSON.stringify({ found: false, labels: choices.map((candidate) => candidate.textContent) });
+        choice.click();
+        return JSON.stringify({ found: true });
+      })()`, returnByValue: true,
+    });
+    const value = JSON.parse(state.result.value);
+    if (!value.found) throw new Error(`Injected Phantom fallback is unavailable: ${JSON.stringify(value)}`);
+    const connected = await send('Runtime.evaluate', {
+      expression: `JSON.stringify({
+        provider: document.querySelector('#wallet-provider')?.textContent,
+        address: document.querySelector('#wallet-address')?.textContent
+      })`, returnByValue: true,
+    });
+    const connection = JSON.parse(connected.result.value);
+    if (connection.provider !== 'Phantom' || connection.address !== KEY) {
+      throw new Error(`Injected Phantom did not connect: ${JSON.stringify(connection)}`);
+    }
+    return connection;
+  });
+  console.log(JSON.stringify({
+    schema: 'neal.devnet-browser-dom-smoke/v1', sourceCommit, status: 'passed', phantom: phantom.provider,
+  }));
 } finally {
   try { socket?.close(); } catch {}
   chrome.kill('SIGTERM');

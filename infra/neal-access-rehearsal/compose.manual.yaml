@@ -30,7 +30,7 @@ services:
       - no-new-privileges:true
     command: ["/opt/issuer/issuer.py"]
     healthcheck:
-      test: ["CMD", "/opt/issuer/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18009/readyz', timeout=4)"]
+      test: ["CMD", "/opt/issuer/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18009/healthz', timeout=4)"]
       interval: 3s
       timeout: 5s
       retries: 60

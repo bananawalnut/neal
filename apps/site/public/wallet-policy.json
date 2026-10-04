@@ -1,7 +1,7 @@
 {
   "schema": "neal.wallet-policy/v1",
   "chain": "solana:mainnet",
-  "preferredWallets": ["Castalia"],
+  "preferredWallets": ["Castalia", "Phantom"],
   "walletStandard": {
     "requiredFeatures": ["standard:connect", "standard:events"],
     "preferredAuthentication": "solana:signIn",
