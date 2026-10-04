@@ -68,6 +68,7 @@ const UPGRADEABLE_LOADER = new PublicKey('BPFLoaderUpgradeab1e111111111111111111
 const DEFAULT_RUNTIME_ROOT = path.join(os.homedir(), 'Library/Application Support/NEAL/devnet-manual');
 const ACCEPTANCE_URL = 'https://localhost:4280/#gc';
 const ACCEPTANCE_PORTS = [4280, 4281];
+const MANUAL_MATRIX_ORIGIN = 'http://127.0.0.1:18011';
 const CHROME = '/Applications/Google Chrome.app';
 const REVIEW_SIGNATURE_SCHEMA = 'neal.access-stake-isolated-review-signature/v2';
 const REVIEWER_IDENTITY = 'neal-independent-reviewer:ed25519:sha256:676df1e3181d1541bf6351a7dae066fb19370b94161f0b5b9006e99db15edbed';
@@ -311,6 +312,7 @@ const manualCompose = (project, runtime, args, options = {}) => {
       NEAL_REHEARSAL_RUNTIME: runtime,
       NEAL_REHEARSAL_UID: String(process.getuid?.() ?? 1000),
       NEAL_REHEARSAL_GID: String(process.getgid?.() ?? 1000),
+      NEAL_MANUAL_ISSUER_IMAGE: `${project}-issuer:latest`,
     },
   });
 };
@@ -901,7 +903,7 @@ const recoverPrepare = async (options) => {
 };
 
 const matrixRequest = async (pathname, { method = 'GET', token, body } = {}) => {
-  const response = await fetch(`http://127.0.0.1:18008${pathname}`, {
+  const response = await fetch(`${MANUAL_MATRIX_ORIGIN}${pathname}`, {
     method,
     headers: {
       Accept: 'application/json',
@@ -1041,7 +1043,16 @@ const start = async (options) => {
       capture: true, failure: 'Could not attest the running issuer image',
     })).trim();
     if (runningImageId !== state.issuerImageId) throw new Error('Running issuer image differs from the prepared image');
-    await waitHttp('http://127.0.0.1:18008/_matrix/client/versions', [200]);
+    const matrixLoopbackContainer = (await manualCompose(state.project, runtime, ['ps', '--quiet', 'matrix-loopback'], {
+      capture: true, failure: 'Could not identify the running Matrix loopback container',
+    })).trim();
+    const matrixLoopbackImageId = (await run('docker', ['inspect', '--format', '{{.Image}}', matrixLoopbackContainer], {
+      capture: true, failure: 'Could not attest the running Matrix loopback image',
+    })).trim();
+    if (matrixLoopbackImageId !== state.issuerImageId) {
+      throw new Error('Running Matrix loopback image differs from the prepared issuer image');
+    }
+    await waitHttp(`${MANUAL_MATRIX_ORIGIN}/_matrix/client/versions`, [200]);
     await verifySynapseOutboundDenied(runtime, state);
     await waitHttp('http://127.0.0.1:18009/readyz', [200]);
     state.roomId = await seedRoom(runtime, state);
@@ -1087,7 +1098,7 @@ const start = async (options) => {
       '--runtime', publicRuntimeFile(runtime), '--rpc-set-file', state.rpcSetFile,
       '--tls-key', state.certificate.key, '--tls-cert', state.certificate.certificate,
       '--faults', faultsFile(runtime), '--site-origin', 'http://127.0.0.1:4281',
-      '--issuer-origin', 'http://127.0.0.1:18009', '--matrix-origin', 'http://127.0.0.1:18008',
+      '--issuer-origin', 'http://127.0.0.1:18009', '--matrix-origin', MANUAL_MATRIX_ORIGIN,
       '--issuer-image-id', state.issuerImageId,
       '--owner-nonce', processMarker,
     ], { log: path.join(runtime, 'gateway.log'), marker: processMarker });

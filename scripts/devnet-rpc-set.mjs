@@ -230,7 +230,10 @@ export async function fundDevnetAccount(
       try {
         observed = await quorumFinalizedBalance(rpcSet, account, { call });
         if (observed.balance >= targetLamports) return observed;
-        if (observed.balance > priorBalance) break;
+        if (observed.balance > priorBalance) {
+          await wait(3_000);
+          break;
+        }
       } catch {
         // Finalized 2-of-3 agreement may lag a successful faucet response.
       }

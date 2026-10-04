@@ -25,6 +25,7 @@ RUNTIME_FILES = (
     "reconcile.py",
     "backup.py",
     "s3_backup.py",
+    "matrix_loopback.py",
     "build_bundle.py",
     "requirements-deploy.txt",
     "access-issuer.env.example",

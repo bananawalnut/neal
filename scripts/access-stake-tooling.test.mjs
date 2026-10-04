@@ -633,6 +633,10 @@ test('manual compose keeps Synapse internal while giving only the issuer RPC egr
   assert.match(base, /rehearsal-internal:\n\s+internal: true/u);
   assert.doesNotMatch(manual, /^\s{2}synapse:/mu);
   assert.match(manual, /issuer:[\s\S]*?networks:\n\s+- rehearsal-internal\n\s+- manual-egress/u);
+  assert.match(manual, /issuer:[\s\S]*?127\.0\.0\.1:18011:18011/u);
+  assert.match(manual, /matrix-loopback:[\s\S]*?network_mode: "service:issuer"/u);
+  assert.match(manual, /matrix-loopback:[\s\S]*?image: \$\{NEAL_MANUAL_ISSUER_IMAGE:\?set NEAL_MANUAL_ISSUER_IMAGE\}/u);
+  assert.doesNotMatch(manual, /matrix-loopback:[\s\S]*?\n\s+volumes:/u);
 });
 
 test('port 4282 admin surface is inert and Vite has no production admin proxy', async () => {

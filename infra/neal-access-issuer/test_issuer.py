@@ -5,6 +5,7 @@ import contextlib
 import dataclasses
 import datetime as dt
 import io
+import http.client
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import threading
 import time
 import unittest
 from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,8 +27,106 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import issuer
 import backup
+import matrix_loopback
 import reconcile
 import s3_backup
+
+
+class MatrixLoopbackTests(unittest.TestCase):
+    def test_routes_are_fixed_to_matrix_and_shared_secret_registration(self) -> None:
+        self.assertTrue(matrix_loopback.route_allowed("GET", "/_matrix/client/versions"))
+        self.assertTrue(matrix_loopback.route_allowed("POST", "/_matrix/client/v3/register?kind=user"))
+        self.assertTrue(matrix_loopback.route_allowed("GET", "/_synapse/admin/v1/register"))
+        self.assertFalse(matrix_loopback.route_allowed("GET", "/_synapse/admin/v2/users"))
+        self.assertFalse(matrix_loopback.route_allowed("CONNECT", "/_matrix/client/versions"))
+        self.assertFalse(matrix_loopback.route_allowed("GET", "http://example.invalid/_matrix/client/versions"))
+        self.assertFalse(matrix_loopback.route_allowed("GET", "/_matrix/%2e%2e/_synapse/admin/v2/users"))
+
+    def test_headers_are_allowlisted_and_reject_injected_values(self) -> None:
+        headers = {
+            "Authorization": "Bearer opaque",
+            "Content-Type": "application/json",
+            "Connection": "keep-alive",
+            "X-Forwarded-Host": "attacker.invalid",
+            "Accept": "application/json\r\nInjected: yes",
+        }
+        self.assertEqual(
+            matrix_loopback.filtered_headers(headers, matrix_loopback.REQUEST_HEADERS),
+            {"Authorization": "Bearer opaque", "Content-Type": "application/json"},
+        )
+
+    def test_proxy_forwards_only_allowed_routes_and_caps_bodies(self) -> None:
+        calls: list[tuple[str, str, str | None]] = []
+
+        class UpstreamHandler(BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *_arguments) -> None:
+                return
+
+            def _respond(self) -> None:
+                calls.append((self.command, self.path, self.headers.get("Authorization")))
+                body = b"x" * (matrix_loopback.MAX_BODY_BYTES + 1) if self.path == "/_matrix/large" else b'{"ok":true}'
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = _respond
+            do_POST = _respond
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        proxy = matrix_loopback.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), matrix_loopback.MatrixLoopbackHandler
+        )
+        original_host, original_port = matrix_loopback.UPSTREAM_HOST, matrix_loopback.UPSTREAM_PORT
+        matrix_loopback.UPSTREAM_HOST = "127.0.0.1"
+        matrix_loopback.UPSTREAM_PORT = upstream.server_address[1]
+        threads = [
+            threading.Thread(target=upstream.serve_forever, daemon=True),
+            threading.Thread(target=proxy.serve_forever, daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=5)
+            connection.request("GET", "/_matrix/client/versions", headers={"Authorization": "Bearer opaque"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertEqual(response.read(), b'{"ok":true}')
+            connection.close()
+            self.assertEqual(calls, [("GET", "/_matrix/client/versions", "Bearer opaque")])
+
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=5)
+            connection.request("GET", "/_synapse/admin/v2/users")
+            response = connection.getresponse()
+            self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
+            response.read()
+            connection.close()
+            self.assertEqual(len(calls), 1)
+
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=5)
+            connection.request("GET", "/_matrix/large")
+            response = connection.getresponse()
+            self.assertEqual(response.status, HTTPStatus.BAD_GATEWAY)
+            response.read()
+            connection.close()
+
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_address[1], timeout=5)
+            connection.request(
+                "POST", "/_matrix/client/v3/register", body=b"",
+                headers={"Content-Length": str(matrix_loopback.MAX_BODY_BYTES + 1)},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            response.read()
+            connection.close()
+        finally:
+            proxy.shutdown()
+            upstream.shutdown()
+            proxy.server_close()
+            upstream.server_close()
+            matrix_loopback.UPSTREAM_HOST = original_host
+            matrix_loopback.UPSTREAM_PORT = original_port
 
 
 class FakeAccessDenied(RuntimeError):
